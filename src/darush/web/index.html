@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b1120" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2338bdf8'/><text x='16' y='22' text-anchor='middle' fill='%230b1120' font-size='14' font-weight='bold'>OP</text></svg>" />
+  <title>options</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+  <script src="/static/vendor/chart.umd.min.js" defer></script>
+  <script src="/static/js/app.js" defer></script>
+</head>
+<body>
+  <div class="bg-gradient"></div>
+  <div class="app">
+    <header class="header">
+      <div class="header-brand">
+        <div class="logo">OP</div>
+        <div>
+          <h1>داشبورد اختیار معامله</h1>
+          <p class="subtitle">داده رسمی TSETMC · api.tsetmc.com</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <label class="date-filter">
+          <span>تاریخ</span>
+          <input type="date" id="dateFilter" aria-label="انتخاب تاریخ" list="availableDates" />
+          <datalist id="availableDates"></datalist>
+        </label>
+        <span class="last-update" id="lastUpdate">—</span>
+        <button type="button" class="btn btn-primary" id="btnRefresh">
+          <span class="btn-icon" id="refreshIcon">↻</span>
+          <span>به‌روزرسانی داده</span>
+        </button>
+      </div>
+    </header>
+
+    <section class="stats-grid" id="statsGrid">
+      <article class="stat-card">
+        <span class="stat-label">سهم‌های اصلی</span>
+        <span class="stat-value" id="statContracts">—</span>
+      </article>
+      <article class="stat-card accent-blue">
+        <span class="stat-label">قراردادها</span>
+        <span class="stat-value" id="statBuyOi">—</span>
+      </article>
+      <article class="stat-card accent-purple">
+        <span class="stat-label">اختیار خرید</span>
+        <span class="stat-value" id="statSellOi">—</span>
+      </article>
+      <article class="stat-card accent-green">
+        <span class="stat-label">اختیار فروش</span>
+        <span class="stat-value" id="statNaturalFlow">—</span>
+      </article>
+      <article class="stat-card accent-amber">
+        <span class="stat-label">حجم معاملات</span>
+        <span class="stat-value" id="statLegalFlow">—</span>
+      </article>
+    </section>
+
+    <section class="toolbar">
+      <div class="search-wrap">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+        </svg>
+        <input type="search" id="searchInput" placeholder="جستجو سهم..." autocomplete="off" />
+      </div>
+      <button type="button" class="btn btn-ghost btn-back hidden" id="btnBack">بازگشت به سهم‌ها</button>
+      <div class="filters hidden" id="optionFilters">
+        <div class="segmented" id="typeFilter">
+          <button type="button" class="segment active" data-type="all">همه</button>
+          <button type="button" class="segment" data-type="call">خرید</button>
+          <button type="button" class="segment" data-type="put">فروش</button>
+        </div>
+        <select id="expiryFilter" aria-label="فیلتر سررسید">
+          <option value="all">همه سررسیدها</option>
+        </select>
+        <select id="moneynessFilter" aria-label="فیلتر وضعیت قرارداد">
+          <option value="all">همه وضعیت‌ها</option>
+          <option value="ITM">ITM</option>
+          <option value="ATM">ATM</option>
+          <option value="OTM">OTM</option>
+        </select>
+        <select id="strikeFilter" aria-label="فیلتر قیمت اعمال">
+          <option value="all">همه اعمال‌ها</option>
+        </select>
+        <button type="button" class="btn btn-ghost hidden" id="btnClearFilters">پاک کردن فیلترها</button>
+        <button type="button" class="btn btn-ghost" id="btnAnalysis">آنالیز</button>
+      </div>
+      <div class="active-filters hidden" id="activeFilters" aria-live="polite"></div>
+    </section>
+
+    <section class="mobile-context-card hidden" id="mobileContextCard" aria-live="polite"></section>
+
+    <section class="panel analysis-panel hidden" id="analysisPanel">
+      <div class="panel-header">
+        <h2 id="analysisTitle">آنالیز حقیقی / حقوقی</h2>
+        <span class="badge" id="analysisScope">0 قرارداد</span>
+      </div>
+      <div class="analysis-content" id="analysisContent"></div>
+    </section>
+
+    <main class="main-grid">
+      <section class="panel table-panel">
+        <div class="panel-header">
+          <h2 id="panelTitle">سهم‌های اصلی</h2>
+          <span class="badge" id="rowCount">0 ردیف</span>
+        </div>
+        <div class="table-wrap" id="tableWrap">
+          <table class="data-table" id="dataTable">
+            <thead id="tableHead"></thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+        </div>
+        <div class="mobile-card-list" id="mobileCardList" aria-live="polite"></div>
+        <div class="empty-state hidden" id="emptyState">
+          <div class="empty-icon">OP</div>
+          <p id="emptyTitle">داده‌ای موجود نیست</p>
+          <p class="empty-hint" id="emptyHint">ابتدا pipeline را اجرا کنید یا دکمه به‌روزرسانی را بزنید</p>
+          <button type="button" class="btn btn-primary" id="btnEmptyRefresh">به‌روزرسانی داده</button>
+        </div>
+      </section>
+
+      <aside class="panel detail-panel" id="detailPanel">
+        <button type="button" class="sheet-backdrop" id="detailBackdrop" aria-label="بستن جزئیات"></button>
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="panel-header">
+          <h2 id="detailTitle">جزئیات قرارداد</h2>
+          <button type="button" class="btn-icon-only" id="closeDetail" aria-label="بستن">×</button>
+        </div>
+        <div class="detail-content" id="detailContent">
+          <p class="detail-placeholder">یک ردیف از جدول را انتخاب کنید</p>
+        </div>
+        <div class="chart-block hidden" id="chartBlock">
+          <h3>روند موقعیت باز</h3>
+          <canvas id="oiChart"></canvas>
+        </div>
+      </aside>
+    </main>
+
+    <div class="toast hidden" id="toast"></div>
+    <div class="loading-overlay hidden" id="loadingOverlay">
+      <div class="spinner"></div>
+      <p>در حال بارگذاری...</p>
+    </div>
+  </div>
+</body>
+</html>

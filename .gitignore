@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Briefcase build artifacts
+build/
+dist/
+output/
+logs/
+*.apk
+*.aab
+*.ipa
+*.dmg
+*.msi
+*.pkg
+
+# Briefcase internal cache
+.briefcase/
+
+# Database (user data — not for version control)
+*.db
+*.sqlite
+*.sqlite3
+
+# Tests
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Android SDK / tools (large binary installer)
+*.deb
+android-sdk/
+android-keystore/
+.docker-gradle/
+cmdline-tools/
+.refact
+.github
+resources/
+.android-build.lock
+src/darush.*

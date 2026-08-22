@@ -1,0 +1,50 @@
+// Gradle init script: replace Google Maven + Maven Central with Aliyun mirrors
+// Used inside Docker where dl.google.com/android/ returns 404
+
+def ALIYUN_GOOGLE  = 'https://maven.aliyun.com/repository/google'
+def ALIYUN_CENTRAL = 'https://maven.aliyun.com/repository/central'
+def ALIYUN_PLUGIN  = 'https://maven.aliyun.com/repository/gradle-plugin'
+def ALIYUN_PUBLIC  = 'https://maven.aliyun.com/repository/public'
+
+// Override pluginManagement and dependencyResolutionManagement from settings.gradle
+settingsEvaluated { settings ->
+    try {
+        settings.pluginManagement {
+            repositories {
+                maven { url ALIYUN_PLUGIN }
+                maven { url ALIYUN_GOOGLE }
+                maven { url ALIYUN_CENTRAL }
+            }
+        }
+    } catch (Exception ignored) {}
+
+    try {
+        settings.dependencyResolutionManagement {
+            // Switch to PREFER_PROJECT so allprojects{} repos are also honoured
+            repositoriesMode.set(
+                org.gradle.api.artifacts.dsl.RepositoriesMode.PREFER_PROJECT
+            )
+            repositories {
+                maven { url ALIYUN_GOOGLE }
+                maven { url ALIYUN_CENTRAL }
+                maven { url ALIYUN_PUBLIC }
+            }
+        }
+    } catch (Exception ignored) {}
+}
+
+// Fallback: inject into every project's buildscript and dependency repos
+allprojects {
+    buildscript {
+        repositories {
+            maven { url ALIYUN_PLUGIN }
+            maven { url ALIYUN_GOOGLE }
+            maven { url ALIYUN_CENTRAL }
+        }
+    }
+    repositories {
+        maven { url ALIYUN_GOOGLE }
+        maven { url ALIYUN_CENTRAL }
+        maven { url ALIYUN_PUBLIC }
+    }
+}

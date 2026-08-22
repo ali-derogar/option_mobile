@@ -1,0 +1,82 @@
+[build-system]
+requires = ["briefcase"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.briefcase]
+project_name = "Darush"
+bundle = "com.tsetmc"
+version = "1.0.0"
+author = "darklord"
+author_email = "leonkennedymail@gmail.com"
+url = "https://tsetmc.com"
+license = "LicenseRef-Proprietary"
+license-files = []
+
+[tool.briefcase.app.darush]
+formal_name = "options"
+description = "TSETMC options dashboard"
+long_description = "Persian dashboard for TSETMC options data, packaged with BeeWare."
+sources = ["src/darush"]
+icon = "resources/dailyplanner"
+requires = [
+    "toga-core>=0.4.0",
+    "requests>=2.31.0",
+    "pandas>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "SQLAlchemy>=2.0.0",
+    "fastapi==0.99.1",
+    "pydantic==1.10.9",
+    "uvicorn>=0.32.0",
+]
+requirement_installer_args = [
+    "--index-url",
+    "https://mirrors.aliyun.com/pypi/simple/",
+    "--extra-index-url",
+    "https://chaquo.com/pypi-13.1",
+    "--trusted-host",
+    "mirrors.aliyun.com",
+    "--default-timeout",
+    "180",
+    "--retries",
+    "10",
+    "--resume-retries",
+    "20",
+]
+test_requires = ["pytest>=7.0"]
+
+[tool.briefcase.app.darush.macOS]
+requires = [
+    "toga-cocoa>=0.4.0",
+    "std-nslog~=1.0.0",
+]
+
+[tool.briefcase.app.darush.linux]
+requires = [
+    "toga-gtk>=0.4.0",
+]
+
+[tool.briefcase.app.darush.windows]
+requires = [
+    "toga-winforms>=0.4.0",
+]
+
+[tool.briefcase.app.darush.iOS]
+requires = [
+    "toga-iOS>=0.4.0",
+    "std-nslog~=1.0.0",
+]
+
+[tool.briefcase.app.darush.android]
+requires = [
+    "toga-android>=0.4.0",
+]
+splash_background_color = "#FFFFFF"
+build_gradle_dependencies = [
+    "androidx.appcompat:appcompat:1.0.2",
+    "androidx.constraintlayout:constraintlayout:1.1.3",
+    "androidx.swiperefreshlayout:swiperefreshlayout:1.1.0",
+]
+permissions = {}
