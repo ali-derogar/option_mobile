@@ -1,4 +1,4 @@
-"""BeeWare wrapper that shows the Darush web dashboard on mobile."""
+"""BeeWare wrapper that shows the Options web dashboard on mobile."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def _runtime_root(app: toga.App) -> Path:
     data_path = getattr(paths, "data", None)
     if data_path:
         return Path(data_path)
-    return Path(tempfile.gettempdir()) / "darush"
+    return Path(tempfile.gettempdir()) / "options"
 
 
 def _free_port() -> int:
@@ -28,7 +28,7 @@ def _free_port() -> int:
         return int(server.getsockname()[1])
 
 
-class DarushApp(toga.App):
+class OptionsApp(toga.App):
     """Mobile shell for the same FastAPI + HTML/CSS/JS dashboard as desktop."""
 
     def startup(self) -> None:
@@ -37,13 +37,13 @@ class DarushApp(toga.App):
         self._url = f"http://127.0.0.1:{self._port}"
 
         self.main_window = toga.MainWindow(title=self.formal_name)
-        self.webview = toga.WebView(url=self._url, style=Pack(flex=1))
+        self.webview: toga.WebView | None = None
         self.status_label = toga.Label(
             "در حال راه‌اندازی داشبورد...",
             style=Pack(padding=12, color="#94a3b8", background_color="#0b1120"),
         )
         self.main_window.content = toga.Box(
-            children=[self.status_label, self.webview],
+            children=[self.status_label],
             style=Pack(direction=COLUMN, flex=1, background_color="#0b1120"),
         )
         self.main_window.show()
@@ -54,14 +54,14 @@ class DarushApp(toga.App):
     def _configure_environment(self) -> None:
         runtime_root = _runtime_root(self)
         runtime_root.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault("DARUSH_RUNTIME_ROOT", str(runtime_root))
+        os.environ.setdefault("OPTIONS_RUNTIME_ROOT", str(runtime_root))
         os.environ["WEB_OPEN_BROWSER"] = "0"
 
     def _serve(self) -> None:
         import uvicorn
 
         uvicorn.run(
-            "darush.backend.api.main:app",
+            "options.backend.api.main:app",
             host="127.0.0.1",
             port=self._port,
             reload=False,
@@ -84,12 +84,15 @@ class DarushApp(toga.App):
             return False
 
     def _show_dashboard(self) -> None:
+        if self.webview is None:
+            self.webview = toga.WebView(url=self._url, style=Pack(flex=1))
+        else:
+            self.webview.url = self._url
         self.main_window.content = self.webview
-        self.webview.url = self._url
 
     def _show_error(self) -> None:
         self.status_label.text = "خطا در راه‌اندازی داشبورد. برنامه را دوباره باز کنید."
 
 
-def main() -> DarushApp:
-    return DarushApp("options", "com.tsetmc.darush")
+def main() -> OptionsApp:
+    return OptionsApp("options", "com.tsetmc.options")

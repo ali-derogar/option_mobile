@@ -18,7 +18,9 @@ const state = {
   sortDir: 1,
   selectedInsCode: null,
   selectedRowKey: null,
+  expandedCardKey: null,
   oiChart: null,
+  oiRequestId: 0,
   trendChart: null,
   underlying: null,
   analysisVisible: false,
@@ -33,6 +35,67 @@ const state = {
     strike: "all",
   },
 };
+
+const THEME_STORAGE_KEY = "options-theme";
+
+function safeStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Some embedded webviews can block localStorage; theme still works for this session.
+  }
+}
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+function cssVar(name, fallback) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+function chartPalette() {
+  return {
+    text: cssVar("--text", "#142033"),
+    muted: cssVar("--text-muted", "#6b7a8c"),
+    grid: currentTheme() === "dark" ? "rgba(148, 163, 184, 0.16)" : "rgba(107, 122, 140, 0.14)",
+    accent: cssVar("--accent", "#0f8b8d"),
+    accentStrong: cssVar("--accent-strong", "#0a7375"),
+    green: cssVar("--green", "#16885c"),
+    red: cssVar("--red", "#c44d61"),
+    amber: cssVar("--amber", "#a86f05"),
+    purple: cssVar("--purple", "#6d5bd0"),
+  };
+}
+
+function applyTheme(theme) {
+  const nextTheme = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = nextTheme;
+  const meta = document.getElementById("themeColorMeta");
+  if (meta) meta.setAttribute("content", nextTheme === "dark" ? "#0b1220" : "#f7f8fb");
+  const toggle = document.getElementById("themeToggle");
+  if (toggle) {
+    const isDark = nextTheme === "dark";
+    toggle.setAttribute("aria-pressed", String(isDark));
+    toggle.setAttribute("aria-label", isDark ? "تغییر به حالت روشن" : "تغییر به حالت تاریک");
+    toggle.title = isDark ? "حالت روشن" : "حالت تاریک";
+  }
+  if (state.oiChart || state.trendChart) {
+    requestAnimationFrame(() => {
+      if (state.selectedInsCode) loadOiChart(state.selectedInsCode);
+      if (state.trendChart && state.analysisVisible) renderAnalysis();
+    });
+  }
+}
+
+function bindThemeToggle() {
+  applyTheme(currentTheme());
+  document.getElementById("themeToggle")?.addEventListener("click", () => {
+    const nextTheme = currentTheme() === "dark" ? "light" : "dark";
+    safeStorageSet(THEME_STORAGE_KEY, nextTheme);
+    applyTheme(nextTheme);
+  });
+}
 
 const VIEW_CONFIG = {
   underlyings: {
@@ -149,6 +212,22 @@ function fmtRatio(n) {
   return Number(n).toLocaleString("fa-IR", { maximumFractionDigits: 2 });
 }
 
+function fmtCompactNum(n) {
+  if (n == null || Number.isNaN(Number(n))) return "—";
+  const value = Math.abs(Number(n));
+  const sign = Number(n) < 0 ? "-" : "";
+  if (value >= 1_000_000_000) {
+    return `${sign}${(value / 1_000_000_000).toLocaleString("fa-IR", { maximumFractionDigits: 1 })} میلیارد`;
+  }
+  if (value >= 1_000_000) {
+    return `${sign}${(value / 1_000_000).toLocaleString("fa-IR", { maximumFractionDigits: 1 })} میلیون`;
+  }
+  if (value >= 10_000) {
+    return `${sign}${(value / 1_000).toLocaleString("fa-IR", { maximumFractionDigits: 0 })} هزار`;
+  }
+  return fmtNum(n);
+}
+
 function optionTypeLabel(value) {
   if (value === "call") return "خرید";
   if (value === "put") return "فروش";
@@ -181,8 +260,14 @@ function optionTypeClass(value) {
   return "type-unknown";
 }
 
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
 function showToast(msg, type = "success") {
   const el = document.getElementById("toast");
+  if (!el) return;
   el.textContent = msg;
   el.className = `toast ${type}`;
   clearTimeout(showToast._t);
@@ -191,17 +276,19 @@ function showToast(msg, type = "success") {
 
 function setLoading(on) {
   state.loading = on;
-  document.getElementById("loadingOverlay").classList.toggle("hidden", !on);
+  document.getElementById("loadingOverlay")?.classList.toggle("hidden", !on);
   renderLoadingSkeleton(on);
 }
 
 function setStatusText(text) {
-  if (text) document.getElementById("lastUpdate").textContent = text;
+  if (text) setText("lastUpdate", text);
 }
 
 function setEmptyMessage(title, hint) {
-  document.getElementById("emptyTitle").textContent = title;
-  document.getElementById("emptyHint").textContent = hint;
+  const emptyTitle = document.getElementById("emptyTitle");
+  const emptyHint = document.getElementById("emptyHint");
+  if (emptyTitle) emptyTitle.textContent = title;
+  if (emptyHint) emptyHint.textContent = hint;
 }
 
 function isHistoricalDate() {
@@ -210,6 +297,7 @@ function isHistoricalDate() {
 
 function updateFreshnessBadge() {
   const el = document.getElementById("lastUpdate");
+  if (!el) return;
   el.classList.toggle("stale", isHistoricalDate());
   if (isHistoricalDate() && !el.textContent.includes("داده تاریخی")) {
     el.textContent = `${el.textContent} · داده تاریخی`;
@@ -234,7 +322,7 @@ function openUnderlyingPage(row) {
 }
 
 function isMobileLayout() {
-  return window.matchMedia("(max-width: 720px)").matches;
+  return true;
 }
 
 function appendQuery(params) {
@@ -269,14 +357,14 @@ async function api(path, options = {}) {
 async function loadSummary() {
   const s = await api(`/api/summary${dateQuery()}`);
   state.lastUpdate = s.last_update || "";
-  document.getElementById("statContracts").textContent = fmtNum(s.underlying_count);
-  document.getElementById("statBuyOi").textContent = fmtNum(s.contract_count);
-  document.getElementById("statSellOi").textContent = fmtNum(s.call_count);
-  document.getElementById("statNaturalFlow").textContent = fmtNum(s.put_count);
-  document.getElementById("statLegalFlow").textContent = fmtNum(s.total_trade_volume);
-  document.getElementById("lastUpdate").textContent = s.last_update
+  setText("statContracts", fmtNum(s.underlying_count));
+  setText("statBuyOi", fmtNum(s.contract_count));
+  setText("statSellOi", fmtNum(s.call_count));
+  setText("statNaturalFlow", fmtNum(s.put_count));
+  setText("statLegalFlow", fmtNum(s.total_trade_volume));
+  setText("lastUpdate", s.last_update
     ? `تاریخ داده: ${state.selectedDate ? fmtDate(state.selectedDate) : "آخرین"} · بروزرسانی: ${fmtDate(s.last_update)}`
-    : "بدون داده";
+    : "بدون داده");
   updateFreshnessBadge();
 }
 
@@ -289,18 +377,20 @@ async function loadDates() {
   if (!state.selectedDate && data.latest) {
     state.selectedDate = data.latest;
   }
-  options.innerHTML = state.availableDates.length
-    ? state.availableDates
-        .map((date) => `<option value="${escapeHtml(date)}">${escapeHtml(fmtDate(date))}</option>`)
-        .join("")
-    : "";
-  input.value = state.selectedDate || "";
+  if (options) {
+    options.innerHTML = state.availableDates.length
+      ? state.availableDates
+          .map((date) => `<option value="${escapeHtml(date)}">${escapeHtml(fmtDate(date))}</option>`)
+          .join("")
+      : "";
+  }
+  if (input) input.value = state.selectedDate || "";
   syncDateToUrl();
   updateFreshnessBadge();
 }
 
 function currentSearch() {
-  return document.getElementById("searchInput").value.trim();
+  return document.getElementById("searchInput")?.value.trim() || "";
 }
 
 async function loadUnderlyings(search = "") {
@@ -430,17 +520,22 @@ function updateViewChrome() {
   const detailAvailable = state.view === "underlying" || (state.view === "underlyings" && hasSelectedDetail && isMobileLayout());
   const analysisMode = isUnderlyingAnalysisMode();
   document.body.dataset.view = state.view;
-  document.getElementById("searchInput").placeholder = config.searchPlaceholder;
-  document.getElementById("optionFilters").classList.toggle("hidden", state.view !== "underlying");
-  document.getElementById("btnBack").classList.toggle("hidden", state.view !== "underlying");
-  document.getElementById("detailPanel").classList.toggle("hidden", !detailAvailable);
-  document.getElementById("detailPanel").classList.toggle("sheet-open", detailAvailable && hasSelectedDetail);
-  document.getElementById("analysisPanel").classList.toggle("hidden", !analysisMode);
-  document.getElementById("btnAnalysis").classList.toggle("active", state.analysisVisible);
-  document.getElementById("btnAnalysis").textContent = state.analysisVisible ? "بستن آنالیز" : "آنالیز سهم";
-  document.querySelector(".main-grid").classList.toggle("hidden", analysisMode);
-  document.querySelector(".main-grid").classList.toggle("no-detail", state.view !== "underlying");
-  document.getElementById("detailTitle").textContent = state.view === "underlyings" ? "جزئیات سهم" : "جزئیات قرارداد";
+  const searchInput = document.getElementById("searchInput");
+  const detailPanel = document.getElementById("detailPanel");
+  const analysisButton = document.getElementById("btnAnalysis");
+  const mainGrid = document.querySelector(".main-grid");
+
+  if (searchInput) searchInput.placeholder = config.searchPlaceholder;
+  document.getElementById("optionFilters")?.classList.toggle("hidden", state.view !== "underlying");
+  document.getElementById("btnBack")?.classList.toggle("hidden", state.view !== "underlying");
+  detailPanel?.classList.toggle("hidden", !detailAvailable);
+  detailPanel?.classList.toggle("sheet-open", detailAvailable && hasSelectedDetail);
+  document.getElementById("analysisPanel")?.classList.toggle("hidden", !analysisMode);
+  analysisButton?.classList.toggle("active", state.analysisVisible);
+  if (analysisButton) analysisButton.textContent = state.analysisVisible ? "بستن آنالیز" : "آنالیز سهم";
+  mainGrid?.classList.toggle("hidden", analysisMode);
+  mainGrid?.classList.toggle("no-detail", state.view !== "underlying");
+  setText("detailTitle", state.view === "underlyings" ? "جزئیات سهم" : "جزئیات قرارداد");
   renderActiveFilters();
   renderMobileContext();
 }
@@ -462,7 +557,7 @@ function maxField(rows, key) {
 function renderMobileContext() {
   const card = document.getElementById("mobileContextCard");
   if (!card) return;
-  if (state.view !== "underlying") {
+  if (state.view !== "underlying" || (!state.underlying && !state.items.length)) {
     card.classList.add("hidden");
     card.innerHTML = "";
     return;
@@ -484,11 +579,7 @@ function renderMobileContext() {
   `;
   card.classList.remove("hidden");
   document.getElementById("contextBackButton")?.addEventListener("click", goBackToUnderlyings);
-  document.getElementById("contextAnalysisButton")?.addEventListener("click", () => {
-    state.analysisVisible = !state.analysisVisible;
-    renderTable();
-    renderAnalysis();
-  });
+  document.getElementById("contextAnalysisButton")?.addEventListener("click", toggleAnalysisMode);
 }
 
 function activeFilterItems() {
@@ -518,7 +609,7 @@ function renderActiveFilters() {
   clearButton.classList.toggle("hidden", !items.length);
   clearButton.textContent = items.length ? `پاک کردن ${fmtNum(items.length)} فیلتر` : "پاک کردن فیلترها";
   wrap.innerHTML = items
-    .map((item) => `<button type="button" class="filter-chip" data-filter="${escapeHtml(item.key)}">${escapeHtml(item.label)}<span aria-hidden="true">×</span></button>`)
+    .map((item) => `<button type="button" class="filter-chip" data-filter="${escapeHtml(item.key)}"><span>${escapeHtml(item.label)}</span><span aria-hidden="true">×</span></button>`)
     .join("");
   wrap.querySelectorAll(".filter-chip").forEach((chip) => {
     chip.addEventListener("click", () => clearSingleFilter(chip.dataset.filter));
@@ -535,18 +626,22 @@ function clearSingleFilter(key) {
   }
   if (key === "expiry") {
     state.filters.expiry = "all";
-    document.getElementById("expiryFilter").value = "all";
+    const expiryFilter = document.getElementById("expiryFilter");
+    if (expiryFilter) expiryFilter.value = "all";
   }
   if (key === "moneyness") {
     state.filters.moneyness = "all";
-    document.getElementById("moneynessFilter").value = "all";
+    const moneynessFilter = document.getElementById("moneynessFilter");
+    if (moneynessFilter) moneynessFilter.value = "all";
   }
   if (key === "strike") {
     state.filters.strike = "all";
-    document.getElementById("strikeFilter").value = "all";
+    const strikeFilter = document.getElementById("strikeFilter");
+    if (strikeFilter) strikeFilter.value = "all";
   }
   state.selectedRowKey = null;
   state.selectedInsCode = null;
+  state.expandedCardKey = null;
   renderDetail(null);
   applyFilterAndSort();
 }
@@ -561,11 +656,15 @@ function resetFilters() {
   document.querySelectorAll("#typeFilter .segment").forEach((el) => {
     el.classList.toggle("active", el.dataset.type === "all");
   });
-  document.getElementById("expiryFilter").value = "all";
-  document.getElementById("moneynessFilter").value = "all";
-  document.getElementById("strikeFilter").value = "all";
+  const expiryFilter = document.getElementById("expiryFilter");
+  const moneynessFilter = document.getElementById("moneynessFilter");
+  const strikeFilter = document.getElementById("strikeFilter");
+  if (expiryFilter) expiryFilter.value = "all";
+  if (moneynessFilter) moneynessFilter.value = "all";
+  if (strikeFilter) strikeFilter.value = "all";
   state.selectedRowKey = null;
   state.selectedInsCode = null;
+  state.expandedCardKey = null;
   renderDetail(null);
   applyFilterAndSort();
 }
@@ -573,15 +672,29 @@ function resetFilters() {
 function clearSelectionForFilterChange() {
   state.selectedRowKey = null;
   state.selectedInsCode = null;
+  state.expandedCardKey = null;
   renderDetail(null);
 }
 
 function closeDetailSheet() {
   state.selectedInsCode = null;
   state.selectedRowKey = null;
+  state.expandedCardKey = null;
+  state.oiRequestId += 1;
   renderTable();
   renderDetail(null);
   updateViewChrome();
+}
+
+function toggleAnalysisMode() {
+  state.analysisVisible = !state.analysisVisible;
+  state.selectedInsCode = null;
+  state.selectedRowKey = null;
+  state.expandedCardKey = null;
+  destroyOiChart();
+  renderDetail(null);
+  renderTable();
+  renderAnalysis();
 }
 
 function renderLoadingSkeleton(on) {
@@ -611,6 +724,9 @@ function renderTable() {
   const wrap = document.getElementById("tableWrap");
   const count = document.getElementById("rowCount");
   const title = document.getElementById("panelTitle");
+  const mobileList = document.getElementById("mobileCardList");
+
+  if (!head || !body || !empty || !wrap || !count || !title || !mobileList) return;
 
   updateViewChrome();
   const underlyingName = state.underlying?.underlying_symbol || state.underlying?.underlying_short_name;
@@ -622,7 +738,7 @@ function renderTable() {
   if (isUnderlyingAnalysisMode()) {
     wrap.classList.add("hidden");
     empty.classList.add("hidden");
-    document.getElementById("mobileCardList").innerHTML = "";
+    mobileList.innerHTML = "";
     head.innerHTML = "";
     body.innerHTML = "";
     return;
@@ -630,7 +746,7 @@ function renderTable() {
 
   if (!state.filtered.length) {
     wrap.classList.add("hidden");
-    document.getElementById("mobileCardList").innerHTML = "";
+    mobileList.innerHTML = "";
     setEmptyMessage(
       state.items.length ? "نتیجه‌ای با این فیلترها پیدا نشد" : "داده‌ای موجود نیست",
       state.items.length ? "فیلترها را پاک کنید یا عبارت جستجو را تغییر دهید" : "ابتدا pipeline را اجرا کنید یا دکمه به‌روزرسانی را بزنید"
@@ -698,9 +814,9 @@ function renderTable() {
   renderMobileCards();
 }
 
-function mobileMetric(label, value, kind = "text") {
+function mobileMetric(label, value, kind = "text", extraClass = "") {
   return `
-    <span class="mobile-metric">
+    <span class="mobile-metric ${escapeHtml(extraClass)}">
       <small>${escapeHtml(label)}</small>
       <strong>${escapeHtml(formatMobileValue(value, kind))}</strong>
     </span>
@@ -709,6 +825,7 @@ function mobileMetric(label, value, kind = "text") {
 
 function formatMobileValue(value, kind = "text") {
   if (kind === "num") return fmtNum(value);
+  if (kind === "compact") return fmtCompactNum(value);
   if (kind === "date") return fmtDate(value);
   if (kind === "optionType") return optionTypeLabel(value);
   if (kind === "flow") return fmtFlow(value);
@@ -723,6 +840,18 @@ function activityLabel(row) {
   if (volume >= 100000) return "فعال";
   if (volume > 0) return "کم‌معامله";
   return "بدون معامله";
+}
+
+function optionSignalLabel(row) {
+  const flow = numericValue(row.natural_money_flow);
+  const oi = oiChange(row);
+  if (flow > 0 && oi > 0) return "جریان مثبت و OI افزایشی";
+  if (flow < 0 && oi < 0) return "جریان منفی و OI کاهشی";
+  if (flow > 0) return "جریان حقیقی مثبت";
+  if (flow < 0) return "جریان حقیقی منفی";
+  if (oi > 0) return "OI افزایشی";
+  if (oi < 0) return "OI کاهشی";
+  return "متعادل";
 }
 
 function oiChange(row) {
@@ -748,8 +877,11 @@ function renderMobileCards() {
   list.innerHTML = listTitle + state.filtered
     .map((row, index) => {
       const isUnderlying = state.view === "underlyings";
-      const selected = getRowKey(row) === state.selectedRowKey ? " selected" : "";
+      const rowKey = getRowKey(row);
+      const isExpanded = isUnderlying ? rowKey === state.expandedCardKey : rowKey === state.selectedRowKey;
+      const selected = isExpanded ? " selected is-expanded" : "";
       const typeClass = optionTypeClass(row.option_type);
+      const signalClass = rowSignalClass(row);
       const title = isUnderlying
         ? row.underlying_symbol || row.underlying_short_name || "—"
         : row.symbol || row.short_name || "—";
@@ -759,26 +891,74 @@ function renderMobileCards() {
       const badge = isUnderlying
         ? `${fmtNum(row.contract_count)} قرارداد`
         : row.moneyness || "—";
+      const metrics = isUnderlying
+        ? [
+            mobileMetric("خرید", row.call_count, "num", "metric-call"),
+            mobileMetric("فروش", row.put_count, "num", "metric-put"),
+            mobileMetric("سررسید", row.nearest_end_date, "date"),
+            mobileMetric("حجم", row.trade_volume, "compact", "metric-volume"),
+          ].join("")
+        : [
+            mobileMetric("اعمال", row.strike_price, "num"),
+            mobileMetric("آخرین", row.last_price, "num"),
+            mobileMetric("حجم", row.trade_volume, "compact", "metric-volume"),
+            mobileMetric("OI", row.buy_open_positions, "compact"),
+          ].join("");
+      const note = isUnderlying ? activityLabel(row) : optionSignalLabel(row);
+      const action = isUnderlying
+        ? `<button type="button" class="mobile-card-action" data-action="open-underlying" data-index="${index}">مشاهده قراردادها</button>`
+        : "";
       return `
-        <button type="button" class="mobile-data-card ${isUnderlying ? "mobile-underlying-card" : `mobile-option-title ${rowSignalClass(row)}`}${selected}" data-index="${index}">
+        <article class="mobile-data-card ${isUnderlying ? "mobile-underlying-card" : `mobile-option-card ${signalClass}`}${selected}" data-index="${index}" tabindex="0" role="button" aria-expanded="${isExpanded ? "true" : "false"}">
           <span class="mobile-card-head">
             <span>
               <strong>${escapeHtml(title)}</strong>
               <small>${escapeHtml(subtitle)}</small>
             </span>
             <span class="mobile-card-badge ${isUnderlying ? "" : typeClass}">${escapeHtml(badge)}</span>
+            <span class="mobile-card-indicator" aria-hidden="true"></span>
           </span>
-          ${isUnderlying ? "" : `<span class="mobile-title-meta">${escapeHtml(`اعمال ${fmtNum(row.strike_price)} · آخرین ${fmtNum(row.last_price)} · OI ${fmtNum(row.buy_open_positions)}`)}</span>`}
-        </button>
+          <span class="mobile-card-details" aria-hidden="${isExpanded ? "false" : "true"}">
+            <span class="mobile-card-metrics">${metrics}</span>
+            <span class="mobile-card-note">${escapeHtml(note)}</span>
+            ${action}
+          </span>
+        </article>
       `;
     })
     .join("");
 
   list.querySelectorAll(".mobile-data-card").forEach((card) => {
-    card.addEventListener("click", () => {
-      selectRowByIndex(Number(card.dataset.index));
+    card.addEventListener("click", (event) => {
+      const action = event.target.closest("[data-action]");
+      if (action?.dataset.action === "open-underlying") {
+        event.stopPropagation();
+        openUnderlyingPage(state.filtered[Number(action.dataset.index)]);
+        return;
+      }
+      selectMobileCardByIndex(Number(card.dataset.index));
+    });
+    card.addEventListener("keydown", (event) => {
+      if (event.target.closest("[data-action]")) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      selectMobileCardByIndex(Number(card.dataset.index));
     });
   });
+}
+
+function selectMobileCardByIndex(index) {
+  const row = state.filtered[index];
+  if (!row) return;
+
+  if (state.view === "underlyings") {
+    const rowKey = getRowKey(row);
+    state.expandedCardKey = state.expandedCardKey === rowKey ? null : rowKey;
+    renderMobileCards();
+    return;
+  }
+
+  selectRowByIndex(index);
 }
 
 function selectRowByIndex(index) {
@@ -786,14 +966,6 @@ function selectRowByIndex(index) {
   if (!row) return;
 
   if (state.view === "underlyings") {
-    if (isMobileLayout()) {
-      state.selectedRowKey = getRowKey(row);
-      state.selectedInsCode = null;
-      renderTable();
-      renderDetail(row);
-      updateViewChrome();
-      return;
-    }
     openUnderlyingPage(row);
     return;
   }
@@ -806,15 +978,16 @@ function selectRowByIndex(index) {
   if (state.selectedInsCode) {
     loadOiChart(state.selectedInsCode);
   } else {
-    document.getElementById("chartBlock").classList.add("hidden");
+    document.getElementById("chartBlock")?.classList.add("hidden");
   }
 }
 
 function renderDetail(row) {
   const container = document.getElementById("detailContent");
+  if (!container) return;
   if (!row) {
     container.innerHTML = '<p class="detail-placeholder">یک ردیف از جدول را انتخاب کنید</p>';
-    document.getElementById("chartBlock").classList.add("hidden");
+    destroyOiChart();
     return;
   }
 
@@ -868,7 +1041,7 @@ function renderDetail(row) {
 
 function renderUnderlyingDetail(row) {
   const container = document.getElementById("detailContent");
-  document.getElementById("chartBlock").classList.add("hidden");
+  destroyOiChart();
   const name = row.underlying_symbol || row.underlying_short_name || "—";
   const sections = [
     ["مشخصات سهم", ["underlying_symbol", "underlying_short_name", "underlying_ins_code", "sector"]],
@@ -924,20 +1097,24 @@ function formatDetailValue(key, val) {
 
 async function loadOiChart(insCode) {
   const block = document.getElementById("chartBlock");
+  const ctx = document.getElementById("oiChart");
+  if (!block || !ctx) return;
+  const requestId = ++state.oiRequestId;
   try {
     const data = await api(`/api/open-interest/${insCode}${dateQuery()}`);
+    if (requestId !== state.oiRequestId || String(insCode) !== String(state.selectedInsCode)) return;
     const history = data.history || [];
     if (!history.length) {
-      block.classList.add("hidden");
+      destroyOiChart();
       return;
     }
     block.classList.remove("hidden");
     const labels = history.map((h) => fmtDate(h.fetched_at));
     const buy = history.map((h) => h.buy_open_positions);
     const sell = history.map((h) => h.sell_open_positions);
+    const palette = chartPalette();
 
     if (state.oiChart) state.oiChart.destroy();
-    const ctx = document.getElementById("oiChart");
     state.oiChart = new Chart(ctx, {
       type: "line",
       data: {
@@ -946,16 +1123,16 @@ async function loadOiChart(insCode) {
           {
             label: "موقعیت باز",
             data: buy,
-            borderColor: "#38bdf8",
-            backgroundColor: "rgba(56, 189, 248, 0.1)",
+            borderColor: palette.accent,
+            backgroundColor: currentTheme() === "dark" ? "rgba(32, 183, 174, 0.12)" : "rgba(15, 139, 141, 0.1)",
             tension: 0.3,
             fill: true,
           },
           {
             label: "فروش",
             data: sell,
-            borderColor: "#a78bfa",
-            backgroundColor: "rgba(167, 139, 250, 0.1)",
+            borderColor: palette.purple,
+            backgroundColor: currentTheme() === "dark" ? "rgba(181, 167, 255, 0.1)" : "rgba(109, 91, 208, 0.1)",
             tension: 0.3,
             fill: true,
           },
@@ -965,17 +1142,26 @@ async function loadOiChart(insCode) {
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
-          legend: { labels: { color: "#94a3b8", font: { family: "Vazirmatn" } } },
+          legend: { labels: { color: palette.muted, font: { family: "Vazirmatn" } } },
         },
         scales: {
-          x: { ticks: { color: "#64748b", maxTicksLimit: 6 }, grid: { color: "rgba(148,163,184,0.1)" } },
-          y: { ticks: { color: "#64748b" }, grid: { color: "rgba(148,163,184,0.1)" } },
+          x: { ticks: { color: palette.muted, maxTicksLimit: 6 }, grid: { color: palette.grid } },
+          y: { ticks: { color: palette.muted }, grid: { color: palette.grid } },
         },
       },
     });
   } catch {
-    block.classList.add("hidden");
+    if (requestId === state.oiRequestId) destroyOiChart();
   }
+}
+
+function destroyOiChart() {
+  state.oiRequestId += 1;
+  if (state.oiChart) {
+    state.oiChart.destroy();
+    state.oiChart = null;
+  }
+  document.getElementById("chartBlock")?.classList.add("hidden");
 }
 
 function populateOptionFilters() {
@@ -987,7 +1173,7 @@ function populateOptionFilters() {
     [...new Set(state.items.map((row) => row.end_date).filter(Boolean).map(String))].sort(),
     fmtDate
   );
-  state.filters.expiry = document.getElementById("expiryFilter").value;
+  state.filters.expiry = document.getElementById("expiryFilter")?.value || "all";
 
   populateSelectFilter(
     "strikeFilter",
@@ -997,11 +1183,12 @@ function populateOptionFilters() {
       .sort((a, b) => Number(a) - Number(b)),
     fmtNum
   );
-  state.filters.strike = document.getElementById("strikeFilter").value;
+  state.filters.strike = document.getElementById("strikeFilter")?.value || "all";
 }
 
 function populateSelectFilter(id, allLabel, current, values, formatter) {
   const select = document.getElementById(id);
+  if (!select) return;
   select.innerHTML = `<option value="all">${escapeHtml(allLabel)}</option>` +
     values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(formatter(value))}</option>`).join("");
   select.value = values.includes(current) ? current : "all";
@@ -1512,6 +1699,7 @@ function renderTrendLineFilters(chart) {
 function renderTrendChart(data) {
   const canvas = document.getElementById("trendChart");
   if (!canvas) return;
+  const palette = chartPalette();
   const items = data.items || [];
   const labels = items.map((item) => fmtDate(item.date));
   const datasets = buildTrendDatasets(items);
@@ -1532,7 +1720,7 @@ function renderTrendChart(data) {
       },
       plugins: {
         legend: {
-          labels: { color: "#94a3b8", font: { family: "Vazirmatn" }, usePointStyle: true },
+          labels: { color: palette.muted, font: { family: "Vazirmatn" }, usePointStyle: true },
           onClick(event, legendItem, legend) {
             const chart = legend.chart;
             const index = legendItem.datasetIndex;
@@ -1548,8 +1736,8 @@ function renderTrendChart(data) {
         },
       },
       scales: {
-        x: { ticks: { color: "#94a3b8", font: { family: "Vazirmatn" } }, grid: { color: "rgba(148,163,184,0.1)" } },
-        y: { ticks: { color: "#94a3b8" }, grid: { color: "rgba(148,163,184,0.12)" } },
+        x: { ticks: { color: palette.muted, font: { family: "Vazirmatn" } }, grid: { color: palette.grid } },
+        y: { ticks: { color: palette.muted }, grid: { color: palette.grid } },
       },
     },
   });
@@ -1811,7 +1999,10 @@ function bindAnalysisAudienceTabs() {
 function renderAnalysis() {
   const panel = document.getElementById("analysisPanel");
   const content = document.getElementById("analysisContent");
+  if (!panel || !content) return;
   if (state.view !== "underlying" || !state.analysisVisible) {
+    state.trendRequestId += 1;
+    destroyTrendChart();
     panel.classList.add("hidden");
     return;
   }
@@ -1821,10 +2012,10 @@ function renderAnalysis() {
   const underlyingName = state.underlying?.underlying_symbol || state.underlying?.underlying_short_name || "";
   const audience = activeAnalysisAudience();
   const audienceTitle = audience.title;
-  document.getElementById("analysisTitle").textContent = underlyingName
+  setText("analysisTitle", underlyingName
     ? `آنالیز ${audienceTitle} ${underlyingName}${state.selectedDate ? ` - ${fmtDate(state.selectedDate)}` : ""}`
-    : `آنالیز ${audienceTitle}`;
-  document.getElementById("analysisScope").textContent = audience.trendOnly ? "۷ روزه" : `${fmtNum(rows.length)} قرارداد ITM/OTM`;
+    : `آنالیز ${audienceTitle}`);
+  setText("analysisScope", audience.trendOnly ? "۷ روزه" : `${fmtNum(rows.length)} قرارداد ITM/OTM`);
   const analysisBody = audience.trendOnly
     ? renderTrendShell()
     : renderFourStepConclusion(rows) + renderAnalysisSide("call", "خرید", model) + renderAnalysisSide("put", "فروش", model);
@@ -1842,12 +2033,14 @@ function exportCsv() {
   }
   const config = VIEW_CONFIG[state.view];
   const keys = config.columns.map((c) => c.key);
-  const header = config.columns.map((c) => c.label).join(",");
+  const escapeCsv = (value) => {
+    const s = value == null ? "" : String(value);
+    return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+  };
+  const header = config.columns.map((c) => escapeCsv(c.label)).join(",");
   const rows = state.filtered.map((row) =>
     keys.map((k) => {
-      const v = row[k];
-      const s = v == null ? "" : String(v);
-      return s.includes(",") ? `"${s}"` : s;
+      return escapeCsv(row[k]);
     }).join(",")
   );
   const bom = "\uFEFF";
@@ -1861,10 +2054,14 @@ function exportCsv() {
 
 let refreshPollTimer = null;
 
+function setRefreshControlsLoading(on) {
+  document.getElementById("btnRefresh")?.classList.toggle("loading", on);
+  if (document.getElementById("btnRefresh")) document.getElementById("btnRefresh").disabled = on;
+  if (document.getElementById("btnEmptyRefresh")) document.getElementById("btnEmptyRefresh").disabled = on;
+}
+
 async function startRefresh() {
-  const btn = document.getElementById("btnRefresh");
-  btn.classList.add("loading");
-  btn.disabled = true;
+  setRefreshControlsLoading(true);
   setStatusText("به‌روزرسانی داده شروع شد...");
   try {
     const res = await api("/api/refresh", { method: "POST" });
@@ -1876,8 +2073,7 @@ async function startRefresh() {
     pollRefreshStatus();
   } catch (e) {
     showToast("خطا در شروع به‌روزرسانی", "error");
-    btn.classList.remove("loading");
-    btn.disabled = false;
+    setRefreshControlsLoading(false);
   }
 }
 
@@ -1894,9 +2090,7 @@ function pollRefreshStatus() {
         return;
       }
       clearInterval(refreshPollTimer);
-      const btn = document.getElementById("btnRefresh");
-      btn.classList.remove("loading");
-      btn.disabled = false;
+      setRefreshControlsLoading(false);
       if (st.last_error) {
         showToast(`خطا: ${st.last_error}`, "error");
         await loadSummary();
@@ -1907,12 +2101,15 @@ function pollRefreshStatus() {
       }
     } catch {
       clearInterval(refreshPollTimer);
+      setRefreshControlsLoading(false);
+      showToast("ارتباط با وضعیت به‌روزرسانی قطع شد", "error");
     }
   }, 3000);
 }
 
 function bindSearch() {
   const input = document.getElementById("searchInput");
+  if (!input) return;
   let debounce;
   input.addEventListener("input", () => {
     clearTimeout(debounce);
@@ -1921,11 +2118,15 @@ function bindSearch() {
 }
 
 function bindFilters() {
-  document.getElementById("dateFilter").addEventListener("change", async (event) => {
+  document.getElementById("dateFilter")?.addEventListener("change", async (event) => {
     state.selectedDate = event.target.value;
     state.selectedRowKey = null;
     state.selectedInsCode = null;
     state.underlying = null;
+    state.analysisVisible = false;
+    state.trendRequestId += 1;
+    destroyOiChart();
+    destroyTrendChart();
     syncDateToUrl();
     renderDetail(null);
     setStatusText("در حال دریافت داده تاریخ انتخابی...");
@@ -1935,22 +2136,18 @@ function bindFilters() {
       await reloadActiveData();
       await loadDates();
     } catch (e) {
-    showToast("خطا در تغییر تاریخ", "error");
-    state.items = [];
-    state.filtered = [];
-    renderTable();
-    setEmptyMessage("خطا در دریافت داده", "اتصال یا تاریخ انتخابی را بررسی کنید و دوباره تلاش کنید");
-    console.error(e);
-  } finally {
+      showToast("خطا در تغییر تاریخ", "error");
+      state.items = [];
+      state.filtered = [];
+      renderTable();
+      setEmptyMessage("خطا در دریافت داده", "اتصال یا تاریخ انتخابی را بررسی کنید و دوباره تلاش کنید");
+      console.error(e);
+    } finally {
       setLoading(false);
     }
   });
 
-  document.getElementById("btnAnalysis").addEventListener("click", () => {
-    state.analysisVisible = !state.analysisVisible;
-    renderTable();
-    renderAnalysis();
-  });
+  document.getElementById("btnAnalysis")?.addEventListener("click", toggleAnalysisMode);
 
   document.querySelectorAll("#typeFilter .segment").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1962,22 +2159,22 @@ function bindFilters() {
     });
   });
 
-  document.getElementById("expiryFilter").addEventListener("change", (event) => {
+  document.getElementById("expiryFilter")?.addEventListener("change", (event) => {
     state.filters.expiry = event.target.value;
     clearSelectionForFilterChange();
     applyFilterAndSort();
   });
-  document.getElementById("moneynessFilter").addEventListener("change", (event) => {
+  document.getElementById("moneynessFilter")?.addEventListener("change", (event) => {
     state.filters.moneyness = event.target.value;
     clearSelectionForFilterChange();
     applyFilterAndSort();
   });
-  document.getElementById("strikeFilter").addEventListener("change", (event) => {
+  document.getElementById("strikeFilter")?.addEventListener("change", (event) => {
     state.filters.strike = event.target.value;
     clearSelectionForFilterChange();
     applyFilterAndSort();
   });
-  document.getElementById("btnClearFilters").addEventListener("click", resetFilters);
+  document.getElementById("btnClearFilters")?.addEventListener("click", resetFilters);
 }
 
 async function init() {
@@ -1999,12 +2196,12 @@ async function init() {
   }
 }
 
-document.getElementById("btnRefresh").addEventListener("click", startRefresh);
-document.getElementById("btnEmptyRefresh").addEventListener("click", startRefresh);
+document.getElementById("btnRefresh")?.addEventListener("click", startRefresh);
+document.getElementById("btnEmptyRefresh")?.addEventListener("click", startRefresh);
 document.getElementById("btnExport")?.addEventListener("click", exportCsv);
-document.getElementById("btnBack").addEventListener("click", goBackToUnderlyings);
-document.getElementById("closeDetail").addEventListener("click", closeDetailSheet);
-document.getElementById("detailBackdrop").addEventListener("click", closeDetailSheet);
+document.getElementById("btnBack")?.addEventListener("click", goBackToUnderlyings);
+document.getElementById("closeDetail")?.addEventListener("click", closeDetailSheet);
+document.getElementById("detailBackdrop")?.addEventListener("click", closeDetailSheet);
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (!state.selectedRowKey) return;
@@ -2017,4 +2214,5 @@ window.addEventListener("resize", () => {
 
 bindSearch();
 bindFilters();
+bindThemeToggle();
 init();

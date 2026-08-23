@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from darush.backend.analysis.sentiment import compute_intrinsic_value, compute_moneyness
-from darush.backend.config import (
+from options.backend.analysis.sentiment import compute_intrinsic_value, compute_moneyness
+from options.backend.config import (
     TSETMC_PUBLIC_CLIENT_TYPE_WORKERS,
     TSETMC_REQUEST_TIMEOUT,
     TSETMC_TRUST_ENV_PROXY,

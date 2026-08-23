@@ -2,23 +2,23 @@
 
 import pytest
 
-from darush.backend.services.client_type import normalize_client_type
-from darush.backend.services.historical_options import (
+from options.backend.services.client_type import normalize_client_type
+from options.backend.services.historical_options import (
     _api_date,
     _jalali_expiry_to_gregorian_int,
     _normalize_historical_option,
     _parse_option_name,
 )
-from darush.backend.services.options import (
+from options.backend.services.options import (
     enrich_with_instrument,
     enrich_with_underlying,
     normalize_option,
 )
-from darush.backend.services.public_options import (
+from options.backend.services.public_options import (
     normalize_public_client_type,
     normalize_public_option_pairs,
 )
-from darush.backend.services.trades import normalize_trade
+from options.backend.services.trades import normalize_trade
 
 
 def test_normalize_option_preserves_all_numeric_fields() -> None:

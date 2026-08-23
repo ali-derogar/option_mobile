@@ -5,8 +5,8 @@ import math
 import pandas as pd
 import pytest
 
-from darush.backend.analysis import sentiment
-from darush.backend.analysis.sentiment import (
+from options.backend.analysis import sentiment
+from options.backend.analysis.sentiment import (
     compute_intrinsic_value,
     compute_moneyness,
 )

@@ -72,4 +72,4 @@ cmdline-tools/
 .github
 resources/
 .android-build.lock
-src/darush.*
+src/options.*

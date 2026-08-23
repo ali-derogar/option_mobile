@@ -16,8 +16,11 @@ cleanup_permissions() {
 }
 trap cleanup_permissions EXIT
 
+ANDROID_DIR="/app/build/options/android"
+GRADLE_DIR="${ANDROID_DIR}/gradle"
+
 stop_gradle_daemons() {
-    local gradle_dir="/app/build/darush/android/gradle"
+    local gradle_dir="${GRADLE_DIR}"
     if [[ -x "${gradle_dir}/gradlew" ]]; then
         (cd "${gradle_dir}" && ./gradlew --stop >/dev/null 2>&1) || true
     fi
@@ -26,14 +29,14 @@ stop_gradle_daemons() {
 
 clean_stale_gradle_locks() {
     stop_gradle_daemons
-    rm -rf /app/build/darush/android/gradle/.gradle 2>/dev/null || true
+    rm -rf "${GRADLE_DIR}/.gradle" 2>/dev/null || true
     if [[ -d "${GRADLE_USER_HOME}/caches" ]]; then
         find "${GRADLE_USER_HOME}/caches" -type f -name "*.lock" -delete 2>/dev/null || true
     fi
 }
 
 patch_gradle_properties() {
-    local props="/app/build/darush/android/gradle/gradle.properties"
+    local props="${GRADLE_DIR}/gradle.properties"
     [[ -f "${props}" ]] || return 0
     grep -q '^org\.gradle\.daemon=false$' "${props}" || printf '\norg.gradle.daemon=false\n' >> "${props}"
     grep -q '^org\.gradle\.vfs\.watch=false$' "${props}" || printf 'org.gradle.vfs.watch=false\n' >> "${props}"
@@ -41,7 +44,7 @@ patch_gradle_properties() {
 }
 
 patch_pip_options() {
-    local opts="/app/build/darush/android/gradle/app/pip-options.txt"
+    local opts="${GRADLE_DIR}/app/pip-options.txt"
     local tmp
     [[ -f "${opts}" ]] || return 0
     tmp="$(mktemp)"
@@ -71,8 +74,11 @@ if [[ ! -f /root/.android/debug.keystore ]]; then
     exit 1
 fi
 
-ANDROID_DIR="/app/build/darush/android"
-if [[ ! -d "${ANDROID_DIR}" ]]; then
+if [[ ! -f "${GRADLE_DIR}/briefcase.toml" ]]; then
+    if [[ -d "${ANDROID_DIR}" ]]; then
+        echo "Android Gradle project is incomplete; recreating it..."
+        rm -rf "${ANDROID_DIR}"
+    fi
     echo "Creating Android Gradle project..."
     briefcase create android --no-input
 fi
@@ -80,7 +86,7 @@ fi
 clean_stale_gradle_locks
 
 # Chaquopy / SDK compatibility patches
-rm -rf /app/build/darush/android/gradle/app/src/main/res/values-v35
+rm -rf "${GRADLE_DIR}/app/src/main/res/values-v35"
 
 find /app/build -type f -name "*.gradle" | while read -r f; do
     sed -i -E \
@@ -92,7 +98,7 @@ find /app/build -type f -name "*.gradle" | while read -r f; do
         "$f"
 done
 
-find /app/build/darush/android -type f -name AndroidManifest.xml | while read -r manifest; do
+find "${ANDROID_DIR}" -type f -name AndroidManifest.xml | while read -r manifest; do
     if ! grep -q 'usesCleartextTraffic' "$manifest"; then
         sed -i 's|<application |<application android:usesCleartextTraffic="true" |' "$manifest"
     fi
@@ -104,7 +110,7 @@ patch_gradle_properties
 patch_pip_options
 clean_stale_gradle_locks
 
-find /app/build/darush/android -type f -name AndroidManifest.xml | while read -r manifest; do
+find "${ANDROID_DIR}" -type f -name AndroidManifest.xml | while read -r manifest; do
     if ! grep -q 'usesCleartextTraffic' "$manifest"; then
         sed -i 's|<application |<application android:usesCleartextTraffic="true" |' "$manifest"
     fi
@@ -113,11 +119,11 @@ done
 echo "Building debug APK..."
 briefcase build android --no-input
 
-APK="/app/build/darush/android/gradle/app/build/outputs/apk/debug/app-debug.apk"
+APK="${GRADLE_DIR}/app/build/outputs/apk/debug/app-debug.apk"
 if [[ ! -f "${APK}" ]]; then
     echo "ERROR: APK not found at ${APK}" >&2
     exit 1
 fi
 
-cp "${APK}" /output/app-debug.apk
-echo "APK copied to /output/app-debug.apk"
+cp "${APK}" /output/tiger-options.apk
+echo "APK copied to /output/tiger-options.apk"

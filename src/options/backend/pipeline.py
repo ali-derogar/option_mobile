@@ -8,26 +8,26 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
-from darush.backend.client import TsetmcClient, TsetmcAPIError
-from darush.backend.config import TSETMC_FLOW, validate_credentials
-from darush.backend.services.client_type import (
+from options.backend.client import TsetmcClient, TsetmcAPIError
+from options.backend.config import TSETMC_FLOW, validate_credentials
+from options.backend.services.client_type import (
     fetch_client_type_by_ins,
     normalize_client_type,
 )
-from darush.backend.services.instruments import fetch_instruments, index_by_ins_code
-from darush.backend.services.options import (
+from options.backend.services.instruments import fetch_instruments, index_by_ins_code
+from options.backend.services.options import (
     enrich_with_underlying,
     enrich_with_instrument,
     fetch_all_options,
     normalize_option,
 )
-from darush.backend.services.public_options import (
+from options.backend.services.public_options import (
     fetch_public_client_type_latest_many,
     fetch_public_option_market_watch,
     normalize_public_option_pairs,
 )
-from darush.backend.services.trades import fetch_trade_last_day, filter_for_ins_codes, normalize_trade
-from darush.backend.storage import Storage
+from options.backend.services.trades import fetch_trade_last_day, filter_for_ins_codes, normalize_trade
+from options.backend.storage import Storage
 
 logging.basicConfig(
     level=logging.INFO,

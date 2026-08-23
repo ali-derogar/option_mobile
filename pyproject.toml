@@ -6,7 +6,7 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.briefcase]
-project_name = "Darush"
+project_name = "Options"
 bundle = "com.tsetmc"
 version = "1.0.0"
 author = "darklord"
@@ -15,12 +15,12 @@ url = "https://tsetmc.com"
 license = "LicenseRef-Proprietary"
 license-files = []
 
-[tool.briefcase.app.darush]
+[tool.briefcase.app.options]
 formal_name = "options"
 description = "TSETMC options dashboard"
 long_description = "Persian dashboard for TSETMC options data, packaged with BeeWare."
-sources = ["src/darush"]
-icon = "resources/dailyplanner"
+sources = ["src/options"]
+icon = "resources/options"
 requires = [
     "toga-core>=0.4.0",
     "requests>=2.31.0",
@@ -47,29 +47,29 @@ requirement_installer_args = [
 ]
 test_requires = ["pytest>=7.0"]
 
-[tool.briefcase.app.darush.macOS]
+[tool.briefcase.app.options.macOS]
 requires = [
     "toga-cocoa>=0.4.0",
     "std-nslog~=1.0.0",
 ]
 
-[tool.briefcase.app.darush.linux]
+[tool.briefcase.app.options.linux]
 requires = [
     "toga-gtk>=0.4.0",
 ]
 
-[tool.briefcase.app.darush.windows]
+[tool.briefcase.app.options.windows]
 requires = [
     "toga-winforms>=0.4.0",
 ]
 
-[tool.briefcase.app.darush.iOS]
+[tool.briefcase.app.options.iOS]
 requires = [
     "toga-iOS>=0.4.0",
     "std-nslog~=1.0.0",
 ]
 
-[tool.briefcase.app.darush.android]
+[tool.briefcase.app.options.android]
 requires = [
     "toga-android>=0.4.0",
 ]

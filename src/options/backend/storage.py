@@ -25,7 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from darush.backend.config import DATA_DIR, DATABASE_PATH
+from options.backend.config import DATA_DIR, DATABASE_PATH
 
 logger = logging.getLogger(__name__)
 MARKET_TZ = ZoneInfo("Asia/Tehran")

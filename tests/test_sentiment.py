@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from darush.backend.analysis.sentiment import (
+from options.backend.analysis.sentiment import (
     analyze_options_sentiment,
     compute_moneyness,
     detect_option_type,

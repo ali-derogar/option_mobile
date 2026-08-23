@@ -3,9 +3,28 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#0b1120" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2338bdf8'/><text x='16' y='22' text-anchor='middle' fill='%230b1120' font-size='14' font-weight='bold'>OP</text></svg>" />
-  <title>options</title>
+  <meta name="theme-color" content="#f7f8fb" id="themeColorMeta" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230f8b8d'/><text x='16' y='22' text-anchor='middle' fill='white' font-size='14' font-weight='bold'>O</text></svg>" />
+  <title>options | اختیار معامله</title>
+  <script>
+    (() => {
+      try {
+        const requested = new URLSearchParams(window.location.search).get("theme");
+        const requestedTheme = requested === "dark" || requested === "light" ? requested : "";
+        let saved = "";
+        try {
+          saved = requestedTheme || localStorage.getItem("options-theme") || "";
+          if (requestedTheme) localStorage.setItem("options-theme", requestedTheme);
+        } catch {
+          saved = requestedTheme;
+        }
+        const systemDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.dataset.theme = saved || (systemDark ? "dark" : "light");
+      } catch {
+        document.documentElement.dataset.theme = "light";
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="/static/css/app.css" />
   <script src="/static/vendor/chart.umd.min.js" defer></script>
   <script src="/static/js/app.js" defer></script>
@@ -15,11 +34,14 @@
   <div class="app">
     <header class="header">
       <div class="header-brand">
-        <div class="logo">OP</div>
+        <div class="logo">O</div>
         <div>
-          <h1>داشبورد اختیار معامله</h1>
-          <p class="subtitle">داده رسمی TSETMC · api.tsetmc.com</p>
+          <h1>اختیار معامله</h1>
+          <p class="subtitle">داده رسمی TSETMC</p>
         </div>
+        <button type="button" class="theme-toggle" id="themeToggle" aria-label="تغییر تم" aria-pressed="false">
+          <span class="theme-toggle-icon" aria-hidden="true"></span>
+        </button>
       </div>
       <div class="header-actions">
         <label class="date-filter">
@@ -58,6 +80,8 @@
       </article>
     </section>
 
+    <section class="mobile-context-card hidden" id="mobileContextCard" aria-live="polite"></section>
+
     <section class="toolbar">
       <div class="search-wrap">
         <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -89,8 +113,6 @@
       </div>
       <div class="active-filters hidden" id="activeFilters" aria-live="polite"></div>
     </section>
-
-    <section class="mobile-context-card hidden" id="mobileContextCard" aria-live="polite"></section>
 
     <section class="panel analysis-panel hidden" id="analysisPanel">
       <div class="panel-header">

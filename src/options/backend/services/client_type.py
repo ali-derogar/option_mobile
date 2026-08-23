@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from darush.backend.client import TsetmcClient
+from options.backend.client import TsetmcClient
 
 
 def fetch_client_type_all(client: TsetmcClient) -> List[Dict[str, Any]]:

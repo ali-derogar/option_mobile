@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from darush.backend.api.data import (
+from options.backend.api.data import (
     _code_to_string,
     _serialize_value,
     get_sentiment,

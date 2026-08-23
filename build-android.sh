@@ -6,9 +6,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-IMAGE="darush-android"
+IMAGE="options-android"
 OUTPUT_DIR="${ROOT}/output"
-OUTPUT_APK="${OUTPUT_DIR}/app-debug.apk"
+OUTPUT_APK="${OUTPUT_DIR}/tiger-options.apk"
 KEYSTORE_DIR="${ROOT}/android-keystore"
 GRADLE_CACHE="${ROOT}/.docker-gradle"
 LOCK_FILE="${ROOT}/.android-build.lock"
@@ -37,7 +37,7 @@ if [[ -n "${DOCKER_ALL_PROXY}" ]]; then
     DOCKER_ALL_PROXY="$(docker_proxy_url "${DOCKER_ALL_PROXY}")"
 fi
 
-echo "=== Building Darush Android APK via Docker ==="
+echo "=== Building Options Android APK via Docker ==="
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "ERROR: docker is not installed or is not available in PATH" >&2

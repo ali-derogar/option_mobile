@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from darush.backend.analysis.sentiment import analyze_options_sentiment
-from darush.backend.storage import Storage
+from options.backend.analysis.sentiment import analyze_options_sentiment
+from options.backend.storage import Storage
 
 ID_FIELDS = {"ins_code", "underlying_ins_code", "underlying_key"}
 

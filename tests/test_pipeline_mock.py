@@ -4,9 +4,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
-from darush.backend.client import TsetmcAPIError
-from darush.backend.pipeline import run_pipeline
-from darush.backend.storage import Storage
+from options.backend.client import TsetmcAPIError
+from options.backend.pipeline import run_pipeline
+from options.backend.storage import Storage
 
 
 def test_pipeline_with_mock_api() -> None:
@@ -94,9 +94,9 @@ def test_pipeline_with_mock_api() -> None:
             db_path=Path(tmp) / "test_options.db",
             export_dir=Path(tmp) / "exports",
         )
-        with patch("darush.backend.pipeline.validate_credentials"), patch(
-            "darush.backend.pipeline.TsetmcClient", return_value=client
-        ), patch("darush.backend.pipeline.Storage", return_value=storage):
+        with patch("options.backend.pipeline.validate_credentials"), patch(
+            "options.backend.pipeline.TsetmcClient", return_value=client
+        ), patch("options.backend.pipeline.Storage", return_value=storage):
             result = run_pipeline(limit=None, skip_client_type=False, delay_between_calls=0)
 
     assert result["options"] == 1
@@ -206,9 +206,9 @@ def test_pipeline_limit_and_skip_client_type_preserve_stored_numbers() -> None:
             db_path=Path(tmp) / "test_options.db",
             export_dir=Path(tmp) / "exports",
         )
-        with patch("darush.backend.pipeline.validate_credentials"), patch(
-            "darush.backend.pipeline.TsetmcClient", return_value=client
-        ), patch("darush.backend.pipeline.Storage", return_value=storage):
+        with patch("options.backend.pipeline.validate_credentials"), patch(
+            "options.backend.pipeline.TsetmcClient", return_value=client
+        ), patch("options.backend.pipeline.Storage", return_value=storage):
             result = run_pipeline(limit=1, skip_client_type=True, delay_between_calls=0)
 
         contracts = storage.get_contracts_df()
@@ -281,13 +281,13 @@ def test_pipeline_falls_back_to_public_cdn_when_login_fails() -> None:
             db_path=Path(tmp) / "test_options.db",
             export_dir=Path(tmp) / "exports",
         )
-        with patch("darush.backend.pipeline.validate_credentials"), patch(
-            "darush.backend.pipeline.TsetmcClient", return_value=client
-        ), patch("darush.backend.pipeline.Storage", return_value=storage), patch(
-            "darush.backend.pipeline.fetch_public_option_market_watch",
+        with patch("options.backend.pipeline.validate_credentials"), patch(
+            "options.backend.pipeline.TsetmcClient", return_value=client
+        ), patch("options.backend.pipeline.Storage", return_value=storage), patch(
+            "options.backend.pipeline.fetch_public_option_market_watch",
             return_value=public_rows,
         ), patch(
-            "darush.backend.pipeline.fetch_public_client_type_latest_many",
+            "options.backend.pipeline.fetch_public_client_type_latest_many",
             return_value=public_client_type,
         ):
             result = run_pipeline(
@@ -319,13 +319,13 @@ def test_pipeline_public_fallback_skip_client_type_does_not_fetch_client_type() 
             db_path=Path(tmp) / "test_options.db",
             export_dir=Path(tmp) / "exports",
         )
-        with patch("darush.backend.pipeline.validate_credentials"), patch(
-            "darush.backend.pipeline.TsetmcClient", return_value=client
-        ), patch("darush.backend.pipeline.Storage", return_value=storage), patch(
-            "darush.backend.pipeline.fetch_public_option_market_watch",
+        with patch("options.backend.pipeline.validate_credentials"), patch(
+            "options.backend.pipeline.TsetmcClient", return_value=client
+        ), patch("options.backend.pipeline.Storage", return_value=storage), patch(
+            "options.backend.pipeline.fetch_public_option_market_watch",
             return_value=[],
         ), patch(
-            "darush.backend.pipeline.fetch_public_client_type_latest_many"
+            "options.backend.pipeline.fetch_public_client_type_latest_many"
         ) as fetch_client_type:
             result = run_pipeline(skip_client_type=True, delay_between_calls=0)
 

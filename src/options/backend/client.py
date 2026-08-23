@@ -9,8 +9,8 @@ from typing import Any, Optional
 
 import requests
 
-from darush.backend.api_errors import get_data, is_success, parse_api_error
-from darush.backend.config import (
+from options.backend.api_errors import get_data, is_success, parse_api_error
+from options.backend.config import (
     TSETMC_BASE_URL,
     TSETMC_LOGIN_TIMEOUT,
     TSETMC_PASSWORD,
@@ -18,7 +18,7 @@ from darush.backend.config import (
     TSETMC_TRUST_ENV_PROXY,
     TSETMC_USERNAME,
 )
-from darush.backend.schema import ENDPOINTS, ERROR_BAD_CREDENTIALS, ERROR_CHANGE_PASSWORD, ERROR_RELOGIN
+from options.backend.schema import ENDPOINTS, ERROR_BAD_CREDENTIALS, ERROR_CHANGE_PASSWORD, ERROR_RELOGIN
 
 logger = logging.getLogger(__name__)
 

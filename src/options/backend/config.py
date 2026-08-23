@@ -8,10 +8,11 @@ from dotenv import load_dotenv
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = PACKAGE_ROOT
-RUNTIME_ROOT = Path(os.getenv("DARUSH_RUNTIME_ROOT", Path.home() / ".darush"))
-SEED_DATABASE_PATH = PACKAGE_ROOT / "resources" / "data" / "tsetmc_options.db"
 
 load_dotenv()
+
+RUNTIME_ROOT = Path(os.getenv("OPTIONS_RUNTIME_ROOT", Path.home() / ".options"))
+SEED_DATABASE_PATH = PACKAGE_ROOT / "resources" / "data" / "tsetmc_options.db"
 
 DATA_DIR = Path(os.getenv("DATA_DIR", RUNTIME_ROOT / "data" / "exports"))
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", RUNTIME_ROOT / "data" / "tsetmc_options.db"))

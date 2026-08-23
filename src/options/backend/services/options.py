@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from darush.backend.client import TsetmcClient
-from darush.backend.analysis.sentiment import compute_intrinsic_value, compute_moneyness, detect_option_type
+from options.backend.client import TsetmcClient
+from options.backend.analysis.sentiment import compute_intrinsic_value, compute_moneyness, detect_option_type
 
 
 def fetch_all_options(client: TsetmcClient) -> List[Dict[str, Any]]:

@@ -1,9 +1,9 @@
 #!/bin/bash
-# ── Setup script for Darush BeeWare project ───────────────────────────────
+# ── Setup script for Options BeeWare project ───────────────────────────────
 set -e
 cd "$(dirname "$0")"
 
-echo "=== Darush — BeeWare Setup ==="
+echo "=== Options — BeeWare Setup ==="
 
 # ── Step 1: system dependencies ───────────────────────────────────────────
 echo ""

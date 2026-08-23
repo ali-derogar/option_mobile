@@ -65,8 +65,9 @@ RUN python3 -m pip install \
     -i https://mirrors.aliyun.com/pypi/simple/ \
     --trusted-host mirrors.aliyun.com \
     briefcase==0.4.2 \
-    fastapi \
-    uvicorn \
+    fastapi==0.99.1 \
+    pydantic==1.10.9 \
+    uvicorn>=0.32.0 \
     requests \
     pandas \
     python-dotenv \
