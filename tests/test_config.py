@@ -66,3 +66,39 @@ print(json.dumps({
         "username": "env-user",
         "password": "env-pass",
     }
+
+
+def test_config_clamps_resource_related_env_values(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    env["OPTIONS_RUNTIME_ROOT"] = str(tmp_path / "runtime")
+    env["TSETMC_PUBLIC_CLIENT_TYPE_WORKERS"] = "999"
+    env["TSETMC_LOGIN_TIMEOUT"] = "0.1"
+    env["TSETMC_REQUEST_TIMEOUT"] = "999"
+    env["TSETMC_FLOW"] = "-5"
+
+    script = """
+import json
+from options.backend import config
+print(json.dumps({
+    "workers": config.TSETMC_PUBLIC_CLIENT_TYPE_WORKERS,
+    "login_timeout": config.TSETMC_LOGIN_TIMEOUT,
+    "request_timeout": config.TSETMC_REQUEST_TIMEOUT,
+    "flow": config.TSETMC_FLOW,
+}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "workers": 16,
+        "login_timeout": 3,
+        "request_timeout": 120,
+        "flow": 1,
+    }

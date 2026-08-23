@@ -1,4 +1,4 @@
-"""FastAPI application for TSETMC options web UI."""
+"""Starlette application for TSETMC options web UI."""
 
 from __future__ import annotations
 
@@ -12,9 +12,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
+from starlette.applications import Starlette
+from starlette.background import BackgroundTasks
+from starlette.exceptions import HTTPException
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from options.backend.api.data import (
     _df_to_records,
@@ -41,14 +47,18 @@ LOCAL_API_COOKIE = "options_api_token"
 LOCAL_API_TOKEN = secrets.token_urlsafe(32)
 MAX_HISTORICAL_LOOKBACK_DAYS = 370
 REFRESH_COOLDOWN_SECONDS = 60
-
-app = FastAPI(
-    title="TSETMC Options",
-    version="1.0.0",
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None,
+DASHBOARD_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "connect-src 'self'; "
+    "base-uri 'none'; "
+    "frame-ancestors 'none'; "
+    "form-action 'none'"
 )
+
 storage = Storage()
 
 _refresh_lock = threading.Lock()
@@ -65,17 +75,50 @@ _refresh_status: Dict[str, Any] = {
 _last_refresh_request_at = 0.0
 
 
-@app.middleware("http")
-async def require_local_api_token(request: Request, call_next):
-    if request.url.path.startswith("/api/") and request.headers.get(LOCAL_API_HEADER) != LOCAL_API_TOKEN:
-        return JSONResponse({"detail": "forbidden"}, status_code=403)
-    return await call_next(request)
+class LocalApiTokenMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith("/api/") and request.headers.get(LOCAL_API_HEADER) != LOCAL_API_TOKEN:
+            return JSONResponse({"detail": "forbidden"}, status_code=403)
+        return await call_next(request)
 
 
-@app.exception_handler(Exception)
 async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled request error for %s", request.url.path)
     return JSONResponse({"detail": "internal server error"}, status_code=500)
+
+
+async def handle_http_error(request: Request, exc: HTTPException) -> JSONResponse:
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+
+def _json(payload: Dict[str, Any], status_code: int = 200, background: Optional[BackgroundTasks] = None) -> JSONResponse:
+    return JSONResponse(payload, status_code=status_code, background=background)
+
+
+def _query_value(request: Request, name: str) -> Optional[str]:
+    value = request.query_params.get(name)
+    return value if value not in (None, "") else None
+
+
+def _query_int(
+    request: Request,
+    name: str,
+    default: Optional[int] = None,
+    min_value: Optional[int] = None,
+    max_value: Optional[int] = None,
+) -> Optional[int]:
+    raw = _query_value(request, name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise HTTPException(400, f"invalid {name}") from exc
+    if min_value is not None and value < min_value:
+        raise HTTPException(400, f"{name} is below minimum")
+    if max_value is not None and value > max_value:
+        raise HTTPException(400, f"{name} is above maximum")
+    return value
 
 
 def _utc_now_iso() -> str:
@@ -85,6 +128,23 @@ def _utc_now_iso() -> str:
 def _update_refresh_status(**payload: Any) -> None:
     with _refresh_lock:
         _refresh_status.update(payload)
+
+
+def _public_refresh_result(result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(result, dict):
+        return None
+    return {
+        key: result.get(key)
+        for key in ("options", "client_type_stats", "money_flow", "open_interest")
+        if key in result
+    }
+
+
+def _public_refresh_status() -> Dict[str, Any]:
+    with _refresh_lock:
+        status = dict(_refresh_status)
+    status["last_result"] = _public_refresh_result(status.get("last_result"))
+    return status
 
 
 def _run_refresh(limit: Optional[int] = None) -> None:
@@ -227,57 +287,47 @@ def _underlying_known_locally(underlying_key: str) -> bool:
     return storage.has_underlying_snapshot_key(underlying_key)
 
 
-@app.get("/api/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok"}
+async def health(request: Request) -> JSONResponse:
+    return _json({"status": "ok"})
 
 
-@app.get("/api/summary")
-def summary(
-    date: Optional[str] = Query(None, description="Snapshot date in YYYY-MM-DD"),
-) -> Dict[str, Any]:
+async def summary(request: Request) -> JSONResponse:
+    date = _query_value(request, "date")
     _ensure_snapshot_date(date)
     payload = get_summary(storage, snapshot_date=date)
     payload["date"] = date or storage.get_latest_snapshot_date()
-    return payload
+    return _json(payload)
 
 
-@app.get("/api/dates")
-def dates() -> Dict[str, Any]:
-    return get_available_dates(storage)
+async def dates(request: Request) -> JSONResponse:
+    return _json(get_available_dates(storage))
 
 
-@app.get("/api/contracts")
-def contracts(
-    q: Optional[str] = Query(None, description="Search symbol or name"),
-    date: Optional[str] = Query(None, description="Snapshot date in YYYY-MM-DD"),
-) -> Dict[str, Any]:
+async def contracts(request: Request) -> JSONResponse:
+    q = _query_value(request, "q")
+    date = _query_value(request, "date")
     _ensure_snapshot_date(date)
     merged = get_merged_contracts(storage, snapshot_date=date)
     if merged.empty:
-        return {"items": [], "total": 0}
+        return _json({"items": [], "total": 0})
     if q:
         merged = merged[_text_mask(merged, ("symbol", "short_name", "long_name"), q)]
-    return {"items": _df_to_records(merged), "total": len(merged)}
+    return _json({"items": _df_to_records(merged), "total": len(merged)})
 
 
-@app.get("/api/underlyings")
-def underlyings(
-    q: Optional[str] = Query(None, description="Search underlying symbol or name"),
-    date: Optional[str] = Query(None, description="Snapshot date in YYYY-MM-DD"),
-) -> Dict[str, Any]:
+async def underlyings(request: Request) -> JSONResponse:
+    q = _query_value(request, "q")
+    date = _query_value(request, "date")
     _ensure_snapshot_date(date)
     payload = get_underlyings(storage, q=q, snapshot_date=date)
     payload["date"] = date or storage.get_latest_snapshot_date()
-    return payload
+    return _json(payload)
 
 
-@app.get("/api/underlyings/{underlying_key}/contracts")
-def underlying_contracts(
-    underlying_key: str,
-    q: Optional[str] = Query(None, description="Search contract symbol or name"),
-    date: Optional[str] = Query(None, description="Snapshot date in YYYY-MM-DD"),
-) -> Dict[str, Any]:
+async def underlying_contracts(request: Request) -> JSONResponse:
+    underlying_key = request.path_params["underlying_key"]
+    q = _query_value(request, "q")
+    date = _query_value(request, "date")
     _ensure_snapshot_date(date)
     payload = get_underlying_contracts(
         storage,
@@ -286,20 +336,19 @@ def underlying_contracts(
         snapshot_date=date,
     )
     payload["date"] = date or storage.get_latest_snapshot_date()
-    return payload
+    return _json(payload)
 
 
-@app.get("/api/underlyings/{underlying_key}/trend")
-def underlying_trend(
-    underlying_key: str,
-    date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
-    days: int = Query(7, ge=2, le=10, description="Trading days to include"),
-) -> Dict[str, Any]:
+async def underlying_trend(request: Request) -> JSONResponse:
+    underlying_key = request.path_params["underlying_key"]
+    date = _query_value(request, "date")
+    days = _query_int(request, "days", default=7, min_value=2, max_value=10)
+    assert days is not None
     end_date = date or storage.get_latest_snapshot_date()
     if not end_date:
-        return {"items": [], "total": 0, "summary": {}, "dates": [], "sources": {}, "skipped": {}}
+        return _json({"items": [], "total": 0, "summary": {}, "dates": [], "sources": {}, "skipped": {}})
     if not _underlying_known_locally(underlying_key):
-        return {
+        return _json({
             "items": [],
             "total": 0,
             "summary": {},
@@ -307,55 +356,48 @@ def underlying_trend(
             "sources": {},
             "skipped": {end_date: "unknown underlying"},
             "date": end_date,
-        }
+        })
     dates, sources, skipped = _collect_trend_dates(underlying_key, end_date, days)
     payload = get_underlying_trend(storage, underlying_key=underlying_key, dates=dates)
     payload["dates"] = dates
     payload["sources"] = sources
     payload["skipped"] = skipped
     payload["date"] = end_date
-    return payload
+    return _json(payload)
 
 
-@app.get("/api/sentiment")
-def sentiment(
-    q: Optional[str] = Query(None, description="Search underlying symbol or sentiment"),
-    date: Optional[str] = Query(None, description="Snapshot date in YYYY-MM-DD"),
-) -> Dict[str, Any]:
+async def sentiment(request: Request) -> JSONResponse:
+    q = _query_value(request, "q")
+    date = _query_value(request, "date")
     _ensure_snapshot_date(date)
     payload = get_sentiment(storage, q=q, snapshot_date=date)
     payload["date"] = date or storage.get_latest_snapshot_date()
-    return payload
+    return _json(payload)
 
 
-@app.get("/api/open-interest/{ins_code}")
-def open_interest_history(
-    ins_code: str,
-    date: Optional[str] = Query(None, description="Include history through YYYY-MM-DD"),
-) -> Dict[str, Any]:
+async def open_interest_history(request: Request) -> JSONResponse:
+    ins_code = request.path_params["ins_code"]
+    date = _query_value(request, "date")
     _parse_snapshot_date(date)
     try:
         exact_ins_code = int(ins_code)
     except ValueError as exc:
         raise HTTPException(400, "invalid ins_code") from exc
     df = storage.get_open_interest_history_df(ins_code=exact_ins_code, through_date=date)
-    return {"ins_code": str(exact_ins_code), "date": date, "history": _df_to_records(df)}
+    return _json({"ins_code": str(exact_ins_code), "date": date, "history": _df_to_records(df)})
 
 
-@app.get("/api/refresh/status")
-def refresh_status() -> Dict[str, Any]:
-    return dict(_refresh_status)
+async def refresh_status(request: Request) -> JSONResponse:
+    return _json(_public_refresh_status())
 
 
-@app.post("/api/refresh")
-def refresh(
-    background_tasks: BackgroundTasks,
-    limit: Optional[int] = Query(None, ge=1, le=5000),
-) -> Dict[str, Any]:
+async def refresh(request: Request) -> JSONResponse:
+    limit = _query_int(request, "limit", min_value=1, max_value=5000)
     if not _begin_refresh():
-        return {"status": "already_running"}
+        return _json({"status": "already_running"})
+    background_tasks = BackgroundTasks()
     background_tasks.add_task(_run_refresh, limit)
-    return {"status": "started"}
+    return _json({"status": "started"}, background=background_tasks)
 
 
 def _dashboard_response() -> Response:
@@ -371,18 +413,44 @@ def _dashboard_response() -> Response:
         httponly=False,
         samesite="strict",
     )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = DASHBOARD_CSP
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
     return response
 
 
-@app.get("/")
 async def index() -> Response:
     return _dashboard_response()
 
 
-@app.get("/underlying/{underlying_key}")
-async def underlying_page(underlying_key: str) -> Response:
+async def underlying_page(request: Request) -> Response:
     return _dashboard_response()
 
 
+routes = [
+    Route("/api/health", health, methods=["GET"]),
+    Route("/api/summary", summary, methods=["GET"]),
+    Route("/api/dates", dates, methods=["GET"]),
+    Route("/api/contracts", contracts, methods=["GET"]),
+    Route("/api/underlyings", underlyings, methods=["GET"]),
+    Route("/api/underlyings/{underlying_key}/contracts", underlying_contracts, methods=["GET"]),
+    Route("/api/underlyings/{underlying_key}/trend", underlying_trend, methods=["GET"]),
+    Route("/api/sentiment", sentiment, methods=["GET"]),
+    Route("/api/open-interest/{ins_code}", open_interest_history, methods=["GET"]),
+    Route("/api/refresh/status", refresh_status, methods=["GET"]),
+    Route("/api/refresh", refresh, methods=["POST"]),
+    Route("/", index, methods=["GET"]),
+    Route("/underlying/{underlying_key}", underlying_page, methods=["GET"]),
+]
 if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    routes.append(Mount("/static", app=StaticFiles(directory=STATIC_DIR), name="static"))
+
+app = Starlette(
+    routes=routes,
+    middleware=[Middleware(LocalApiTokenMiddleware)],
+    exception_handlers={
+        HTTPException: handle_http_error,
+        Exception: handle_unexpected_error,
+    },
+)

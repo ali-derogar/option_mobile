@@ -14,11 +14,18 @@ OUTPUT_DIR="${ROOT}/output"
 KEYSTORE_DIR="${ROOT}/android-keystore"
 KEYSTORE_FILE="${KEYSTORE_DIR}/release.jks"
 PROPERTIES_FILE="${KEYSTORE_DIR}/release.properties"
-DOCKER_ENV_FILE="${KEYSTORE_DIR}/release.docker.env"
+DOCKER_ENV_FILE=""
 GRADLE_CACHE="${ROOT}/.docker-gradle"
 LOCK_FILE="${ROOT}/.android-release-build.lock"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
+
+cleanup() {
+    if [[ -n "${DOCKER_ENV_FILE}" && -f "${DOCKER_ENV_FILE}" ]]; then
+        rm -f "${DOCKER_ENV_FILE}"
+    fi
+}
+trap cleanup EXIT
 
 docker_proxy_url() {
     local value="$1"
@@ -50,6 +57,7 @@ write_release_properties() {
 }
 
 write_docker_env_file() {
+    DOCKER_ENV_FILE="$(mktemp "${TMPDIR:-/tmp}/options-release-env.XXXXXX")"
     {
         printf 'RELEASE_KEYSTORE=%s\n' "${RELEASE_KEYSTORE}"
         printf 'RELEASE_KEY_ALIAS=%s\n' "${RELEASE_KEY_ALIAS}"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -472,17 +472,32 @@ class Storage:
 
     def get_latest_client_type_df(self, snapshot_date: Optional[str] = None) -> pd.DataFrame:
         with self.session() as session:
-            rows = session.scalars(select(ClientTypeStats)).all()
+            stmt = select(ClientTypeStats)
+            if snapshot_date:
+                api_date = int(snapshot_date.replace("-", ""))
+                rec_date_count = session.scalar(
+                    select(func.count(ClientTypeStats.id)).where(
+                        ClientTypeStats.rec_date == api_date
+                    )
+                )
+                if rec_date_count:
+                    stmt = stmt.where(ClientTypeStats.rec_date == api_date)
+                else:
+                    start = datetime.combine(
+                        datetime.strptime(snapshot_date, "%Y-%m-%d").date(),
+                        time.min,
+                        tzinfo=MARKET_TZ,
+                    ).astimezone(timezone.utc)
+                    start = start.replace(tzinfo=None)
+                    end = start + timedelta(days=1)
+                    stmt = stmt.where(
+                        ClientTypeStats.fetched_at >= start,
+                        ClientTypeStats.fetched_at < end,
+                    )
+            rows = session.scalars(stmt.order_by(ClientTypeStats.ins_code)).all()
             if not rows:
                 return pd.DataFrame()
             df = pd.DataFrame([self._client_type_to_dict(r) for r in rows])
-            if snapshot_date:
-                api_date = int(snapshot_date.replace("-", ""))
-                by_rec_date = df[df.get("rec_date").fillna(0).astype(int) == api_date] if "rec_date" in df.columns else pd.DataFrame()
-                if not by_rec_date.empty:
-                    df = by_rec_date
-                elif "fetched_at" in df.columns:
-                    df = df[df["fetched_at"].map(self.snapshot_date_for) == snapshot_date]
             if "fetched_at" in df.columns:
                 latest = df.groupby("ins_code")["fetched_at"].transform("max")
                 df = df[df["fetched_at"] == latest]
@@ -494,10 +509,26 @@ class Storage:
         through_date: Optional[str] = None,
     ) -> pd.DataFrame:
         with self.session() as session:
-            rows = session.scalars(select(OpenInterestSnapshot)).all()
+            stmt = select(OpenInterestSnapshot)
+            if ins_code is not None:
+                stmt = stmt.where(OpenInterestSnapshot.ins_code == ins_code)
+            if through_date:
+                through_end = (
+                    datetime.combine(
+                        datetime.strptime(through_date, "%Y-%m-%d").date(),
+                        time.max,
+                        tzinfo=MARKET_TZ,
+                    )
+                    .astimezone(timezone.utc)
+                    .replace(tzinfo=None)
+                )
+                stmt = stmt.where(OpenInterestSnapshot.fetched_at <= through_end)
+            rows = session.scalars(
+                stmt.order_by(OpenInterestSnapshot.ins_code, OpenInterestSnapshot.fetched_at)
+            ).all()
             if not rows:
                 return pd.DataFrame()
-            df = pd.DataFrame(
+            return pd.DataFrame(
                 [
                     {
                         "ins_code": r.ins_code,
@@ -509,11 +540,6 @@ class Storage:
                     for r in rows
                 ]
             )
-            if ins_code is not None:
-                df = df[df["ins_code"] == ins_code]
-            if through_date and "fetched_at" in df.columns:
-                df = df[df["fetched_at"].map(self.snapshot_date_for) <= through_date]
-            return df
 
     def _backfill_current_contract_snapshot(self) -> None:
         with self.session() as session:
