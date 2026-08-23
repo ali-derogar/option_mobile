@@ -343,9 +343,14 @@ function syncDateToUrl() {
 }
 
 async function api(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Options-Local-App": "1",
+    ...(options.headers || {}),
+  };
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
   });
   if (!res.ok) {
     const err = await res.text();

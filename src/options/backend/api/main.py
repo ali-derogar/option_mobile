@@ -10,8 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from options.backend.api.data import (
@@ -34,7 +34,16 @@ logger = logging.getLogger(__name__)
 WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 STATIC_DIR = WEB_ROOT / "static"
 
-app = FastAPI(title="TSETMC Options", version="1.0.0")
+LOCAL_API_HEADER = "x-options-local-app"
+LOCAL_API_HEADER_VALUE = "1"
+
+app = FastAPI(
+    title="TSETMC Options",
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 storage = Storage()
 
 _refresh_lock = threading.Lock()
@@ -48,6 +57,13 @@ _refresh_status: Dict[str, Any] = {
     "started_at": None,
     "finished_at": None,
 }
+
+
+@app.middleware("http")
+async def require_local_app_header(request: Request, call_next):
+    if request.url.path.startswith("/api/") and request.headers.get(LOCAL_API_HEADER) != LOCAL_API_HEADER_VALUE:
+        return JSONResponse({"detail": "forbidden"}, status_code=403)
+    return await call_next(request)
 
 
 def _utc_now_iso() -> str:

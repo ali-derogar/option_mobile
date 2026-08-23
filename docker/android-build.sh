@@ -68,6 +68,47 @@ patch_pip_options() {
     mv "${tmp}" "${opts}"
 }
 
+harden_android_manifest() {
+    local xml_dir="${GRADLE_DIR}/app/src/main/res/xml"
+    local network_config="${xml_dir}/network_security_config.xml"
+    mkdir -p "${xml_dir}"
+    cat > "${network_config}" <<'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
+EOF
+
+    find "${ANDROID_DIR}" -type f -name AndroidManifest.xml | while read -r manifest; do
+        sed -i \
+            -e 's/android:allowBackup="true"/android:allowBackup="false"/g' \
+            -e 's/android:usesCleartextTraffic="true"//g' \
+            "${manifest}"
+        if ! grep -q 'android:networkSecurityConfig=' "${manifest}"; then
+            sed -i 's|<application |<application android:networkSecurityConfig="@xml/network_security_config" |' "${manifest}"
+        fi
+    done
+}
+
+patch_android_theme() {
+    find "${GRADLE_DIR}/app/src/main/res" -type f -name "styles.xml" | while read -r styles; do
+        sed -i \
+            -e 's|Theme\.AppCompat\.Light\.DarkActionBar|Theme.AppCompat.Light.NoActionBar|g' \
+            -e 's|Theme\.AppCompat\.Light\.ActionBar|Theme.AppCompat.Light.NoActionBar|g' \
+            "${styles}"
+        if ! grep -q 'name="windowNoTitle"' "${styles}"; then
+            sed -i '/<item name="colorAccent">/a\        <item name="windowNoTitle">true</item>' "${styles}"
+            sed -i '/<item name="windowNoTitle">true<\/item>/a\        <item name="windowActionBar">false</item>' "${styles}"
+            sed -i '/<item name="windowActionBar">false<\/item>/a\        <item name="android:windowNoTitle">true</item>' "${styles}"
+            sed -i '/<item name="android:windowNoTitle">true<\/item>/a\        <item name="android:windowActionBar">false</item>' "${styles}"
+        fi
+    done
+}
+
 if [[ ! -f /root/.android/debug.keystore ]]; then
     echo "ERROR: debug.keystore not found at /root/.android/debug.keystore" >&2
     echo "Run ./build-android.sh from the host to create the persistent keystore." >&2
@@ -98,11 +139,8 @@ find /app/build -type f -name "*.gradle" | while read -r f; do
         "$f"
 done
 
-find "${ANDROID_DIR}" -type f -name AndroidManifest.xml | while read -r manifest; do
-    if ! grep -q 'usesCleartextTraffic' "$manifest"; then
-        sed -i 's|<application |<application android:usesCleartextTraffic="true" |' "$manifest"
-    fi
-done
+harden_android_manifest
+patch_android_theme
 
 echo "Syncing sources and resources..."
 briefcase update android --no-input --update-resources --update-requirements
@@ -110,11 +148,8 @@ patch_gradle_properties
 patch_pip_options
 clean_stale_gradle_locks
 
-find "${ANDROID_DIR}" -type f -name AndroidManifest.xml | while read -r manifest; do
-    if ! grep -q 'usesCleartextTraffic' "$manifest"; then
-        sed -i 's|<application |<application android:usesCleartextTraffic="true" |' "$manifest"
-    fi
-done
+harden_android_manifest
+patch_android_theme
 
 echo "Building debug APK..."
 briefcase build android --no-input
