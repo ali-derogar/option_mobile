@@ -72,4 +72,5 @@ cmdline-tools/
 .github
 resources/
 .android-build.lock
+.android-release-build.lock
 src/options.*

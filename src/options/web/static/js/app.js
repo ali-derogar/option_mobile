@@ -37,6 +37,7 @@ const state = {
 };
 
 const THEME_STORAGE_KEY = "options-theme";
+const API_TOKEN_COOKIE = "options_api_token";
 
 function safeStorageSet(key, value) {
   try {
@@ -342,10 +343,20 @@ function syncDateToUrl() {
   window.history.replaceState({}, "", `${url.pathname}${url.search}`);
 }
 
+function readCookie(name) {
+  const prefix = `${name}=`;
+  return document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix))
+    ?.slice(prefix.length) || "";
+}
+
 async function api(path, options = {}) {
+  const token = readCookie(API_TOKEN_COOKIE);
   const headers = {
     "Content-Type": "application/json",
-    "X-Options-Local-App": "1",
+    ...(token ? { "X-Options-Api-Token": token } : {}),
     ...(options.headers || {}),
   };
   const res = await fetch(path, {

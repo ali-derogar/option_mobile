@@ -27,8 +27,8 @@ requires = [
     "pandas>=2.0.0",
     "python-dotenv>=1.0.0",
     "SQLAlchemy>=2.0.0",
-    "fastapi==0.99.1",
-    "pydantic==1.10.9",
+    "fastapi==0.125.0",
+    "pydantic==1.10.26",
     "uvicorn>=0.32.0",
 ]
 requirement_installer_args = [
@@ -36,8 +36,6 @@ requirement_installer_args = [
     "https://mirrors.aliyun.com/pypi/simple/",
     "--extra-index-url",
     "https://chaquo.com/pypi-13.1",
-    "--trusted-host",
-    "mirrors.aliyun.com",
     "--default-timeout",
     "180",
     "--retries",

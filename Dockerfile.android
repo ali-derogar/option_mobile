@@ -51,11 +51,10 @@ ENV ANDROID_SDK_ROOT=/opt/android-sdk-linux
 
 # Point ALL pip invocations (briefcase + Chaquopy) to Aliyun mirror
 ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
-ENV PIP_TRUSTED_HOST=mirrors.aliyun.com
 ENV PIP_DEFAULT_TIMEOUT=180
 ENV PIP_RETRIES=10
 ENV PIP_RESUME_RETRIES=20
-RUN printf '[global]\nindex-url = https://mirrors.aliyun.com/pypi/simple/\ntrusted-host = mirrors.aliyun.com\n' \
+RUN printf '[global]\nindex-url = https://mirrors.aliyun.com/pypi/simple/\n' \
     > /etc/pip.conf
 
 RUN mkdir -p /root/.gradle/init.d
@@ -63,11 +62,10 @@ COPY docker/aliyun-mirror.gradle /root/.gradle/init.d/aliyun-mirror.gradle
 
 RUN python3 -m pip install \
     -i https://mirrors.aliyun.com/pypi/simple/ \
-    --trusted-host mirrors.aliyun.com \
     briefcase==0.4.2 \
-    fastapi==0.99.1 \
-    pydantic==1.10.9 \
-    uvicorn>=0.32.0 \
+    fastapi==0.125.0 \
+    pydantic==1.10.26 \
+    'uvicorn>=0.32.0' \
     requests \
     pandas \
     python-dotenv \
@@ -75,6 +73,7 @@ RUN python3 -m pip install \
 
 WORKDIR /app
 COPY docker/android-build.sh /usr/local/bin/android-build.sh
-RUN chmod +x /usr/local/bin/android-build.sh
+COPY docker/android-release-build.sh /usr/local/bin/android-release-build.sh
+RUN chmod +x /usr/local/bin/android-build.sh /usr/local/bin/android-release-build.sh
 
 ENTRYPOINT ["/usr/local/bin/android-build.sh"]

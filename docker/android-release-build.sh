@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run inside Docker: sync sources and build a debug APK with the mounted keystore.
+# Run inside Docker: sync sources and build signed release APK/AAB artifacts.
 set -euo pipefail
 
 cd /app
@@ -18,6 +18,23 @@ trap cleanup_permissions EXIT
 
 ANDROID_DIR="/app/build/options/android"
 GRADLE_DIR="${ANDROID_DIR}/gradle"
+
+require_release_env() {
+    local missing=0
+    for name in RELEASE_KEYSTORE RELEASE_KEY_ALIAS RELEASE_STORE_PASSWORD RELEASE_KEY_PASSWORD; do
+        if [[ -z "${!name:-}" ]]; then
+            echo "ERROR: ${name} is required for release signing." >&2
+            missing=1
+        fi
+    done
+    if [[ "${missing}" == "1" ]]; then
+        exit 1
+    fi
+    if [[ ! -f "${RELEASE_KEYSTORE}" ]]; then
+        echo "ERROR: release keystore not found at ${RELEASE_KEYSTORE}" >&2
+        exit 1
+    fi
+}
 
 stop_gradle_daemons() {
     local gradle_dir="${GRADLE_DIR}"
@@ -107,11 +124,42 @@ patch_android_theme() {
     done
 }
 
-if [[ ! -f /root/.android/debug.keystore ]]; then
-    echo "ERROR: debug.keystore not found at /root/.android/debug.keystore" >&2
-    echo "Run ./build-android.sh from the host to create the persistent keystore." >&2
-    exit 1
-fi
+patch_release_signing() {
+    local gradle_file="${GRADLE_DIR}/app/build.gradle"
+    [[ -f "${gradle_file}" ]] || return 0
+    python3 - "${gradle_file}" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+
+signing = """    signingConfigs {
+        release {
+            storeFile file(System.getenv("RELEASE_KEYSTORE"))
+            storePassword System.getenv("RELEASE_STORE_PASSWORD")
+            keyAlias System.getenv("RELEASE_KEY_ALIAS")
+            keyPassword System.getenv("RELEASE_KEY_PASSWORD")
+        }
+    }
+
+"""
+
+if "signingConfigs {" not in text:
+    text = text.replace("    buildTypes {\n", signing + "    buildTypes {\n", 1)
+
+if "signingConfig signingConfigs.release" not in text:
+    text = text.replace(
+        "        release {\n            minifyEnabled false\n",
+        "        release {\n            signingConfig signingConfigs.release\n            minifyEnabled false\n",
+        1,
+    )
+
+path.write_text(text, encoding="utf-8")
+PY
+}
+
+require_release_env
 
 if [[ ! -f "${GRADLE_DIR}/briefcase.toml" ]]; then
     if [[ -d "${ANDROID_DIR}" ]]; then
@@ -124,7 +172,6 @@ fi
 
 clean_stale_gradle_locks
 
-# Chaquopy / SDK compatibility patches
 rm -rf "${GRADLE_DIR}/app/src/main/res/values-v35"
 
 find /app/build -type f -name "*.gradle" | while read -r f; do
@@ -148,15 +195,26 @@ clean_stale_gradle_locks
 
 harden_android_manifest
 patch_android_theme
+patch_release_signing
 
-echo "Building debug APK..."
-briefcase build android --no-input
+echo "Building signed release APK..."
+(cd "${GRADLE_DIR}" && ./gradlew --no-daemon assembleRelease)
 
-APK="${GRADLE_DIR}/app/build/outputs/apk/debug/app-debug.apk"
+echo "Building signed release AAB..."
+(cd "${GRADLE_DIR}" && ./gradlew --no-daemon bundleRelease)
+
+APK="${GRADLE_DIR}/app/build/outputs/apk/release/app-release.apk"
+AAB="${GRADLE_DIR}/app/build/outputs/bundle/release/app-release.aab"
 if [[ ! -f "${APK}" ]]; then
-    echo "ERROR: APK not found at ${APK}" >&2
+    echo "ERROR: release APK not found at ${APK}" >&2
     exit 1
 fi
 
-cp "${APK}" /output/tiger-options.apk
-echo "APK copied to /output/tiger-options.apk"
+cp "${APK}" /output/tiger-options-release.apk
+if [[ -f "${AAB}" ]]; then
+    cp "${AAB}" /output/tiger-options-release.aab
+fi
+echo "Release APK copied to /output/tiger-options-release.apk"
+if [[ -f /output/tiger-options-release.aab ]]; then
+    echo "Release AAB copied to /output/tiger-options-release.aab"
+fi
