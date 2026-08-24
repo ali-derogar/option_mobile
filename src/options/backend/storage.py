@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    delete,
     func,
     inspect,
     select,
@@ -363,7 +364,18 @@ class Storage:
 
     def insert_open_interest(self, rows: List[Dict[str, Any]]) -> int:
         now = self.now()
-        count = 0
+        market_date = datetime.strptime(self.snapshot_date_for(now), "%Y-%m-%d").date()
+        day_start = (
+            datetime.combine(market_date, time.min, tzinfo=MARKET_TZ)
+            .astimezone(timezone.utc)
+            .replace(tzinfo=None)
+        )
+        day_end = (
+            datetime.combine(market_date + timedelta(days=1), time.min, tzinfo=MARKET_TZ)
+            .astimezone(timezone.utc)
+            .replace(tzinfo=None)
+        )
+        snapshots: List[OpenInterestSnapshot] = []
         with self.session() as session:
             for row in rows:
                 if not isinstance(row, dict):
@@ -371,7 +383,7 @@ class Storage:
                 ins_code = self._coerce_ins_code(row.get("ins_code"))
                 if not ins_code:
                     continue
-                session.add(
+                snapshots.append(
                     OpenInterestSnapshot(
                         ins_code=ins_code,
                         buy_open_positions=row.get("buy_open_positions"),
@@ -380,9 +392,19 @@ class Storage:
                         fetched_at=now,
                     )
                 )
-                count += 1
+            if not snapshots:
+                return 0
+            ins_codes = {snapshot.ins_code for snapshot in snapshots}
+            session.execute(
+                delete(OpenInterestSnapshot).where(
+                    OpenInterestSnapshot.ins_code.in_(ins_codes),
+                    OpenInterestSnapshot.fetched_at >= day_start,
+                    OpenInterestSnapshot.fetched_at < day_end,
+                )
+            )
+            session.add_all(snapshots)
             session.commit()
-        return count
+        return len(snapshots)
 
     def insert_money_flow(self, rows: List[Dict[str, Any]]) -> int:
         now = self.now()
@@ -624,7 +646,7 @@ class Storage:
             ).all()
             if not rows:
                 return pd.DataFrame()
-            return pd.DataFrame(
+            df = pd.DataFrame(
                 [
                     {
                         "ins_code": r.ins_code,
@@ -636,6 +658,12 @@ class Storage:
                     for r in rows
                 ]
             )
+            # Multiple refreshes can happen during the same market day. History
+            # consumers should see the latest market-day snapshot, not treat an
+            # earlier refresh from the same day as the previous day.
+            df["_market_date"] = df["fetched_at"].map(self.snapshot_date_for)
+            df = df.drop_duplicates(subset=["ins_code", "_market_date"], keep="last")
+            return df.drop(columns=["_market_date"]).reset_index(drop=True)
 
     def _backfill_current_contract_snapshot(self) -> None:
         with self.session() as session:

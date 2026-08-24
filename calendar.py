@@ -20,9 +20,14 @@ _stdlib_calendar_path = f"{sysconfig.get_path('stdlib')}/calendar.py"
 _CALENDAR_DATA_EXPORTS = {
     "day_info_from_calendar",
     "fetch_calendar_month",
+    "fetch_calendar_today",
     "format_calendar_events",
+    "gregorian_to_jalali",
     "is_jalali_leap_year",
+    "jalali_to_gregorian",
     "jalali_month_length",
+    "shift_jalali_month",
+    "today_from_calendar",
     "valid_jalali_date",
 }
 _stdlib_calendar_spec = importlib.util.spec_from_file_location(
@@ -63,9 +68,14 @@ try:
     from options.backend.calendar_data import (
         day_info_from_calendar,
         fetch_calendar_month,
+        fetch_calendar_today,
         format_calendar_events,
+        gregorian_to_jalali,
         is_jalali_leap_year,
+        jalali_to_gregorian,
         jalali_month_length,
+        shift_jalali_month,
+        today_from_calendar,
         valid_jalali_date,
     )
 except ImportError:

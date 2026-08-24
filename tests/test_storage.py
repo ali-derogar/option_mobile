@@ -1,6 +1,7 @@
 """Storage tests for numeric persistence and exports."""
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -465,9 +466,91 @@ def test_export_csv_writes_numeric_tables(storage: Storage) -> None:
     assert open_interest.loc[0, "buy_open_positions"] == pytest.approx(500.0)
 
 
-def test_snapshot_date_for_uses_tehran_market_day() -> None:
-    from datetime import datetime, timezone
+def test_open_interest_history_keeps_latest_refresh_per_market_day(storage: Storage) -> None:
+    with storage.session() as session:
+        session.add_all(
+            [
+                OpenInterestSnapshot(
+                    ins_code=1001,
+                    buy_open_positions=500,
+                    sell_open_positions=300,
+                    yesterday_open_positions=450,
+                    fetched_at=datetime(2025, 6, 14, 6, 0, tzinfo=timezone.utc),
+                ),
+                OpenInterestSnapshot(
+                    ins_code=1001,
+                    buy_open_positions=550,
+                    sell_open_positions=320,
+                    yesterday_open_positions=450,
+                    fetched_at=datetime(2025, 6, 14, 9, 0, tzinfo=timezone.utc),
+                ),
+                OpenInterestSnapshot(
+                    ins_code=1001,
+                    buy_open_positions=700,
+                    sell_open_positions=400,
+                    yesterday_open_positions=550,
+                    fetched_at=datetime(2025, 6, 15, 6, 0, tzinfo=timezone.utc),
+                ),
+            ]
+        )
+        session.commit()
 
+    df = storage.get_open_interest_history_df(ins_code=1001)
+
+    assert list(df["buy_open_positions"]) == [550, 700]
+    assert list(df["yesterday_open_positions"]) == [450, 550]
+
+
+def test_insert_open_interest_replaces_same_market_day_snapshot(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        storage,
+        "now",
+        lambda: datetime(2025, 6, 14, 6, 0, tzinfo=timezone.utc),
+    )
+    assert (
+        storage.insert_open_interest(
+            [
+                {
+                    "ins_code": 1001,
+                    "buy_open_positions": 500,
+                    "sell_open_positions": 300,
+                    "yesterday_open_positions": 450,
+                }
+            ]
+        )
+        == 1
+    )
+
+    monkeypatch.setattr(
+        storage,
+        "now",
+        lambda: datetime(2025, 6, 14, 9, 0, tzinfo=timezone.utc),
+    )
+    assert (
+        storage.insert_open_interest(
+            [
+                {
+                    "ins_code": 1001,
+                    "buy_open_positions": 550,
+                    "sell_open_positions": 320,
+                    "yesterday_open_positions": 450,
+                }
+            ]
+        )
+        == 1
+    )
+
+    with storage.session() as session:
+        rows = session.query(OpenInterestSnapshot).filter_by(ins_code=1001).all()
+
+    assert len(rows) == 1
+    assert rows[0].buy_open_positions == pytest.approx(550)
+    assert rows[0].sell_open_positions == pytest.approx(320)
+
+
+def test_snapshot_date_for_uses_tehran_market_day() -> None:
     utc_dt = datetime(2025, 6, 14, 21, 0, tzinfo=timezone.utc)
 
     assert Storage.snapshot_date_for(utc_dt) == "2025-06-15"

@@ -21,6 +21,7 @@ const state = {
   calendarMonths: {},
   calendarVisible: false,
   calendarView: null,
+  calendarTodayIso: "",
   calendarRequestId: 0,
   dateChangeRequestId: 0,
   items: [],
@@ -118,8 +119,8 @@ const VIEW_CONFIG = {
       { key: "underlying_symbol", label: "سهم" },
       { key: "underlying_short_name", label: "نام" },
       { key: "contract_count", label: "قرارداد", fmt: "num" },
-      { key: "call_count", label: "خرید", fmt: "num" },
-      { key: "put_count", label: "فروش", fmt: "num" },
+      { key: "call_count", label: "اختیار خرید", fmt: "num" },
+      { key: "put_count", label: "اختیار فروش", fmt: "num" },
       { key: "nearest_end_date", label: "نزدیک‌ترین سررسید", fmt: "date" },
       { key: "min_strike_price", label: "کمترین اعمال", fmt: "num" },
       { key: "max_strike_price", label: "بیشترین اعمال", fmt: "num" },
@@ -318,6 +319,10 @@ function localIsoDate(date = new Date()) {
   return isoDate(date.getFullYear(), date.getMonth() + 1, date.getDate());
 }
 
+function calendarTodayIso() {
+  return validIsoDate(state.calendarTodayIso) ? state.calendarTodayIso : localIsoDate();
+}
+
 function validIsoDate(value) {
   const normalized = translateDigits(value);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return false;
@@ -329,7 +334,8 @@ function validIsoDate(value) {
 function selectedJalaliDate() {
   const preferred = translateDigits(state.selectedDate || "");
   const latest = translateDigits(state.latestDate || "");
-  const base = validIsoDate(preferred) ? preferred : validIsoDate(latest) ? latest : localIsoDate();
+  const today = calendarTodayIso();
+  const base = validIsoDate(preferred) ? preferred : validIsoDate(latest) ? latest : today;
   const [gy, gm, gd] = base.split("-").map(Number);
   return gregorianToJalali(gy, gm, gd);
 }
@@ -371,8 +377,8 @@ function fmtCompactNum(n) {
 }
 
 function optionTypeLabel(value) {
-  if (value === "call") return "خرید";
-  if (value === "put") return "فروش";
+  if (value === "call") return "اختیار خرید";
+  if (value === "put") return "اختیار فروش";
   return "—";
 }
 
@@ -606,11 +612,25 @@ async function loadDates() {
       : "";
   }
   if (input) input.value = state.selectedDate || "";
+  await loadCalendarToday();
   updateDatePickerButton();
   if (!state.calendarView) state.calendarView = selectedJalaliDate();
   if (state.calendarVisible) renderDatePicker();
   syncDateToUrl();
   updateFreshnessBadge();
+}
+
+async function loadCalendarToday() {
+  try {
+    const today = await api("/api/calendar/today");
+    const gregorianDate = translateDigits(today?.gregorian_date || "");
+    if (validIsoDate(gregorianDate)) {
+      state.calendarTodayIso = gregorianDate;
+    }
+  } catch (e) {
+    console.warn("calendar today unavailable", e);
+    state.calendarTodayIso = localIsoDate();
+  }
 }
 
 function updateDatePickerButton() {
@@ -683,7 +703,7 @@ async function renderDatePicker() {
   const firstOffset = (new Date(firstGregorian.gy, firstGregorian.gm - 1, firstGregorian.gd).getDay() + 1) % 7;
   const available = new Set(state.availableDates);
   const selected = selectedJalaliDate();
-  const today = localIsoDate();
+  const today = calendarTodayIso();
   const cells = [];
 
   for (let i = 0; i < firstOffset; i += 1) {
@@ -1034,7 +1054,7 @@ function activeFilterItems() {
   if (state.view !== "underlying") return [];
   const items = [];
   if (state.filters.type !== "all") {
-    items.push({ key: "type", label: state.filters.type === "call" ? "خرید" : "فروش" });
+    items.push({ key: "type", label: state.filters.type === "call" ? "اختیار خرید" : "اختیار فروش" });
   }
   if (state.filters.expiry !== "all") {
     items.push({ key: "expiry", label: `سررسید ${fmtDate(state.filters.expiry)}` });
@@ -1341,8 +1361,8 @@ function renderMobileCards() {
         : row.moneyness || "—";
       const metrics = isUnderlying
         ? [
-            mobileMetric("خرید", row.call_count, "num", "metric-call"),
-            mobileMetric("فروش", row.put_count, "num", "metric-put"),
+            mobileMetric("اختیار خرید", row.call_count, "num", "metric-call"),
+            mobileMetric("اختیار فروش", row.put_count, "num", "metric-put"),
             mobileMetric("سررسید", row.nearest_end_date, "date"),
             mobileMetric("حجم", row.trade_volume, "compact", "metric-volume"),
           ].join("")
@@ -1505,8 +1525,8 @@ function renderUnderlyingDetail(row) {
       </div>
       <div class="detail-hero-metrics">
         ${mobileMetric("قرارداد", row.contract_count, "num")}
-        ${mobileMetric("خرید", row.call_count, "num")}
-        ${mobileMetric("فروش", row.put_count, "num")}
+        ${mobileMetric("اختیار خرید", row.call_count, "num")}
+        ${mobileMetric("اختیار فروش", row.put_count, "num")}
         ${mobileMetric("حجم", row.trade_volume, "num")}
       </div>
       <button type="button" class="btn btn-primary detail-contracts-button" id="openUnderlyingContracts">
@@ -1577,7 +1597,7 @@ async function loadOiChart(insCode) {
             fill: true,
           },
           {
-            label: "فروش",
+            label: "موقعیت فروش",
             data: sell,
             borderColor: palette.purple,
             backgroundColor: currentTheme() === "dark" ? "rgba(181, 167, 255, 0.1)" : "rgba(109, 91, 208, 0.1)",
@@ -1735,6 +1755,21 @@ function analysisMetricValue(value) {
   return typeof value === "number" ? fmtNum(value) : value;
 }
 
+function openInterestSnapshot(rows) {
+  const hasCurrent = rows.some((row) => row.buy_open_positions != null);
+  const hasYesterday = rows.some((row) => row.yesterday_open_positions != null);
+  const current = hasCurrent ? sumRows(rows, (row) => row.buy_open_positions) : null;
+  const yesterday = hasYesterday ? sumRows(rows, (row) => row.yesterday_open_positions) : null;
+  return {
+    hasCurrent,
+    hasYesterday,
+    hasChange: hasCurrent && hasYesterday,
+    current,
+    yesterday,
+    change: hasCurrent && hasYesterday ? current - yesterday : null,
+  };
+}
+
 function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
   const callRows = rows.filter((row) => row.option_type === "call");
   const putRows = rows.filter((row) => row.option_type === "put");
@@ -1753,12 +1788,9 @@ function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
   const putOtmVolume = sumRows(putOtmRows, (row) => rowParticipantVolume(row, prefix));
   const callVolume = sumRows(callRows, (row) => rowParticipantVolume(row, prefix));
   const putVolume = sumRows(putRows, (row) => rowParticipantVolume(row, prefix));
-  const hasCurrentOi = rows.some((row) => row.buy_open_positions != null);
-  const hasYesterdayOi = rows.some((row) => row.yesterday_open_positions != null);
-  const hasOi = hasCurrentOi || hasYesterdayOi;
-  const currentOi = hasCurrentOi ? sumRows(rows, (row) => row.buy_open_positions) : null;
-  const yesterdayOi = hasYesterdayOi ? sumRows(rows, (row) => row.yesterday_open_positions) : null;
-  const oiChange = hasOi ? numericValue(currentOi) - numericValue(yesterdayOi) : null;
+  const callOi = openInterestSnapshot(callRows);
+  const putOi = openInterestSnapshot(putRows);
+  const hasOiChange = callOi.hasChange || putOi.hasChange;
 
   const callBuyDominates = callBuy > callSell;
   const callSellDominates = callSell > callBuy;
@@ -1778,14 +1810,21 @@ function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
   const step2Weak = step2Score < 0;
   const step2Cautious = !step2Bullish && !step2Weak && (callItmDominates || putItmDominates);
   const step3Bullish = callVolume > putVolume;
-  const step4Confirm = oiChange != null && oiChange > 0;
-  const step4Weak = oiChange != null && oiChange < 0;
+  const step4CallConfirm = callOi.change != null && callOi.change > 0;
+  const step4CallWeak = callOi.change != null && callOi.change < 0;
+  const step4PutConfirm = putOi.change != null && putOi.change < 0;
+  const step4PutWeak = putOi.change != null && putOi.change > 0;
+  const step4Score =
+    (step4CallConfirm ? 1 : step4CallWeak ? -1 : 0) +
+    (step4PutConfirm ? 1 : step4PutWeak ? -1 : 0);
+  const step4Confirm = step4Score > 0;
+  const step4Weak = step4Score < 0;
 
   const score =
     step1Score +
     step2Score +
     (step3Bullish ? 1 : callVolume < putVolume ? -1 : 0) +
-    (step4Confirm ? 1 : step4Weak ? -1 : 0);
+    step4Score;
 
   let finalLabel = "خنثی";
   let finalClass = "neutral";
@@ -1876,16 +1915,79 @@ function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
       {
         kicker: "تأیید موقعیت",
         title: "Open Interest",
-        label: !hasOi ? "داده موجود نیست" : step4Confirm ? "تأییدکننده" : step4Weak ? "تضعیف‌کننده" : "بدون تغییر",
+        label: !hasOiChange ? "داده تغییر موجود نیست" : step4Confirm ? "تأییدکننده" : step4Weak ? "تضعیف‌کننده" : "بدون تغییر",
         className: step4Confirm ? "bullish" : step4Weak ? "weak" : "neutral",
-        metrics: [
-          ["OI کل امروز", currentOi],
-          ["OI کل دیروز", yesterdayOi],
-          ["تغییر", oiChange],
+        signals: [
+          {
+            label: !callOi.hasChange ? "Call بدون داده تغییر" : step4CallConfirm ? "Call افزایشی" : step4CallWeak ? "Call کاهشی" : "Call بدون تغییر",
+            className: step4CallConfirm ? "bullish" : step4CallWeak ? "weak" : "neutral",
+          },
+          {
+            label: !putOi.hasChange ? "Put بدون داده تغییر" : step4PutConfirm ? "Put کاهشی" : step4PutWeak ? "Put افزایشی" : "Put بدون تغییر",
+            className: step4PutConfirm ? "bullish" : step4PutWeak ? "weak" : "neutral",
+          },
+        ],
+        groups: [
+          {
+            title: "Call",
+            label: "اختیار خرید",
+            className: step4CallConfirm ? "bullish" : step4CallWeak ? "weak" : "neutral",
+            metrics: [
+              ["امروز", callOi.current],
+              ["دیروز", callOi.yesterday],
+              ["تغییر", callOi.change],
+            ],
+          },
+          {
+            title: "Put",
+            label: "اختیار فروش",
+            className: step4PutConfirm ? "bullish" : step4PutWeak ? "weak" : "neutral",
+            metrics: [
+              ["امروز", putOi.current],
+              ["دیروز", putOi.yesterday],
+              ["تغییر", putOi.change],
+            ],
+          },
         ],
       },
     ],
   };
+}
+
+function renderAnalysisStepMetrics(step) {
+  if (step.groups) {
+    return `
+      <div class="analysis-step-groups">
+        ${step.groups
+          .map(
+            (group) => `
+              <section class="analysis-step-group analysis-step-group-${group.className}">
+                <div class="analysis-step-group-head">
+                  <strong>${escapeHtml(group.title)}</strong>
+                  <span>${escapeHtml(group.label)}</span>
+                </div>
+                <div class="analysis-step-group-metrics">
+                  ${group.metrics
+                    .map(
+                      ([label, value]) => `
+                        <div class="${label === "تغییر" ? "analysis-step-group-change" : ""}">
+                          <span>${escapeHtml(label)}</span>
+                          <strong>${escapeHtml(analysisMetricValue(value))}</strong>
+                        </div>`
+                    )
+                    .join("")}
+                </div>
+              </section>`
+          )
+          .join("")}
+      </div>`;
+  }
+  return `
+    <div class="analysis-step-metrics">
+      ${step.metrics
+        .map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(analysisMetricValue(value))}</strong></div>`)
+        .join("")}
+    </div>`;
 }
 
 function renderFourStepConclusion(rows) {
@@ -1933,11 +2035,7 @@ function renderFourStepConclusion(rows) {
                                     .join("")}
                                 </div>`
                               : `<div class="analysis-step-label">${escapeHtml(step.label)}</div>`}
-	                          <div class="analysis-step-metrics">
-	                            ${step.metrics
-                                .map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(analysisMetricValue(value))}</strong></div>`)
-                                .join("")}
-	                          </div>
+	                          ${renderAnalysisStepMetrics(step)}
 	                        </article>`
 	                    )
 	                    .join("")}
@@ -2463,7 +2561,7 @@ function renderAnalysis() {
   setText("analysisScope", audience.trendOnly ? "۷ روزه" : `${fmtNum(rows.length)} قرارداد ITM/OTM`);
   const analysisBody = audience.trendOnly
     ? renderTrendShell()
-    : renderFourStepConclusion(rows) + renderAnalysisSide("call", "خرید", model) + renderAnalysisSide("put", "فروش", model);
+    : renderFourStepConclusion(rows) + renderAnalysisSide("call", "اختیار خرید", model) + renderAnalysisSide("put", "اختیار فروش", model);
   destroyTrendChart();
   content.innerHTML = renderAnalysisAudienceTabs() + analysisBody;
   panel.classList.remove("hidden");

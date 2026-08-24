@@ -1163,6 +1163,103 @@ select:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+.analysis-step-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.analysis-step-group {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(30, 41, 59, 0.42);
+}
+
+.analysis-step-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  padding: 0.38rem 0.48rem;
+  border-bottom: 1px solid var(--border);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.analysis-step-group-head strong,
+.analysis-step-group-head span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-step-group-head strong {
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 950;
+}
+
+.analysis-step-group-head span {
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+
+.analysis-step-group-metrics {
+  display: grid;
+  gap: 0;
+}
+
+.analysis-step-group-metrics div {
+  display: grid;
+  grid-template-columns: minmax(44px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 30px;
+  padding: 0.28rem 0.48rem;
+}
+
+.analysis-step-group-metrics div + div {
+  border-top: 1px solid var(--border);
+}
+
+.analysis-step-group-metrics span {
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+
+.analysis-step-group-metrics strong {
+  direction: ltr;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 950;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-step-group-change strong {
+  color: var(--text);
+}
+
+.analysis-step-group-bullish .analysis-step-group-change strong {
+  color: var(--green);
+}
+
+.analysis-step-group-weak .analysis-step-group-change strong {
+  color: var(--red);
+}
+
+@media (max-width: 560px) {
+  .analysis-step-groups {
+    grid-template-columns: 1fr;
+  }
+}
+
 .analysis-side-summary {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);

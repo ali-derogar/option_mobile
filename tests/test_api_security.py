@@ -129,6 +129,28 @@ def test_open_interest_accepts_grouped_persian_instrument_code(monkeypatch) -> N
     assert called["ins_code"] == 1001
 
 
+def test_calendar_today_returns_api_marked_date(monkeypatch) -> None:
+    monkeypatch.setattr(main.storage, "is_activated", lambda: True)
+    monkeypatch.setattr(
+        main.calendar_data,
+        "fetch_calendar_today",
+        lambda today: {
+            "jalali_date": "1405-06-02",
+            "gregorian_date": "2026-08-24",
+            "source": "time.ir",
+        },
+    )
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/api/calendar/today",
+            headers={main.LOCAL_API_HEADER: main.LOCAL_API_TOKEN},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["gregorian_date"] == "2026-08-24"
+
+
 def test_refresh_status_does_not_expose_export_paths() -> None:
     original_status = dict(main._refresh_status)
     try:

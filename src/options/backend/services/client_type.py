@@ -39,14 +39,13 @@ def normalize_client_type(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "rec_date": _to_int(row.get("RecDate")) or 0,
         "ins_code": _to_int(row.get("InsCode")) or 0,
-        # حقیقی (natural / N)
+        # Authenticated API uses ClientN/ClientI: N = natural, I = legal.
         "natural_buy_volume": _to_float(row.get("Buy_N_Volume")),
         "natural_buy_value": buy_n_value,
         "natural_buy_count": _to_int(row.get("Buy_Count_ClientN")),
         "natural_sell_volume": _to_float(row.get("Sell_N_Volume")),
         "natural_sell_value": sell_n_value,
         "natural_sell_count": _to_int(row.get("Sell_Count_ClientN")),
-        # حقوقی (legal / I)
         "legal_buy_volume": _to_float(row.get("Buy_I_Volume")),
         "legal_buy_value": buy_i_value,
         "legal_buy_count": _to_int(row.get("Buy_Count_ClientI")),

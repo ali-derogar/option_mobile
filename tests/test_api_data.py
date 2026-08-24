@@ -407,3 +407,17 @@ def test_get_underlying_trend_computes_participant_scores() -> None:
     assert natural["call_put_ratio"] == pytest.approx(100.0 / 100.0)
     assert natural["open_interest"] == pytest.approx(33.0)
     assert natural["open_interest_change"] == pytest.approx(3.0)
+
+
+def test_get_underlying_trend_requires_current_and_yesterday_open_interest_for_change() -> None:
+    contracts = contracts_df()
+    contracts["yesterday_open_positions"] = None
+    storage = FakeStorage(contracts, client_type_df())
+
+    result = get_underlying_trend(storage, "2001", ["2025-06-14"])
+    natural = result["items"][0]["people"]["natural"]
+
+    assert natural["open_interest"] == pytest.approx(33.0)
+    assert natural["yesterday_open_interest"] is None
+    assert natural["open_interest_change"] is None
+    assert natural["has_open_interest"] is False

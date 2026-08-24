@@ -369,6 +369,16 @@ async def calendar_events(request: Request) -> JSONResponse:
     return _json(payload)
 
 
+async def calendar_today(request: Request) -> JSONResponse:
+    try:
+        today = datetime.now(MARKET_TZ).date()
+        payload = await run_in_threadpool(calendar_data.fetch_calendar_today, today)
+    except Exception as exc:
+        logger.exception("Calendar today fetch failed")
+        raise HTTPException(503, "calendar fetch failed") from exc
+    return _json(payload)
+
+
 async def calendar_day_info(request: Request) -> JSONResponse:
     year = int(request.path_params["year"])
     month = int(request.path_params["month"])
@@ -521,6 +531,7 @@ routes = [
     Route("/api/activation", activate, methods=["POST"]),
     Route("/api/summary", summary, methods=["GET"]),
     Route("/api/dates", dates, methods=["GET"]),
+    Route("/api/calendar/today", calendar_today, methods=["GET"]),
     Route("/api/calendar/{year:int}/{month:int}/events", calendar_events, methods=["GET"]),
     Route("/api/calendar/{year:int}/{month:int}/{day:int}/info", calendar_day_info, methods=["GET"]),
     Route("/api/contracts", contracts, methods=["GET"]),

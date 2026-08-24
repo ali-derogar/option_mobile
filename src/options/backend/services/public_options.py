@@ -84,25 +84,26 @@ def fetch_public_client_type_latest_many(ins_codes: List[int]) -> List[Dict[str,
 
 
 def normalize_public_client_type(row: Dict[str, Any]) -> Dict[str, Any]:
-    natural_buy_value = _to_float(row.get("buy_N_Value"))
-    natural_sell_value = _to_float(row.get("sell_N_Value"))
-    legal_buy_value = _to_float(row.get("buy_I_Value"))
-    legal_sell_value = _to_float(row.get("sell_I_Value"))
+    # Public CDN/filter fields use I = individual/natural and N = legal.
+    natural_buy_value = _to_float(row.get("buy_I_Value"))
+    natural_sell_value = _to_float(row.get("sell_I_Value"))
+    legal_buy_value = _to_float(row.get("buy_N_Value"))
+    legal_sell_value = _to_float(row.get("sell_N_Value"))
     return {
         "rec_date": _to_int(row.get("recDate")),
         "ins_code": _to_int(row.get("insCode")) or 0,
-        "natural_buy_volume": _to_float(row.get("buy_N_Volume")),
+        "natural_buy_volume": _to_float(row.get("buy_I_Volume")),
         "natural_buy_value": natural_buy_value,
-        "natural_buy_count": _to_int(row.get("buy_N_Count")),
-        "natural_sell_volume": _to_float(row.get("sell_N_Volume")),
+        "natural_buy_count": _to_int(row.get("buy_I_Count")),
+        "natural_sell_volume": _to_float(row.get("sell_I_Volume")),
         "natural_sell_value": natural_sell_value,
-        "natural_sell_count": _to_int(row.get("sell_N_Count")),
-        "legal_buy_volume": _to_float(row.get("buy_I_Volume")),
+        "natural_sell_count": _to_int(row.get("sell_I_Count")),
+        "legal_buy_volume": _to_float(row.get("buy_N_Volume")),
         "legal_buy_value": legal_buy_value,
-        "legal_buy_count": _to_int(row.get("buy_I_Count")),
-        "legal_sell_volume": _to_float(row.get("sell_I_Volume")),
+        "legal_buy_count": _to_int(row.get("buy_N_Count")),
+        "legal_sell_volume": _to_float(row.get("sell_N_Volume")),
         "legal_sell_value": legal_sell_value,
-        "legal_sell_count": _to_int(row.get("sell_I_Count")),
+        "legal_sell_count": _to_int(row.get("sell_N_Count")),
         "natural_money_flow": _net_flow(natural_buy_value, natural_sell_value),
         "legal_money_flow": _net_flow(legal_buy_value, legal_sell_value),
     }

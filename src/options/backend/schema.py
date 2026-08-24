@@ -39,7 +39,8 @@ OPTION_FIELDS = {
     "CFactor": "C factor",
 }
 
-# ClientType fields: N = natural (حقیقی), I = legal (حقوقی)
+# Authenticated ClientType fields: ClientN = natural (حقیقی), ClientI = legal (حقوقی).
+# Public CDN client-type fields use the opposite naming convention documented in public_options.py.
 CLIENT_TYPE_FIELDS = {
     "RecDate": "record date",
     "InsCode": "instrument code",

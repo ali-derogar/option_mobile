@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any, Dict, List
 
 
@@ -56,6 +57,71 @@ def jalali_month_length(year: int, month: int) -> int:
 
 def valid_jalali_date(year: int, month: int, day: int) -> bool:
     return 1 <= month <= 12 and 1 <= day <= jalali_month_length(year, month)
+
+
+def gregorian_to_jalali(gy: int, gm: int, gd: int) -> tuple[int, int, int]:
+    gdm = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    jy = 0 if gy <= 1600 else 979
+    gy -= 621 if gy <= 1600 else 1600
+    gy2 = gy + 1 if gm > 2 else gy
+    days = (
+        (365 * gy)
+        + ((gy2 + 3) // 4)
+        - ((gy2 + 99) // 100)
+        + ((gy2 + 399) // 400)
+        - 80
+        + gd
+        + gdm[gm - 1]
+    )
+    jy += 33 * (days // 12053)
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    jm = 1 + (days // 31) if days < 186 else 7 + ((days - 186) // 30)
+    jd = 1 + (days % 31) if days < 186 else 1 + ((days - 186) % 30)
+    return jy, jm, jd
+
+
+def jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple[int, int, int]:
+    jy += 1595
+    days = -355668 + (365 * jy) + ((jy // 33) * 8) + (((jy % 33) + 3) // 4) + jd
+    days += ((jm - 1) * 31) if jm < 7 else (((jm - 7) * 30) + 186)
+    gy = 400 * (days // 146097)
+    days %= 146097
+    if days > 36524:
+        gy += 100 * ((days - 1) // 36524)
+        days = (days - 1) % 36524
+        if days >= 365:
+            days += 1
+    gy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        gy += (days - 1) // 365
+        days = (days - 1) % 365
+    gd = days + 1
+    leap = gy % 4 == 0 and (gy % 100 != 0 or gy % 400 == 0)
+    month_lengths = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    gm = 1
+    for month_length in month_lengths:
+        if gd <= month_length:
+            break
+        gd -= month_length
+        gm += 1
+    return gy, gm, gd
+
+
+def shift_jalali_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    month += delta
+    while month < 1:
+        year -= 1
+        month += 12
+    while month > 12:
+        year += 1
+        month -= 12
+    return year, month
 
 
 def fetch_calendar_month(year: int, month: int, day: int = 0, base1: int = 0, base2: int = 1, base3: int = 2) -> Dict[str, Any]:
@@ -185,4 +251,52 @@ def day_info_from_calendar(calendar_data: Dict[str, Any], year: int, month: int,
         "is_weekend": bool(day_info and _api_bool(day_info.get("is_weekend"))),
         "is_today": bool(day_info and _api_bool(day_info.get("is_today"))),
         "enabled": day_info.get("enabled", True) if day_info else True,
+    }
+
+
+def today_from_calendar(calendar_data: Dict[str, Any], year: int, month: int) -> Dict[str, Any] | None:
+    formatted = format_calendar_events(calendar_data, year, month)
+    today = next((item for item in formatted.get("days", []) if item.get("is_today")), None)
+    if not today:
+        return None
+    day = _api_int(today.get("day"))
+    if not valid_jalali_date(year, month, day):
+        return None
+    gy, gm, gd = jalali_to_gregorian(year, month, day)
+    return {
+        "jalali_date": f"{year}-{month:02d}-{day:02d}",
+        "gregorian_date": f"{gy}-{gm:02d}-{gd:02d}",
+        "year": year,
+        "month": month,
+        "day": day,
+        "is_holiday": bool(today.get("is_holiday")),
+        "is_weekend": bool(today.get("is_weekend")),
+        "events": today.get("events", []),
+        "source": "time.ir",
+    }
+
+
+def fetch_calendar_today(reference_date: date, month_window: int = 2) -> Dict[str, Any]:
+    approx_year, approx_month, _ = gregorian_to_jalali(
+        reference_date.year,
+        reference_date.month,
+        reference_date.day,
+    )
+    for delta in range(-month_window, month_window + 1):
+        year, month = shift_jalali_month(approx_year, approx_month, delta)
+        today = today_from_calendar(fetch_calendar_month(year, month), year, month)
+        if today:
+            return today
+    gy, gm, gd = reference_date.year, reference_date.month, reference_date.day
+    jy, jm, jd = gregorian_to_jalali(gy, gm, gd)
+    return {
+        "jalali_date": f"{jy}-{jm:02d}-{jd:02d}",
+        "gregorian_date": f"{gy}-{gm:02d}-{gd:02d}",
+        "year": jy,
+        "month": jm,
+        "day": jd,
+        "is_holiday": False,
+        "is_weekend": False,
+        "events": [],
+        "source": "fallback",
     }

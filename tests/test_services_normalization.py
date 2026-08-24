@@ -2,6 +2,7 @@
 
 import pytest
 
+from options.backend import calendar_data
 from options.backend.services import historical_options, public_options
 from options.backend.services.client_type import (
     fetch_client_type_all,
@@ -361,7 +362,17 @@ def test_normalize_client_type_money_flow_is_buy_minus_sell() -> None:
 
     assert normalized["natural_money_flow"] == pytest.approx(-250_000.0)
     assert normalized["legal_money_flow"] == pytest.approx(1_000_000.0)
+    assert normalized["natural_buy_volume"] == pytest.approx(1_000.0)
+    assert normalized["natural_buy_value"] == pytest.approx(1_000_000.0)
     assert normalized["natural_buy_count"] == 10
+    assert normalized["natural_sell_volume"] == pytest.approx(800.0)
+    assert normalized["natural_sell_value"] == pytest.approx(1_250_000.0)
+    assert normalized["natural_sell_count"] == 8
+    assert normalized["legal_buy_volume"] == pytest.approx(5_000.0)
+    assert normalized["legal_buy_value"] == pytest.approx(5_000_000.0)
+    assert normalized["legal_buy_count"] == 2
+    assert normalized["legal_sell_volume"] == pytest.approx(4_000.0)
+    assert normalized["legal_sell_value"] == pytest.approx(4_000_000.0)
     assert normalized["legal_sell_count"] == 1
 
 
@@ -523,8 +534,8 @@ def test_public_client_type_latest_skips_non_object_rows(monkeypatch) -> None:
             {
                 "clientType": [
                     "bad",
-                    {"insCode": 1001, "recDate": 20250101, "buy_N_Value": 10},
-                    {"insCode": 1001, "recDate": 20250102, "buy_N_Value": 20},
+                    {"insCode": 1001, "recDate": 20250101, "buy_I_Value": 10},
+                    {"insCode": 1001, "recDate": 20250102, "buy_I_Value": 20},
                 ]
             }
         ),
@@ -646,8 +657,8 @@ def test_historical_public_client_type_skips_non_object_rows(monkeypatch) -> Non
             {
                 "clientType": [
                     "bad",
-                    {"insCode": 1001, "recDate": 20250613, "buy_N_Value": 10},
-                    {"insCode": 1001, "recDate": 20250614, "buy_N_Value": 20},
+                    {"insCode": 1001, "recDate": 20250613, "buy_I_Value": 10},
+                    {"insCode": 1001, "recDate": 20250614, "buy_I_Value": 20},
                 ]
             }
         ),
@@ -735,7 +746,7 @@ def test_historical_public_client_type_accepts_grouped_rec_date(monkeypatch) -> 
         lambda: FakePublicSession(
             {
                 "clientType": [
-                    {"insCode": "۱٬۰۰۱", "recDate": "۲۰۲۵۰۶۱۴", "buy_N_Value": "۱۲٬۰۰۰"},
+                    {"insCode": "۱٬۰۰۱", "recDate": "۲۰۲۵۰۶۱۴", "buy_I_Value": "۱۲٬۰۰۰"},
                 ]
             }
         ),
@@ -769,12 +780,20 @@ def test_public_client_type_mapping_and_money_flow_are_explicit() -> None:
         }
     )
 
-    assert normalized["natural_buy_value"] == pytest.approx(500.0)
-    assert normalized["natural_buy_count"] == 3
-    assert normalized["natural_money_flow"] == pytest.approx(-400.0)
-    assert normalized["legal_buy_value"] == pytest.approx(1_000.0)
-    assert normalized["legal_sell_count"] == 1
-    assert normalized["legal_money_flow"] == pytest.approx(250.0)
+    assert normalized["natural_buy_value"] == pytest.approx(1_000.0)
+    assert normalized["natural_buy_volume"] == pytest.approx(100.0)
+    assert normalized["natural_buy_count"] == 2
+    assert normalized["natural_sell_value"] == pytest.approx(750.0)
+    assert normalized["natural_sell_volume"] == pytest.approx(80.0)
+    assert normalized["natural_sell_count"] == 1
+    assert normalized["natural_money_flow"] == pytest.approx(250.0)
+    assert normalized["legal_buy_value"] == pytest.approx(500.0)
+    assert normalized["legal_buy_volume"] == pytest.approx(50.0)
+    assert normalized["legal_buy_count"] == 3
+    assert normalized["legal_sell_value"] == pytest.approx(900.0)
+    assert normalized["legal_sell_volume"] == pytest.approx(70.0)
+    assert normalized["legal_sell_count"] == 4
+    assert normalized["legal_money_flow"] == pytest.approx(-400.0)
 
 
 def test_historical_option_parser_and_normalizer_compute_expected_numbers() -> None:
@@ -901,3 +920,31 @@ def test_jalali_expiry_to_gregorian_int_known_cases(value, expected) -> None:
 def test_api_date_removes_dashes_only() -> None:
     assert _api_date("2025-06-14") == "20250614"
     assert _api_date("۲۰۲۵-۰۶-۱۴") == "20250614"
+
+
+def test_calendar_today_uses_api_marked_today() -> None:
+    payload = {
+        "data": {
+            "day_list": [
+                {"index_in_base1": 1, "is_today": False},
+                {"index_in_base1": 2, "is_today": True, "is_holiday": True},
+            ],
+            "event_list": [
+                {
+                    "id": 1,
+                    "title": "رویداد",
+                    "is_holiday": True,
+                    "jalali_year": 1405,
+                    "jalali_month": 6,
+                    "jalali_day": 2,
+                }
+            ],
+        }
+    }
+
+    today = calendar_data.today_from_calendar(payload, 1405, 6)
+
+    assert today is not None
+    assert today["jalali_date"] == "1405-06-02"
+    assert today["gregorian_date"] == "2026-08-24"
+    assert today["is_holiday"] is True

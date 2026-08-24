@@ -456,7 +456,7 @@ def _build_trend_person(rows: List[Dict[str, Any]], prefix: str) -> Dict[str, An
     has_yesterday_oi = any(row.get("yesterday_open_positions") is not None for row in rows)
     current_oi = _sum_rows(rows, "buy_open_positions") if has_current_oi else None
     yesterday_oi = _sum_rows(rows, "yesterday_open_positions") if has_yesterday_oi else None
-    oi_change = (current_oi or 0) - (yesterday_oi or 0) if has_current_oi or has_yesterday_oi else None
+    oi_change = current_oi - yesterday_oi if has_current_oi and has_yesterday_oi else None
 
     call_signal = 1 if call_buy > call_sell else -1 if call_sell > call_buy else 0
     put_signal = 1 if put_sell > put_buy else -1 if put_buy > put_sell else 0
