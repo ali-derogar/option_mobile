@@ -40,7 +40,7 @@ class OptionsApp(toga.App):
         self.webview: toga.WebView | None = None
         self.status_label = toga.Label(
             "در حال راه‌اندازی داشبورد...",
-            style=Pack(padding=12, color="#94a3b8", background_color="#0b1120"),
+            style=Pack(margin=12, color="#94a3b8", background_color="#0b1120"),
         )
         self.main_window.content = toga.Box(
             children=[self.status_label],

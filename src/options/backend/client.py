@@ -65,7 +65,9 @@ class TsetmcClient:
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
 
-    def _parse_expiry(self, expire_str: str) -> datetime:
+    def _parse_expiry(self, expire_str: Any) -> datetime:
+        if not isinstance(expire_str, str):
+            return datetime.now(timezone.utc)
         try:
             dt = datetime.fromisoformat(expire_str.replace("Z", "+00:00"))
             return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
@@ -98,11 +100,15 @@ class TsetmcClient:
                 )
                 body = self._parse_json(response)
                 if is_success(body):
-                    data = get_data(body) or {}
+                    data = get_data(body)
+                    if data is None:
+                        data = {}
+                    if not isinstance(data, dict):
+                        raise TsetmcAPIError("Login succeeded but response data is invalid")
                     token = data.get("token") or data.get("Token")
-                    if not token:
+                    if not isinstance(token, str) or not token.strip():
                         raise TsetmcAPIError("Login succeeded but no token in response")
-                    self._token = token
+                    self._token = token.strip()
                     expire = data.get("expireDate") or data.get("ExpireDate")
                     self._token_expires = self._parse_expiry(expire) if expire else None
                     logger.info("Logged in successfully")
@@ -134,15 +140,20 @@ class TsetmcClient:
         raise last_error or TsetmcAPIError("ورود ناموفق")
 
     def change_password(self, new_password: str) -> bool:
-        response = self._session.post(
-            self._url(ENDPOINTS["change_password"]),
-            json={
-                "Username": self.username,
-                "Password": self.password,
-                "NewPassword": new_password,
-            },
-            timeout=60,
-        )
+        try:
+            response = self._session.post(
+                self._url(ENDPOINTS["change_password"]),
+                json={
+                    "Username": self.username,
+                    "Password": self.password,
+                    "NewPassword": new_password,
+                },
+                timeout=60,
+            )
+        except requests.Timeout as exc:
+            raise TsetmcAPIError("اتصال به TSETMC هنگام تغییر رمز پاسخ نداد.") from exc
+        except requests.RequestException as exc:
+            raise TsetmcAPIError(f"خطای ارتباط با TSETMC: {exc}") from exc
         body = self._parse_json(response)
         if not is_success(body):
             code, msg = parse_api_error(body)
@@ -162,11 +173,16 @@ class TsetmcClient:
                 code=429,
             )
         try:
-            return response.json()
+            body = response.json()
         except ValueError:
             raise TsetmcAPIError(
                 f"پاسخ نامعتبر از سرور (وضعیت {response.status_code}): {response.text[:200]}"
             )
+        if not isinstance(body, dict):
+            raise TsetmcAPIError(
+                f"پاسخ نامعتبر از سرور (وضعیت {response.status_code}): JSON object expected"
+            )
+        return body
 
     def _extract_data(self, body: dict[str, Any]) -> Any:
         if not is_success(body):

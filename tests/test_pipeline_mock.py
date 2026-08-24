@@ -101,6 +101,9 @@ def test_pipeline_with_mock_api() -> None:
 
     assert result["options"] == 1
     assert result["client_type"] == 1
+    assert result["client_type_stats"] == 1
+    assert result["money_flow"] == 1
+    assert result["open_interest"] == 1
     assert result["exports"]
 
 
@@ -216,6 +219,9 @@ def test_pipeline_limit_and_skip_client_type_preserve_stored_numbers() -> None:
 
     assert result["options"] == 1
     assert result["client_type"] == 0
+    assert result["client_type_stats"] == 0
+    assert result["money_flow"] == 0
+    assert result["open_interest"] == 1
     assert len(contracts) == 1
     row = contracts.iloc[0]
     assert row["ins_code"] == 1001
@@ -227,6 +233,55 @@ def test_pipeline_limit_and_skip_client_type_preserve_stored_numbers() -> None:
     assert row["intrinsic_value"] == 500
     assert client_type.empty
     assert client.call.call_args_list
+
+
+def test_pipeline_limit_preserves_input_order() -> None:
+    mock_options = [
+        {
+            "InsCode": ins_code,
+            "InstrumentID": f"OPT{ins_code}",
+            "BuyOP": 1,
+            "SellOP": 1,
+            "YesterdayOP": 1,
+            "ContractSize": 1000,
+            "StrikePrice": 1000,
+        }
+        for ins_code in (101, 102, 103, 104)
+    ]
+
+    client = MagicMock()
+    client.login.return_value = "mock-token"
+    client.call.side_effect = lambda endpoint_key, json_body=None: {
+        "option": mock_options,
+        "instrument": [],
+        "trade_last_day": [],
+        "client_type_by_ins": [],
+    }.get(endpoint_key, [])
+
+    with TemporaryDirectory() as tmp:
+        storage = Storage(
+            db_path=Path(tmp) / "test_options.db",
+            export_dir=Path(tmp) / "exports",
+        )
+        with patch("options.backend.pipeline.validate_credentials"), patch(
+            "options.backend.pipeline.TsetmcClient", return_value=client
+        ), patch("options.backend.pipeline.Storage", return_value=storage):
+            result = run_pipeline(limit=2, skip_client_type=True, delay_between_calls=0)
+
+        contracts = storage.get_contracts_df()
+
+    assert result["options"] == 2
+    assert contracts["ins_code"].tolist() == [101, 102]
+
+
+def test_pipeline_rejects_non_positive_limit() -> None:
+    with patch("options.backend.pipeline.validate_credentials"):
+        try:
+            run_pipeline(limit=0, skip_client_type=True, delay_between_calls=0)
+        except ValueError as exc:
+            assert str(exc) == "limit must be positive"
+        else:
+            raise AssertionError("run_pipeline accepted a non-positive limit")
 
 
 def test_pipeline_falls_back_to_public_cdn_when_login_fails() -> None:
@@ -302,6 +357,9 @@ def test_pipeline_falls_back_to_public_cdn_when_login_fails() -> None:
     assert result["source"] == "public_cdn"
     assert result["options"] == 2
     assert result["client_type"] == 1
+    assert result["client_type_stats"] == 1
+    assert result["money_flow"] == 1
+    assert result["open_interest"] == 2
     assert len(contracts) == 2
     assert sorted(contracts["ins_code"].tolist()) == [101, 102]
     assert contracts.loc[contracts["ins_code"] == 101, "intrinsic_value"].iloc[0] == 200
@@ -332,7 +390,45 @@ def test_pipeline_public_fallback_skip_client_type_does_not_fetch_client_type() 
     assert result["source"] == "public_cdn"
     assert result["options"] == 0
     assert result["client_type"] == 0
+    assert result["client_type_stats"] == 0
+    assert result["money_flow"] == 0
+    assert result["open_interest"] == 0
+    assert result["warning"] is None
     fetch_client_type.assert_not_called()
+
+
+def test_pipeline_public_fallback_warns_when_client_type_rows_are_not_stored() -> None:
+    public_rows = [
+        {
+            "insCode_C": 101,
+            "lVal18AFC_C": "ضخود",
+            "lVal30_C": "اختیار خرید خودرو",
+            "strikePrice": 1000,
+        }
+    ]
+    client = MagicMock()
+    client.login.side_effect = TsetmcAPIError("login failed")
+
+    with TemporaryDirectory() as tmp:
+        storage = Storage(
+            db_path=Path(tmp) / "test_options.db",
+            export_dir=Path(tmp) / "exports",
+        )
+        with patch("options.backend.pipeline.validate_credentials"), patch(
+            "options.backend.pipeline.TsetmcClient", return_value=client
+        ), patch("options.backend.pipeline.Storage", return_value=storage), patch(
+            "options.backend.pipeline.fetch_public_option_market_watch",
+            return_value=public_rows,
+        ), patch(
+            "options.backend.pipeline.fetch_public_client_type_latest_many",
+            return_value=[{"ins_code": "bad", "natural_money_flow": 10}],
+        ):
+            result = run_pipeline(skip_client_type=False, delay_between_calls=0)
+
+    assert result["options"] == 1
+    assert result["client_type_stats"] == 0
+    assert result["money_flow"] == 0
+    assert result["warning"]
 
 
 if __name__ == "__main__":

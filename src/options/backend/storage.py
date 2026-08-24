@@ -166,6 +166,14 @@ class ClientTypeStats(Base):
     fetched_at = Column(DateTime, nullable=False, index=True)
 
 
+class AppState(Base):
+    __tablename__ = "app_state"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=False)
+
+
 class Storage:
     def __init__(self, db_path: Optional[Path] = None, export_dir: Optional[Path] = None):
         self.db_path = db_path or DATABASE_PATH
@@ -183,6 +191,22 @@ class Storage:
     def now(self) -> datetime:
         return datetime.now(timezone.utc)
 
+    def is_activated(self) -> bool:
+        with self.session() as session:
+            row = session.get(AppState, "activated")
+            return row is not None and row.value == "1"
+
+    def set_activated(self, activated: bool = True) -> None:
+        now = self.now()
+        with self.session() as session:
+            row = session.get(AppState, "activated")
+            if row is None:
+                session.add(AppState(key="activated", value="1" if activated else "0", updated_at=now))
+            else:
+                row.value = "1" if activated else "0"
+                row.updated_at = now
+            session.commit()
+
     @staticmethod
     def snapshot_date_for(dt: Optional[datetime] = None) -> str:
         dt = dt or datetime.now(timezone.utc)
@@ -193,9 +217,7 @@ class Storage:
     def _ensure_schema(self) -> None:
         """Add lightweight columns for existing SQLite databases."""
         inspector = inspect(self.engine)
-        if "contracts" not in inspector.get_table_names():
-            return
-        existing = {col["name"] for col in inspector.get_columns("contracts")}
+        tables = set(inspector.get_table_names())
         columns = {
             "option_type": "VARCHAR(16)",
             "underlying_symbol": "VARCHAR(128)",
@@ -205,19 +227,23 @@ class Storage:
             "moneyness": "VARCHAR(16)",
             "intrinsic_value": "FLOAT",
         }
-        missing = [(name, sql_type) for name, sql_type in columns.items() if name not in existing]
-        if not missing:
-            return
         with self.engine.begin() as conn:
-            for name, sql_type in missing:
-                conn.execute(text(f"ALTER TABLE contracts ADD COLUMN {name} {sql_type}"))
+            for table_name in ("contracts", "contract_snapshots"):
+                if table_name not in tables:
+                    continue
+                existing = {col["name"] for col in inspector.get_columns(table_name)}
+                missing = [(name, sql_type) for name, sql_type in columns.items() if name not in existing]
+                for name, sql_type in missing:
+                    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {sql_type}"))
 
     def upsert_contracts(self, contracts: List[Dict[str, Any]]) -> int:
         now = self.now()
         count = 0
         with self.session() as session:
             for c in contracts:
-                ins_code = c.get("ins_code")
+                if not isinstance(c, dict):
+                    continue
+                ins_code = self._coerce_ins_code(c.get("ins_code"))
                 if not ins_code:
                     continue
                 existing = session.get(Contract, ins_code)
@@ -234,7 +260,7 @@ class Storage:
                     "yesterday_open_positions": c.get("yesterday_open_positions"),
                     "contract_size": c.get("contract_size"),
                     "strike_price": c.get("strike_price"),
-                    "underlying_ins_code": c.get("underlying_ins_code"),
+                    "underlying_ins_code": self._coerce_ins_code(c.get("underlying_ins_code")),
                     "underlying_symbol": c.get("underlying_symbol"),
                     "underlying_short_name": c.get("underlying_short_name"),
                     "underlying_last_price": c.get("underlying_last_price"),
@@ -277,11 +303,13 @@ class Storage:
         snapshot_date: Optional[str] = None,
     ) -> int:
         now = self.now()
-        snapshot_date = snapshot_date or self.snapshot_date_for(now)
+        snapshot_date = _normalize_date_text(snapshot_date) if snapshot_date else self.snapshot_date_for(now)
         count = 0
         with self.session() as session:
             for c in contracts:
-                ins_code = c.get("ins_code")
+                if not isinstance(c, dict):
+                    continue
+                ins_code = self._coerce_ins_code(c.get("ins_code"))
                 if not ins_code:
                     continue
                 instrument_meta = c.get("instrument_meta")
@@ -300,7 +328,7 @@ class Storage:
                         yesterday_open_positions=c.get("yesterday_open_positions"),
                         contract_size=c.get("contract_size"),
                         strike_price=c.get("strike_price"),
-                        underlying_ins_code=c.get("underlying_ins_code"),
+                        underlying_ins_code=self._coerce_ins_code(c.get("underlying_ins_code")),
                         underlying_symbol=c.get("underlying_symbol"),
                         underlying_short_name=c.get("underlying_short_name"),
                         underlying_last_price=c.get("underlying_last_price"),
@@ -335,44 +363,64 @@ class Storage:
 
     def insert_open_interest(self, rows: List[Dict[str, Any]]) -> int:
         now = self.now()
+        count = 0
         with self.session() as session:
             for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                ins_code = self._coerce_ins_code(row.get("ins_code"))
+                if not ins_code:
+                    continue
                 session.add(
                     OpenInterestSnapshot(
-                        ins_code=row["ins_code"],
+                        ins_code=ins_code,
                         buy_open_positions=row.get("buy_open_positions"),
                         sell_open_positions=row.get("sell_open_positions"),
                         yesterday_open_positions=row.get("yesterday_open_positions"),
                         fetched_at=now,
                     )
                 )
+                count += 1
             session.commit()
-        return len(rows)
+        return count
 
     def insert_money_flow(self, rows: List[Dict[str, Any]]) -> int:
         now = self.now()
+        count = 0
         with self.session() as session:
             for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                ins_code = self._coerce_ins_code(row.get("ins_code"))
+                if not ins_code:
+                    continue
                 session.add(
                     MoneyFlowSnapshot(
-                        ins_code=row["ins_code"],
-                        rec_date=row.get("rec_date"),
+                        ins_code=ins_code,
+                        rec_date=self._coerce_rec_date(row.get("rec_date")),
                         natural_money_flow=row.get("natural_money_flow"),
                         legal_money_flow=row.get("legal_money_flow"),
                         fetched_at=now,
                     )
                 )
+                count += 1
             session.commit()
-        return len(rows)
+        return count
 
     def insert_client_type_stats(self, rows: List[Dict[str, Any]]) -> int:
         now = self.now()
+        count = 0
         with self.session() as session:
             for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                ins_code = self._coerce_ins_code(row.get("ins_code"))
+                if not ins_code:
+                    continue
                 session.add(
                     ClientTypeStats(
-                        ins_code=row["ins_code"],
-                        rec_date=row.get("rec_date"),
+                        ins_code=ins_code,
+                        rec_date=self._coerce_rec_date(row.get("rec_date")),
                         natural_buy_volume=row.get("natural_buy_volume"),
                         natural_buy_value=row.get("natural_buy_value"),
                         natural_buy_count=row.get("natural_buy_count"),
@@ -390,12 +438,13 @@ class Storage:
                         fetched_at=now,
                     )
                 )
+                count += 1
             session.commit()
-        return len(rows)
+        return count
 
     def get_contracts_df(self, snapshot_date: Optional[str] = None) -> pd.DataFrame:
         if snapshot_date:
-            return self.get_contract_snapshot_df(snapshot_date)
+            return self.get_contract_snapshot_df(_normalize_date_text(snapshot_date))
         with self.session() as session:
             rows = session.scalars(select(Contract)).all()
             if not rows:
@@ -406,6 +455,8 @@ class Storage:
         with self.session() as session:
             if snapshot_date is None:
                 snapshot_date = self.get_latest_snapshot_date()
+            else:
+                snapshot_date = _normalize_date_text(snapshot_date)
             if snapshot_date is None:
                 return pd.DataFrame()
             latest_fetched_at = session.scalar(
@@ -421,11 +472,14 @@ class Storage:
                     ContractSnapshot.snapshot_date == snapshot_date,
                     ContractSnapshot.fetched_at == latest_fetched_at,
                 )
-                .order_by(ContractSnapshot.ins_code)
+                .order_by(ContractSnapshot.ins_code, ContractSnapshot.id)
             ).all()
             if not rows:
                 return pd.DataFrame()
-            return pd.DataFrame([self._contract_to_dict(r) for r in rows])
+            df = pd.DataFrame([self._contract_to_dict(r) for r in rows])
+            if "ins_code" in df.columns:
+                df = df.drop_duplicates("ins_code", keep="last").reset_index(drop=True)
+            return df
 
     def get_available_snapshot_dates(self) -> List[str]:
         with self.session() as session:
@@ -441,6 +495,7 @@ class Storage:
         return dates[0] if dates else None
 
     def has_contract_snapshot_date(self, snapshot_date: str) -> bool:
+        snapshot_date = _normalize_date_text(snapshot_date)
         with self.session() as session:
             count = session.scalar(
                 select(func.count(ContractSnapshot.id)).where(
@@ -450,30 +505,63 @@ class Storage:
             return bool(count)
 
     def has_underlying_snapshot_key(self, underlying_key: str) -> bool:
-        if not str(underlying_key).isdigit():
+        key = str(underlying_key).strip()
+        if not key:
             return False
+        numeric_key = _clean_numeric_text(key)
         with self.session() as session:
+            if numeric_key.isdigit():
+                count = session.scalar(
+                    select(func.count(ContractSnapshot.id)).where(
+                        ContractSnapshot.underlying_ins_code == int(numeric_key)
+                    )
+                )
+                if count:
+                    return True
+                rows = session.scalars(select(ContractSnapshot.underlying_ins_code)).all()
+                return any(self._coerce_ins_code(row) == int(numeric_key) for row in rows)
             count = session.scalar(
                 select(func.count(ContractSnapshot.id)).where(
-                    ContractSnapshot.underlying_ins_code == int(underlying_key)
+                    (ContractSnapshot.underlying_symbol == key)
+                    | (ContractSnapshot.underlying_short_name == key)
                 )
             )
-            return bool(count)
+            if count:
+                return True
+            normalized_key = _normalize_lookup_text(key)
+            if not normalized_key:
+                return False
+            rows = session.execute(
+                select(
+                    ContractSnapshot.underlying_symbol,
+                    ContractSnapshot.underlying_short_name,
+                )
+            ).all()
+            return any(
+                normalized_key
+                in {
+                    _normalize_lookup_text(symbol),
+                    _normalize_lookup_text(short_name),
+                }
+                for symbol, short_name in rows
+            )
 
     def get_contract_metadata_by_ins_code(self) -> Dict[int, Dict[str, Any]]:
         df = self.get_contracts_df()
         if df.empty or "ins_code" not in df.columns:
             return {}
-        return {
-            int(row["ins_code"]): row
-            for row in df.to_dict(orient="records")
-            if row.get("ins_code")
-        }
+        metadata: Dict[int, Dict[str, Any]] = {}
+        for row in df.to_dict(orient="records"):
+            ins_code = self._coerce_ins_code(row.get("ins_code"))
+            if ins_code:
+                metadata[ins_code] = row
+        return metadata
 
     def get_latest_client_type_df(self, snapshot_date: Optional[str] = None) -> pd.DataFrame:
         with self.session() as session:
             stmt = select(ClientTypeStats)
             if snapshot_date:
+                snapshot_date = _normalize_date_text(snapshot_date)
                 api_date = int(snapshot_date.replace("-", ""))
                 rec_date_count = session.scalar(
                     select(func.count(ClientTypeStats.id)).where(
@@ -483,6 +571,16 @@ class Storage:
                 if rec_date_count:
                     stmt = stmt.where(ClientTypeStats.rec_date == api_date)
                 else:
+                    legacy_rows = session.scalars(
+                        select(ClientTypeStats).order_by(ClientTypeStats.ins_code)
+                    ).all()
+                    legacy_df = pd.DataFrame([self._client_type_to_dict(r) for r in legacy_rows])
+                    if not legacy_df.empty and "rec_date" in legacy_df.columns:
+                        legacy_df = legacy_df[
+                            legacy_df["rec_date"].map(self._coerce_rec_date) == api_date
+                        ]
+                        if not legacy_df.empty:
+                            return self._latest_client_type_rows(legacy_df)
                     start = datetime.combine(
                         datetime.strptime(snapshot_date, "%Y-%m-%d").date(),
                         time.min,
@@ -498,10 +596,7 @@ class Storage:
             if not rows:
                 return pd.DataFrame()
             df = pd.DataFrame([self._client_type_to_dict(r) for r in rows])
-            if "fetched_at" in df.columns:
-                latest = df.groupby("ins_code")["fetched_at"].transform("max")
-                df = df[df["fetched_at"] == latest]
-            return df
+            return self._latest_client_type_rows(df)
 
     def get_open_interest_history_df(
         self,
@@ -513,6 +608,7 @@ class Storage:
             if ins_code is not None:
                 stmt = stmt.where(OpenInterestSnapshot.ins_code == ins_code)
             if through_date:
+                through_date = _normalize_date_text(through_date)
                 through_end = (
                     datetime.combine(
                         datetime.strptime(through_date, "%Y-%m-%d").date(),
@@ -594,6 +690,67 @@ class Storage:
                     )
                 )
             session.commit()
+
+    @staticmethod
+    def _coerce_ins_code(value: Any) -> Optional[int]:
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            ins_code = value
+            return ins_code if ins_code > 0 else None
+        if isinstance(value, float):
+            if not pd.notna(value) or not value.is_integer():
+                return None
+            ins_code = int(value)
+            return ins_code if ins_code > 0 else None
+        if isinstance(value, str):
+            value = _clean_numeric_text(value)
+            if not value:
+                return None
+        try:
+            ins_code = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return ins_code if ins_code > 0 else None
+
+    @staticmethod
+    def _coerce_rec_date(value: Any) -> Optional[int]:
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value > 0 else None
+        if isinstance(value, float):
+            if not pd.notna(value) or not value.is_integer():
+                return None
+            rec_date = int(value)
+            return rec_date if rec_date > 0 else None
+        if isinstance(value, str):
+            value = _clean_date_number_text(value)
+            if not value:
+                return None
+        try:
+            rec_date = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return rec_date if rec_date > 0 else None
+
+    @classmethod
+    def _latest_client_type_rows(cls, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty or "ins_code" not in df.columns:
+            return df
+        df = df.copy()
+        df["_rec_date_key"] = df.get("rec_date", pd.Series(index=df.index, dtype=object)).map(cls._coerce_rec_date)
+        if "fetched_at" not in df.columns:
+            return (
+                df.sort_values(["ins_code", "_rec_date_key"], na_position="first")
+                .drop_duplicates("ins_code", keep="last")
+                .drop(columns=["_rec_date_key"], errors="ignore")
+            )
+        return (
+            df.sort_values(["ins_code", "_rec_date_key", "fetched_at"], na_position="first")
+            .drop_duplicates("ins_code", keep="last")
+            .drop(columns=["_rec_date_key"], errors="ignore")
+        )
 
     def export_csv(self, prefix: str = "") -> Dict[str, Path]:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -691,3 +848,34 @@ class Storage:
             "legal_money_flow": r.legal_money_flow,
             "fetched_at": r.fetched_at,
         }
+
+
+def _normalize_lookup_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return (
+        str(value)
+        .strip()
+        .lower()
+        .replace("ي", "ی")
+        .replace("ك", "ک")
+        .replace("\u200c", "")
+    )
+
+
+def _clean_numeric_text(value: str) -> str:
+    return (
+        value.strip()
+        .replace(",", "")
+        .replace("٬", "")
+        .replace("،", "")
+        .replace(" ", "")
+    )
+
+
+def _clean_date_number_text(value: str) -> str:
+    return _clean_numeric_text(value).replace("-", "").replace("/", "")
+
+
+def _normalize_date_text(value: str) -> str:
+    return value.strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))

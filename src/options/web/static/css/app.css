@@ -4292,3 +4292,73 @@ html[data-theme="dark"] .filters select {
     background-position: -220% 0;
   }
 }
+
+.activation-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(8, 13, 24, 0.86);
+  backdrop-filter: blur(12px);
+}
+
+.activation-dialog {
+  width: min(100%, 340px);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.85rem;
+  padding: 1.25rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.activation-logo {
+  align-self: center;
+}
+
+.activation-dialog h2 {
+  margin: 0.15rem 0 0;
+  font-size: 1.05rem;
+  text-align: center;
+}
+
+.activation-dialog p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  text-align: center;
+}
+
+.activation-dialog input {
+  width: 100%;
+  min-height: 44px;
+  color: var(--text);
+  background: rgba(8, 13, 24, 0.58);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.8rem;
+  font: inherit;
+  direction: ltr;
+  text-align: center;
+}
+
+.activation-dialog input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.activation-dialog .btn {
+  justify-content: center;
+}
+
+.activation-error {
+  color: var(--red) !important;
+}

@@ -119,3 +119,129 @@ def test_bearish_sentiment_when_put_buy_and_call_sell_dominate() -> None:
     assert item["score"] <= -3
     assert item["call_put_ratio"] == 0.2
 
+
+def test_sentiment_open_interest_uses_position_count_once() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "symbol": "ضخود100",
+                "long_name": "اختیار خرید خودرو",
+                "underlying_ins_code": 2001,
+                "underlying_symbol": "خودرو",
+                "underlying_last_price": 120,
+                "end_date": 20250630,
+                "strike_price": 100,
+                "trade_volume": 100,
+                "buy_open_positions": 600,
+                "sell_open_positions": 600,
+                "yesterday_open_positions": 500,
+            },
+            {
+                "symbol": "طخود100",
+                "long_name": "اختیار فروش خودرو",
+                "underlying_ins_code": 2001,
+                "underlying_symbol": "خودرو",
+                "underlying_last_price": 120,
+                "end_date": 20250630,
+                "strike_price": 100,
+                "trade_volume": 50,
+                "buy_open_positions": 300,
+                "sell_open_positions": 300,
+                "yesterday_open_positions": 250,
+            },
+        ]
+    )
+
+    item = analyze_options_sentiment(df)["items"][0]
+
+    assert item["open_interest"] == 900
+    assert item["yesterday_open_interest"] == 750
+    assert item["open_interest_change"] == 150
+
+
+def test_sentiment_preserves_zero_underlying_last_price() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "symbol": "طخود100",
+                "long_name": "اختیار فروش خودرو",
+                "underlying_ins_code": 2001,
+                "underlying_symbol": "خودرو",
+                "underlying_last_price": 0,
+                "underlying_closing_price": 120,
+                "end_date": 20250630,
+                "strike_price": 100,
+                "trade_volume": 100,
+            }
+        ]
+    )
+
+    item = analyze_options_sentiment(df)["items"][0]
+
+    assert item["underlying_price"] == 0
+    assert item["put_itm_volume"] == 100
+
+
+def test_sentiment_groups_missing_underlying_codes_by_symbol() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "symbol": "ضخود100",
+                "long_name": "اختیار خرید خودرو",
+                "underlying_ins_code": None,
+                "underlying_symbol": "خودرو",
+                "underlying_last_price": 120,
+                "end_date": 20250630,
+                "strike_price": 100,
+                "trade_volume": 100,
+            },
+            {
+                "symbol": "ضفلا100",
+                "long_name": "اختیار خرید فولاد",
+                "underlying_ins_code": None,
+                "underlying_symbol": "فولاد",
+                "underlying_last_price": 80,
+                "end_date": 20250630,
+                "strike_price": 100,
+                "trade_volume": 200,
+            },
+        ]
+    )
+
+    result = analyze_options_sentiment(df)
+
+    assert result["summary"]["group_count"] == 2
+    assert {item["underlying_symbol"] for item in result["items"]} == {"خودرو", "فولاد"}
+
+
+def test_sentiment_groups_equivalent_underlying_codes_together() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "symbol": "ضخود100",
+                "long_name": "اختیار خرید خودرو",
+                "underlying_ins_code": "۲٬۰۰۱",
+                "underlying_symbol": "خودرو",
+                "underlying_last_price": 120,
+                "end_date": 20250630,
+                "strike_price": 100,
+                "trade_volume": 100,
+            },
+            {
+                "symbol": "ضخود120",
+                "long_name": "اختیار خرید خودرو",
+                "underlying_ins_code": 2001,
+                "underlying_symbol": "خودرو",
+                "underlying_last_price": 120,
+                "end_date": 20250630,
+                "strike_price": 120,
+                "trade_volume": 200,
+            },
+        ]
+    )
+
+    result = analyze_options_sentiment(df)
+
+    assert result["summary"]["group_count"] == 1
+    assert result["items"][0]["contract_count"] == 2
+    assert result["items"][0]["underlying_ins_code"] == 2001

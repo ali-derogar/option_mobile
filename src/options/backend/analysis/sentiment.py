@@ -106,11 +106,13 @@ def analyze_options_sentiment(contracts: pd.DataFrame) -> Dict[str, Any]:
     df["sentiment_trade_volume"] = df.apply(_trade_volume, axis=1)
     df["sentiment_current_oi"] = df.apply(_current_open_interest, axis=1)
     df["sentiment_oi_change"] = df.apply(_open_interest_change, axis=1)
+    df["sentiment_underlying_key"] = df.apply(_underlying_group_key, axis=1)
 
-    group_cols = ["underlying_ins_code", "end_date"]
+    group_cols = ["sentiment_underlying_key", "end_date"]
     items: List[Dict[str, Any]] = []
     grouped = df.groupby(group_cols, dropna=False, sort=True)
-    for (underlying_ins_code, end_date), group in grouped:
+    for (_underlying_key, end_date), group in grouped:
+        underlying_ins_code = _first_non_empty(group, "underlying_ins_code")
         items.append(_analyze_group(group, underlying_ins_code, end_date))
 
     summary = _summarize(items)
@@ -267,7 +269,37 @@ def _analyze_group(group: pd.DataFrame, underlying_ins_code: Any, end_date: Any)
 
 
 def _effective_underlying_price(row: pd.Series) -> Optional[float]:
-    return _to_float(row.get("underlying_last_price")) or _to_float(row.get("underlying_closing_price"))
+    last_price = _to_float(row.get("underlying_last_price"))
+    if last_price is not None:
+        return last_price
+    return _to_float(row.get("underlying_closing_price"))
+
+
+def _underlying_group_key(row: pd.Series) -> str:
+    code = row.get("underlying_ins_code")
+    if code is not None:
+        text = _clean_numeric_text(str(code))
+        if text.isdigit():
+            try:
+                return str(int(text))
+            except ValueError:
+                return text
+    symbol = _first_text(row.get("underlying_symbol")) or _first_text(row.get("underlying_short_name"))
+    return symbol or "unknown"
+
+
+def _first_text(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none"}:
+        return ""
+    return (
+        text.lower()
+        .replace("ي", "ی")
+        .replace("ك", "ک")
+        .replace("\u200c", "")
+    )
 
 
 def _buy_volume(row: pd.Series) -> Optional[float]:
@@ -293,8 +325,10 @@ def _trade_volume(row: pd.Series) -> Optional[float]:
 
 
 def _current_open_interest(row: pd.Series) -> Optional[float]:
-    values = [_to_float(row.get("buy_open_positions")), _to_float(row.get("sell_open_positions"))]
-    return _sum_values(values)
+    buy_positions = _to_float(row.get("buy_open_positions"))
+    if buy_positions is not None:
+        return buy_positions
+    return _to_float(row.get("sell_open_positions"))
 
 
 def _open_interest_change(row: pd.Series) -> Optional[float]:
@@ -386,6 +420,10 @@ def _same_side_volume(a: Optional[float], b: Optional[float]) -> bool:
 def _to_float(value: Any) -> Optional[float]:
     if value is None:
         return None
+    if isinstance(value, str):
+        value = _clean_numeric_text(value)
+        if not value:
+            return None
     try:
         num = float(value)
     except (TypeError, ValueError):
@@ -393,6 +431,16 @@ def _to_float(value: Any) -> Optional[float]:
     if not isfinite(num):
         return None
     return num
+
+
+def _clean_numeric_text(value: str) -> str:
+    return (
+        value.strip()
+        .replace(",", "")
+        .replace("٬", "")
+        .replace("،", "")
+        .replace(" ", "")
+    )
 
 
 def _serialize_num(value: Any) -> Any:

@@ -77,13 +77,13 @@ def _store_public_option_fallback(
         for c in contracts
     ]
 
-    storage.upsert_contracts(contracts)
+    options_stored = storage.upsert_contracts(contracts)
     storage.insert_contract_snapshot(contracts)
-    storage.insert_open_interest(open_interest_rows)
+    open_interest_stored = storage.insert_open_interest(open_interest_rows)
     progress(
         stage="contracts_stored",
-        message=f"{len(contracts)} قرارداد از CDN رسمی ذخیره شد",
-        options_stored=len(contracts),
+        message=f"{options_stored} قرارداد از CDN رسمی ذخیره شد",
+        options_stored=options_stored,
     )
 
     client_type_rows: List[Dict[str, Any]] = []
@@ -96,20 +96,33 @@ def _store_public_option_fallback(
         )
         client_type_rows = fetch_public_client_type_latest_many(ins_codes)
         if client_type_rows:
-            storage.insert_client_type_stats(client_type_rows)
-            storage.insert_money_flow(client_type_rows)
+            client_type_stored = storage.insert_client_type_stats(client_type_rows)
+            money_flow_stored = storage.insert_money_flow(client_type_rows)
+        else:
+            client_type_stored = 0
+            money_flow_stored = 0
         progress(
             stage="client_type_stored",
-            message=f"{len(client_type_rows)} رکورد حقیقی/حقوقی عمومی ذخیره شد",
-            client_type_records=len(client_type_rows),
+            message=f"{client_type_stored} رکورد حقیقی/حقوقی عمومی ذخیره شد",
+            client_type_records=client_type_stored,
         )
+    else:
+        client_type_stored = 0
+        money_flow_stored = 0
 
     export_paths = storage.export_csv(prefix="public")
     return {
-        "options": len(contracts),
-        "client_type": len(client_type_rows),
+        "options": options_stored,
+        "client_type": client_type_stored,
+        "client_type_stats": client_type_stored,
+        "money_flow": money_flow_stored,
+        "open_interest": open_interest_stored,
         "source": "public_cdn",
-        "warning": None if client_type_rows else "داده حقیقی/حقوقی عمومی برای قراردادها دریافت نشد.",
+        "warning": (
+            None
+            if skip_client_type or client_type_stored
+            else "داده حقیقی/حقوقی عمومی برای قراردادها دریافت نشد."
+        ),
         "exports": {k: str(v) for k, v in export_paths.items()},
     }
 
@@ -127,6 +140,9 @@ def run_pipeline(
     3. Full client type buy/sell numbers
     4. All contract information
     """
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be positive")
+
     validate_credentials()
     client = TsetmcClient()
     storage = Storage()
@@ -159,19 +175,25 @@ def run_pipeline(
 
     if not raw_options:
         logger.warning("No option data returned. Check credentials and API access.")
-        return {"options": 0, "client_type": 0, "exports": {}}
+        return {
+            "options": 0,
+            "client_type": 0,
+            "client_type_stats": 0,
+            "money_flow": 0,
+            "open_interest": 0,
+            "exports": {},
+        }
 
-    option_ins_codes: Set[int] = set()
     normalized_options: List[Dict[str, Any]] = []
     for row in raw_options:
         opt = normalize_option(row)
         if opt["ins_code"]:
-            option_ins_codes.add(opt["ins_code"])
             normalized_options.append(opt)
 
-    if limit:
-        option_ins_codes = set(list(option_ins_codes)[:limit])
-        normalized_options = [o for o in normalized_options if o["ins_code"] in option_ins_codes]
+    if limit is not None:
+        normalized_options = normalized_options[:limit]
+
+    option_ins_codes: Set[int] = {o["ins_code"] for o in normalized_options}
 
     logger.info("Fetching instrument metadata (Flow=%s)...", TSETMC_FLOW)
     progress(stage="instruments", message="در حال دریافت مشخصات نمادها")
@@ -242,14 +264,14 @@ def run_pipeline(
             }
         )
 
-    storage.upsert_contracts(enriched_contracts)
+    options_stored = storage.upsert_contracts(enriched_contracts)
     storage.insert_contract_snapshot(enriched_contracts)
-    storage.insert_open_interest(open_interest_rows)
+    open_interest_stored = storage.insert_open_interest(open_interest_rows)
     logger.info("Stored %d contracts and open interest snapshots", len(enriched_contracts))
     progress(
         stage="contracts_stored",
-        message=f"{len(enriched_contracts)} قرارداد ذخیره شد",
-        options_stored=len(enriched_contracts),
+        message=f"{options_stored} قرارداد ذخیره شد",
+        options_stored=options_stored,
     )
 
     client_type_rows: List[Dict[str, Any]] = []
@@ -282,22 +304,28 @@ def run_pipeline(
             except TsetmcAPIError as exc:
                 logger.warning("ClientType failed for ins_code=%s: %s", ins_code, exc)
 
-        storage.insert_client_type_stats(client_type_rows)
-        storage.insert_money_flow(client_type_rows)
-        logger.info("Stored %d client type records", len(client_type_rows))
+        client_type_stored = storage.insert_client_type_stats(client_type_rows)
+        money_flow_stored = storage.insert_money_flow(client_type_rows)
+        logger.info("Stored %d client type records", client_type_stored)
         progress(
             stage="client_type_stored",
-            message=f"{len(client_type_rows)} رکورد حقیقی/حقوقی ذخیره شد",
-            client_type_records=len(client_type_rows),
+            message=f"{client_type_stored} رکورد حقیقی/حقوقی ذخیره شد",
+            client_type_records=client_type_stored,
         )
+    else:
+        client_type_stored = 0
+        money_flow_stored = 0
 
     progress(stage="export", message="در حال ساخت خروجی CSV")
     export_paths = storage.export_csv()
     logger.info("Pipeline complete. Exports: %s", export_paths)
 
     return {
-        "options": len(enriched_contracts),
-        "client_type": len(client_type_rows),
+        "options": options_stored,
+        "client_type": client_type_stored,
+        "client_type_stats": client_type_stored,
+        "money_flow": money_flow_stored,
+        "open_interest": open_interest_stored,
         "exports": {k: str(v) for k, v in export_paths.items()},
     }
 

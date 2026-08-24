@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+from math import isfinite
+from numbers import Real
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -14,14 +16,21 @@ ID_FIELDS = {"ins_code", "underlying_ins_code", "underlying_key"}
 
 
 def _serialize_value(val: Any, key: Optional[str] = None) -> Any:
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(val, Real) and not isinstance(val, bool) and not isfinite(float(val)):
+        return None
     if key in ID_FIELDS and _is_present(val):
         return _code_to_string(val)
-    if isinstance(val, datetime):
-        return val.isoformat()
     if isinstance(val, pd.Timestamp):
         return val.isoformat()
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return None
+    if hasattr(val, "item") and type(val).__module__.startswith("numpy"):
+        return _serialize_value(val.item(), key)
+    if isinstance(val, datetime):
+        return val.isoformat()
     return val
 
 
@@ -47,10 +56,18 @@ def get_merged_contracts(storage: Storage, snapshot_date: Optional[str] = None) 
     client_type = storage.get_latest_client_type_df(snapshot_date=snapshot_date)
     if client_type.empty:
         return contracts
+    if "ins_code" not in contracts.columns or "ins_code" not in client_type.columns:
+        return contracts
+    contracts = contracts.copy()
+    client_type = client_type.copy()
+    merge_key = "_merge_ins_code"
+    contracts[merge_key] = contracts["ins_code"].map(_code_to_string)
+    client_type[merge_key] = client_type["ins_code"].map(_code_to_string)
     ct_cols = list(client_type.columns)
-    drop_cols = [c for c in ct_cols if c in contracts.columns and c != "ins_code"]
+    drop_cols = [c for c in ct_cols if c in contracts.columns and c != merge_key]
     client_type = client_type.drop(columns=drop_cols, errors="ignore")
-    return contracts.merge(client_type, on="ins_code", how="left")
+    merged = contracts.merge(client_type, on=merge_key, how="left")
+    return merged.drop(columns=[merge_key], errors="ignore")
 
 
 def _is_present(value: Any) -> bool:
@@ -67,7 +84,7 @@ def _is_present(value: Any) -> bool:
 def _normalize_text(value: Any) -> str:
     if not _is_present(value):
         return ""
-    return (
+    return _translate_digits(
         str(value)
         .strip()
         .lower()
@@ -91,6 +108,12 @@ def _text_mask(df: pd.DataFrame, columns: tuple[str, ...], query: str) -> pd.Ser
 
 def _code_to_string(value: Any) -> str:
     if isinstance(value, str):
+        text = _clean_numeric_text(value)
+        if text.isdigit():
+            try:
+                return str(int(text))
+            except ValueError:
+                return text
         return value.strip()
     try:
         if pd.isna(value):
@@ -112,19 +135,73 @@ def _underlying_key(row: pd.Series) -> Optional[str]:
     return None
 
 
+def _attach_underlying_keys(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    symbol_to_key: Dict[str, str] = {}
+    for _, row in df.iterrows():
+        code = row.get("underlying_ins_code")
+        symbol = row.get("underlying_symbol")
+        short_name = row.get("underlying_short_name")
+        if not _is_present(code):
+            continue
+        key = _code_to_string(code)
+        for text in (symbol, short_name):
+            normalized = _normalize_text(text)
+            if normalized:
+                symbol_to_key.setdefault(normalized, key)
+
+    def key_for(row: pd.Series) -> Optional[str]:
+        code_key = _underlying_key(row)
+        if code_key and _clean_numeric_text(code_key).isdigit():
+            return code_key
+        for text in (row.get("underlying_symbol"), row.get("underlying_short_name")):
+            normalized = _normalize_text(text)
+            if normalized in symbol_to_key:
+                return symbol_to_key[normalized]
+        return code_key
+
+    df["underlying_key"] = df.apply(key_for, axis=1)
+    return df
+
+
 def _sum_or_none(series: pd.Series) -> Optional[float]:
-    value = pd.to_numeric(series, errors="coerce").sum(min_count=1)
+    numeric = _numeric_series(series)
+    value = numeric.sum(min_count=1)
     return None if pd.isna(value) else float(value)
 
 
 def _min_or_none(series: pd.Series) -> Optional[float]:
-    value = pd.to_numeric(series, errors="coerce").min()
+    numeric = _numeric_series(series)
+    value = numeric.min()
     return None if pd.isna(value) else float(value)
 
 
 def _max_or_none(series: pd.Series) -> Optional[float]:
-    value = pd.to_numeric(series, errors="coerce").max()
+    numeric = _numeric_series(series)
+    value = numeric.max()
     return None if pd.isna(value) else float(value)
+
+
+def _numeric_series(series: pd.Series) -> pd.Series:
+    numeric = series.map(_to_finite_float)
+    return numeric[numeric.notna()]
+
+
+def _to_finite_float(value: Any) -> Optional[float]:
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        value = _clean_numeric_text(value)
+        if not value:
+            return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if isfinite(number) else None
 
 
 def _first_present(series: pd.Series) -> Any:
@@ -143,15 +220,16 @@ def get_underlyings(
     if merged.empty:
         return {"items": [], "total": 0}
 
-    df = merged.copy()
-    df["underlying_key"] = df.apply(_underlying_key, axis=1)
+    df = _attach_underlying_keys(merged)
     df = df[df["underlying_key"].notna()]
     if q:
         df = df[_text_mask(df, ("underlying_symbol", "underlying_short_name"), q)]
 
     items: List[Dict[str, Any]] = []
     for key, group in df.groupby("underlying_key", dropna=True):
-        end_dates = pd.to_numeric(group.get("end_date"), errors="coerce") if "end_date" in group else pd.Series(dtype=float)
+        end_dates = group.get("end_date", pd.Series(dtype=float))
+        nearest_end_date = _min_or_none(end_dates)
+        latest_end_date = _max_or_none(end_dates)
         strikes = group.get("strike_price", pd.Series(dtype=float))
         items.append(
             {
@@ -162,13 +240,17 @@ def get_underlyings(
                 ),
                 "underlying_symbol": _first_present(group.get("underlying_symbol", pd.Series(dtype=object))),
                 "underlying_short_name": _first_present(group.get("underlying_short_name", pd.Series(dtype=object))),
-                "underlying_last_price": _first_present(group.get("underlying_last_price", pd.Series(dtype=object))),
-                "underlying_closing_price": _first_present(group.get("underlying_closing_price", pd.Series(dtype=object))),
+                "underlying_last_price": _serialize_value(
+                    _first_present(group.get("underlying_last_price", pd.Series(dtype=object)))
+                ),
+                "underlying_closing_price": _serialize_value(
+                    _first_present(group.get("underlying_closing_price", pd.Series(dtype=object)))
+                ),
                 "contract_count": int(group.shape[0]),
                 "call_count": int((group.get("option_type") == "call").sum()) if "option_type" in group else 0,
                 "put_count": int((group.get("option_type") == "put").sum()) if "option_type" in group else 0,
-                "nearest_end_date": None if end_dates.empty or pd.isna(end_dates.min()) else int(end_dates.min()),
-                "latest_end_date": None if end_dates.empty or pd.isna(end_dates.max()) else int(end_dates.max()),
+                "nearest_end_date": None if nearest_end_date is None else int(nearest_end_date),
+                "latest_end_date": None if latest_end_date is None else int(latest_end_date),
                 "min_strike_price": _min_or_none(strikes),
                 "max_strike_price": _max_or_none(strikes),
                 "trade_volume": _sum_or_none(group.get("trade_volume", pd.Series(dtype=float))),
@@ -176,7 +258,7 @@ def get_underlyings(
                 "open_interest": _sum_or_none(group.get("buy_open_positions", pd.Series(dtype=float))),
                 "natural_money_flow": _sum_or_none(group.get("natural_money_flow", pd.Series(dtype=float))),
                 "legal_money_flow": _sum_or_none(group.get("legal_money_flow", pd.Series(dtype=float))),
-                "updated_at": _first_present(group.get("updated_at", pd.Series(dtype=object))),
+                "updated_at": _serialize_value(_first_present(group.get("updated_at", pd.Series(dtype=object)))),
             }
         )
 
@@ -194,26 +276,63 @@ def get_underlying_contracts(
     if merged.empty:
         return {"items": [], "total": 0, "underlying": None}
 
-    df = merged.copy()
-    df["underlying_key"] = df.apply(_underlying_key, axis=1)
-    df = df[df["underlying_key"] == str(underlying_key)]
+    df = _attach_underlying_keys(merged)
+    target_key = _lookup_underlying_key(underlying_key)
+    if not _clean_numeric_text(target_key).isdigit():
+        normalized_target = _normalize_text(underlying_key)
+        symbol_matches = df[
+            df.get("underlying_symbol", pd.Series(index=df.index, dtype=object)).map(_normalize_text).eq(normalized_target)
+            | df.get("underlying_short_name", pd.Series(index=df.index, dtype=object)).map(_normalize_text).eq(normalized_target)
+        ]
+        if not symbol_matches.empty:
+            target_key = str(symbol_matches.iloc[0]["underlying_key"])
+    df = df[df["underlying_key"] == target_key]
     if q:
         df = df[_text_mask(df, ("symbol", "short_name", "long_name"), q)]
 
     underlying = None
     if not df.empty:
         underlying = {
-            "underlying_key": str(underlying_key),
+            "underlying_key": str(df.iloc[0]["underlying_key"]),
             "underlying_ins_code": _serialize_value(
                 _first_present(df.get("underlying_ins_code", pd.Series(dtype=object))),
                 "underlying_ins_code",
             ),
             "underlying_symbol": _first_present(df.get("underlying_symbol", pd.Series(dtype=object))),
             "underlying_short_name": _first_present(df.get("underlying_short_name", pd.Series(dtype=object))),
-            "underlying_last_price": _first_present(df.get("underlying_last_price", pd.Series(dtype=object))),
-            "underlying_closing_price": _first_present(df.get("underlying_closing_price", pd.Series(dtype=object))),
+            "underlying_last_price": _serialize_value(
+                _first_present(df.get("underlying_last_price", pd.Series(dtype=object)))
+            ),
+            "underlying_closing_price": _serialize_value(
+                _first_present(df.get("underlying_closing_price", pd.Series(dtype=object)))
+            ),
         }
     return {"items": _df_to_records(df), "total": len(df), "underlying": underlying}
+
+
+def _lookup_underlying_key(value: Any) -> str:
+    if _is_present(value):
+        text = _clean_numeric_text(str(value))
+        if text.isdigit():
+            try:
+                return str(int(text))
+            except ValueError:
+                return text
+    return _normalize_text(value)
+
+
+def _clean_numeric_text(value: str) -> str:
+    return _translate_digits(
+        value.strip()
+        .replace(",", "")
+        .replace("٬", "")
+        .replace("،", "")
+        .replace(" ", "")
+    )
+
+
+def _translate_digits(value: str) -> str:
+    return value.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
 
 
 def get_summary(storage: Storage, snapshot_date: Optional[str] = None) -> Dict[str, Any]:
@@ -237,19 +356,16 @@ def get_summary(storage: Storage, snapshot_date: Optional[str] = None) -> Dict[s
     }
     if not merged.empty:
         if "natural_money_flow" in merged.columns:
-            value = merged["natural_money_flow"].sum(min_count=1)
-            summary["total_natural_flow"] = None if pd.isna(value) else float(value)
+            summary["total_natural_flow"] = _sum_or_none(merged["natural_money_flow"])
         if "legal_money_flow" in merged.columns:
-            value = merged["legal_money_flow"].sum(min_count=1)
-            summary["total_legal_flow"] = None if pd.isna(value) else float(value)
+            summary["total_legal_flow"] = _sum_or_none(merged["legal_money_flow"])
         if "buy_open_positions" in merged.columns:
-            value = merged["buy_open_positions"].sum(min_count=1)
-            summary["total_buy_oi"] = None if pd.isna(value) else float(value)
+            summary["total_buy_oi"] = _sum_or_none(merged["buy_open_positions"])
         if "sell_open_positions" in merged.columns:
-            value = merged["sell_open_positions"].sum(min_count=1)
-            summary["total_sell_oi"] = None if pd.isna(value) else float(value)
-        if "underlying_symbol" in merged.columns:
-            summary["underlying_count"] = int(merged["underlying_symbol"].dropna().nunique())
+            summary["total_sell_oi"] = _sum_or_none(merged["sell_open_positions"])
+        merged_with_keys = merged.copy()
+        merged_with_keys = _attach_underlying_keys(merged_with_keys)
+        summary["underlying_count"] = int(merged_with_keys["underlying_key"].dropna().nunique())
         if "option_type" in merged.columns:
             summary["call_count"] = int((merged["option_type"] == "call").sum())
             summary["put_count"] = int((merged["option_type"] == "put").sum())
@@ -414,12 +530,7 @@ def _sum_rows(rows: List[Dict[str, Any]], key: str) -> float:
 
 
 def _numeric_value(value: Any) -> float:
-    if value is None or value == "":
-        return 0.0
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
+    return _to_finite_float(value) or 0.0
 
 
 def _trend_day_label(score: int) -> str:

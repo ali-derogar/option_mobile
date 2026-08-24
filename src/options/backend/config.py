@@ -2,6 +2,7 @@
 
 import os
 import shutil
+from math import isfinite
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,6 +31,8 @@ def _env_float(name: str, default: float, min_value: float, max_value: float) ->
     try:
         value = float(raw)
     except ValueError:
+        return default
+    if not isfinite(value):
         return default
     return min(max(value, min_value), max_value)
 

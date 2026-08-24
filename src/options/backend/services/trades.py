@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any, Dict, List, Optional
 
 from options.backend.client import TsetmcClient
@@ -17,13 +18,13 @@ def fetch_trade_last_day(
     data = client.call("trade_last_day", {"Flow": flow})
     if not isinstance(data, list):
         return []
-    return data
+    return [row for row in data if isinstance(row, dict)]
 
 
 def normalize_trade(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "ins_code": int(row.get("InsCode", 0) or 0),
-        "trade_date": int(row.get("DEven", 0) or 0),
+        "ins_code": _to_int(row.get("InsCode")) or 0,
+        "trade_date": _to_int(row.get("DEven")) or 0,
         "symbol": row.get("LVal18AFC"),
         "long_name": row.get("LVal30"),
         "trade_count": _to_int(row.get("ZTotTran")),
@@ -44,22 +45,51 @@ def filter_for_ins_codes(
     rows: List[Dict[str, Any]],
     ins_codes: set[int],
 ) -> List[Dict[str, Any]]:
-    return [r for r in rows if int(r.get("InsCode", 0) or 0) in ins_codes]
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict) and (_to_int(row.get("InsCode")) or 0) in ins_codes
+    ]
 
 
 def _to_float(value: Any) -> Optional[float]:
     if value is None:
         return None
+    if isinstance(value, str):
+        value = _clean_numeric_text(value)
+        if not value:
+            return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if isfinite(number) else None
 
 
 def _to_int(value: Any) -> Optional[int]:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        number = int(value) if isfinite(value) and value.is_integer() else None
+        return number if number is not None and number >= 0 else None
+    if isinstance(value, str):
+        value = _clean_numeric_text(value)
+        if not value:
+            return None
     try:
-        return int(value)
+        number = int(str(value).strip())
     except (TypeError, ValueError):
         return None
+    return number if number >= 0 else None
+
+
+def _clean_numeric_text(value: str) -> str:
+    return (
+        value.strip()
+        .replace(",", "")
+        .replace("٬", "")
+        .replace("،", "")
+        .replace(" ", "")
+    )

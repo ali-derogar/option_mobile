@@ -102,3 +102,33 @@ print(json.dumps({
         "request_timeout": 120,
         "flow": 1,
     }
+
+
+def test_config_rejects_non_finite_float_env_values(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    env["OPTIONS_RUNTIME_ROOT"] = str(tmp_path / "runtime")
+    env["TSETMC_LOGIN_TIMEOUT"] = "nan"
+    env["TSETMC_REQUEST_TIMEOUT"] = "inf"
+
+    script = """
+import json
+from options.backend import config
+print(json.dumps({
+    "login_timeout": config.TSETMC_LOGIN_TIMEOUT,
+    "request_timeout": config.TSETMC_REQUEST_TIMEOUT,
+}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "login_timeout": 10,
+        "request_timeout": 60,
+    }

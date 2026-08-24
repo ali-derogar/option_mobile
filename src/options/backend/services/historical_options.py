@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from math import isfinite
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -58,8 +59,8 @@ def fetch_instruments_history_in_day(api_date: str) -> List[Dict[str, Any]]:
     )
     response.raise_for_status()
     payload = response.json()
-    rows = payload.get("closingPriceDailyHistoryWithInstDetails", payload)
-    return rows if isinstance(rows, list) else []
+    rows = payload.get("closingPriceDailyHistoryWithInstDetails", []) if isinstance(payload, dict) else payload
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
 def fetch_public_client_type_for_date_many(
@@ -78,7 +79,7 @@ def fetch_public_client_type_for_date_many(
                 row = future.result()
                 if row:
                     rows.append(row)
-            except requests.RequestException:
+            except (requests.RequestException, ValueError):
                 continue
     return rows
 
@@ -91,11 +92,15 @@ def fetch_public_client_type_for_date(ins_code: int, api_date: str) -> Optional[
     )
     response.raise_for_status()
     payload = response.json()
+    if not isinstance(payload, dict):
+        return None
     rows = payload.get("clientType", [])
     if not isinstance(rows, list):
         return None
     rec_date = int(api_date)
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         if _to_int(row.get("recDate")) == rec_date:
             return normalize_public_client_type(row)
     return None
@@ -116,7 +121,10 @@ def _normalize_historical_option(
 
     meta = metadata_by_ins_code.get(ins_code, {})
     underlying = lookup.get(_normalize_text(parsed["underlying_symbol"]), {})
-    underlying_price = _to_float(underlying.get("pDrCotVal")) or _to_float(underlying.get("pClosing"))
+    underlying_price = _first_present_number(
+        underlying.get("pDrCotVal"),
+        underlying.get("pClosing"),
+    )
     strike_price = _to_float(parsed.get("strike_price"))
     option_type = parsed["option_type"]
 
@@ -170,14 +178,14 @@ def _parse_option_name(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not option_type:
         return None
 
-    match = re.search(r"اخت[يی]ار[خف]\s+(.+?)-([0-9.]+)-([0-9/]+)\s*$", name)
+    match = re.search(r"اخت[يی]ار[خف]\s+(.+?)\s*-\s*([\d.,٬،\s]+)\s*-\s*([\d/]+)\s*$", name)
     if not match:
         return None
     underlying_symbol, strike_price, expiry = match.groups()
     return {
         "option_type": option_type,
         "underlying_symbol": underlying_symbol.strip(),
-        "strike_price": strike_price,
+        "strike_price": strike_price.strip(),
         "end_date": _jalali_expiry_to_gregorian_int(expiry),
     }
 
@@ -195,11 +203,12 @@ def _build_underlying_lookup(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, 
 
 
 def _api_date(snapshot_date: str) -> str:
-    return snapshot_date.replace("-", "")
+    return _clean_numeric_text(snapshot_date.replace("-", ""))
 
 
 def _jalali_expiry_to_gregorian_int(value: str) -> Optional[int]:
-    parts = value.strip().split("/")
+    value = _translate_digits(value.strip())
+    parts = value.split("/")
     try:
         if len(parts) == 3:
             year = int(parts[0])
@@ -219,8 +228,64 @@ def _jalali_expiry_to_gregorian_int(value: str) -> Optional[int]:
             return None
     except ValueError:
         return None
+    if not _valid_jalali_month_day(year, month, day):
+        return None
     g_year, g_month, g_day = _jalali_to_gregorian(year, month, day)
     return g_year * 10000 + g_month * 100 + g_day
+
+
+def _valid_jalali_month_day(year: int, month: int, day: int) -> bool:
+    if month < 1 or month > 12 or day < 1:
+        return False
+    if month <= 6:
+        return day <= 31
+    if month <= 11:
+        return day <= 30
+    return day <= (30 if _is_jalali_leap_year(year) else 29)
+
+
+def _is_jalali_leap_year(year: int) -> bool:
+    breaks = [
+        -61,
+        9,
+        38,
+        199,
+        426,
+        686,
+        756,
+        818,
+        1111,
+        1181,
+        1210,
+        1635,
+        2060,
+        2097,
+        2192,
+        2262,
+        2324,
+        2394,
+        2456,
+        3178,
+    ]
+    leap_j = -14
+    jp = breaks[0]
+    jump = 0
+    for jm in breaks[1:]:
+        jump = jm - jp
+        if year < jm:
+            break
+        leap_j += (jump // 33) * 8 + (jump % 33) // 4
+        jp = jm
+    n = year - jp
+    leap_j += (n // 33) * 8 + ((n % 33) + 3) // 4
+    if jump % 33 == 4 and jump - n == 4:
+        leap_j += 1
+    if jump - n < 6:
+        n = n - jump + ((jump + 4) // 33) * 33
+    leap = ((n + 1) % 33 - 1) % 4
+    if leap == -1:
+        leap = 4
+    return leap == 0
 
 
 def _jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple[int, int, int]:
@@ -270,22 +335,60 @@ def _price_change(row: Dict[str, Any]) -> Optional[str]:
     return None if value is None else f"{value:+.0f}"
 
 
+def _first_present_number(*values: Any) -> Optional[float]:
+    for value in values:
+        number = _to_float(value)
+        if number is not None:
+            return number
+    return None
+
+
 def _to_float(value: Any) -> Optional[float]:
     if value is None:
         return None
+    if isinstance(value, str):
+        value = _clean_numeric_text(value)
+        if not value:
+            return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if isfinite(number) else None
 
 
 def _to_int(value: Any) -> Optional[int]:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        number = int(value) if isfinite(value) and value.is_integer() else None
+        return number if number is not None and number >= 0 else None
+    if isinstance(value, str):
+        value = _clean_numeric_text(value)
+        if not value:
+            return None
     try:
-        return int(value)
+        number = int(str(value).strip())
     except (TypeError, ValueError):
         return None
+    return number if number >= 0 else None
+
+
+def _clean_numeric_text(value: str) -> str:
+    text = (
+        value.strip()
+        .replace(",", "")
+        .replace("٬", "")
+        .replace("،", "")
+        .replace(" ", "")
+    )
+    return _translate_digits(text)
+
+
+def _translate_digits(value: str) -> str:
+    return value.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
 
 
 def _session() -> requests.Session:

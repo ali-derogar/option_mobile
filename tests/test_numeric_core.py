@@ -26,6 +26,8 @@ from options.backend.analysis.sentiment import (
         ("call", 100, "bad", "unknown"),
         ("call", 100, math.inf, "unknown"),
         ("put", math.nan, 100, "unknown"),
+        ("call", "۱۲٬۰۰۰", "۱۲٬۵۰۰", "ITM"),
+        ("put", "12,000", "11,500", "ITM"),
     ],
 )
 def test_compute_moneyness_boundaries(option_type, strike, underlying, expected) -> None:
@@ -46,6 +48,8 @@ def test_compute_moneyness_boundaries(option_type, strike, underlying, expected)
         ("bad", 100, 120, None),
         ("call", None, 120, None),
         ("put", 100, math.nan, None),
+        ("call", "۱۲٬۰۰۰", "۱۲٬۵۰۰", 500.0),
+        ("put", "12,000", "11,500", 500.0),
     ],
 )
 def test_compute_intrinsic_value_is_exact_for_known_cases(

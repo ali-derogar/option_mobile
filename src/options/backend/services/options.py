@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any, Dict, List, Optional
 
 from options.backend.client import TsetmcClient
@@ -13,22 +14,22 @@ def fetch_all_options(client: TsetmcClient) -> List[Dict[str, Any]]:
     data = client.call("option")
     if not isinstance(data, list):
         return []
-    return data
+    return [row for row in data if isinstance(row, dict)]
 
 
 def normalize_option(row: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize option record with consistent field names."""
     return {
-        "ins_code": int(row.get("InsCode", 0)),
+        "ins_code": _to_int(row.get("InsCode")) or 0,
         "instrument_id": row.get("InstrumentID"),
         "buy_open_positions": _to_float(row.get("BuyOP")),
         "sell_open_positions": _to_float(row.get("SellOP")),
         "yesterday_open_positions": _to_float(row.get("YesterdayOP")),
         "contract_size": _to_float(row.get("ContractSize")),
         "strike_price": _to_float(row.get("StrikePrice")),
-        "underlying_ins_code": int(row.get("UAInsCode", 0) or 0),
-        "begin_date": int(row.get("BeginDate", 0) or 0),
-        "end_date": int(row.get("EndDate", 0) or 0),
+        "underlying_ins_code": _to_int(row.get("UAInsCode")) or 0,
+        "begin_date": _to_int(row.get("BeginDate")) or 0,
+        "end_date": _to_int(row.get("EndDate")) or 0,
         "a_factor": _to_float(row.get("AFactor")),
         "b_factor": _to_float(row.get("BFactor")),
         "c_factor": _to_float(row.get("CFactor")),
@@ -39,10 +40,44 @@ def normalize_option(row: Dict[str, Any]) -> Dict[str, Any]:
 def _to_float(value: Any) -> Optional[float]:
     if value is None:
         return None
+    if isinstance(value, str):
+        value = _clean_numeric_text(value)
+        if not value:
+            return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if isfinite(number) else None
+
+
+def _to_int(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        number = int(value) if isfinite(value) and value.is_integer() else None
+        return number if number is not None and number >= 0 else None
+    if isinstance(value, str):
+        value = _clean_numeric_text(value)
+        if not value:
+            return None
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _clean_numeric_text(value: str) -> str:
+    return (
+        value.strip()
+        .replace(",", "")
+        .replace("٬", "")
+        .replace("،", "")
+        .replace(" ", "")
+    )
 
 
 def enrich_with_instrument(
@@ -90,7 +125,10 @@ def enrich_with_underlying(
             }
         )
 
-    underlying_price = enriched.get("underlying_last_price") or enriched.get("underlying_closing_price")
+    underlying_price = _first_present_number(
+        enriched.get("underlying_last_price"),
+        enriched.get("underlying_closing_price"),
+    )
     enriched["moneyness"] = compute_moneyness(
         enriched.get("option_type"),
         enriched.get("strike_price"),
@@ -102,3 +140,11 @@ def enrich_with_underlying(
         underlying_price,
     )
     return enriched
+
+
+def _first_present_number(*values: Any) -> Optional[float]:
+    for value in values:
+        number = _to_float(value)
+        if number is not None:
+            return number
+    return None

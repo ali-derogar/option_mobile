@@ -165,6 +165,16 @@
       <div class="spinner"></div>
       <p>در حال بارگذاری...</p>
     </div>
+    <div class="activation-overlay hidden" id="activationOverlay" role="dialog" aria-modal="true" aria-labelledby="activationTitle">
+      <form class="activation-dialog" id="activationForm">
+        <div class="logo activation-logo">O</div>
+        <h2 id="activationTitle">ورود کد دسترسی</h2>
+        <p>برای ادامه، کد دسترسی را وارد کنید.</p>
+        <input type="text" id="activationCode" inputmode="text" autocomplete="one-time-code" aria-label="کد دسترسی" />
+        <button type="submit" class="btn btn-primary" id="activationSubmit">ورود</button>
+        <p class="activation-error hidden" id="activationError">کد پذیرفته نشد</p>
+      </form>
+    </div>
   </div>
 </body>
 </html>

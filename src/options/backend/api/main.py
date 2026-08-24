@@ -22,6 +22,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from options.backend.activation import is_valid as is_activation_code_valid
 from options.backend.api.data import (
     _df_to_records,
     _text_mask,
@@ -79,6 +80,12 @@ class LocalApiTokenMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/api/") and request.headers.get(LOCAL_API_HEADER) != LOCAL_API_TOKEN:
             return JSONResponse({"detail": "forbidden"}, status_code=403)
+        if (
+            request.url.path.startswith("/api/")
+            and request.url.path not in {"/api/health", "/api/activation/status", "/api/activation"}
+            and not storage.is_activated()
+        ):
+            return JSONResponse({"detail": "activation_required"}, status_code=423)
         return await call_next(request)
 
 
@@ -97,7 +104,12 @@ def _json(payload: Dict[str, Any], status_code: int = 200, background: Optional[
 
 def _query_value(request: Request, name: str) -> Optional[str]:
     value = request.query_params.get(name)
-    return value if value not in (None, "") else None
+    if value is None:
+        return None
+    value = value.strip()
+    if name == "date":
+        value = _translate_digits(value)
+    return value or None
 
 
 def _query_int(
@@ -111,7 +123,7 @@ def _query_int(
     if raw is None:
         return default
     try:
-        value = int(raw)
+        value = int(_clean_numeric_text(raw))
     except ValueError as exc:
         raise HTTPException(400, f"invalid {name}") from exc
     if min_value is not None and value < min_value:
@@ -119,6 +131,20 @@ def _query_int(
     if max_value is not None and value > max_value:
         raise HTTPException(400, f"{name} is above maximum")
     return value
+
+
+def _clean_numeric_text(value: str) -> str:
+    return (
+        value.strip()
+        .replace(",", "")
+        .replace("٬", "")
+        .replace("،", "")
+        .replace(" ", "")
+    )
+
+
+def _translate_digits(value: str) -> str:
+    return value.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
 
 
 def _utc_now_iso() -> str:
@@ -133,11 +159,14 @@ def _update_refresh_status(**payload: Any) -> None:
 def _public_refresh_result(result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not isinstance(result, dict):
         return None
-    return {
+    public = {
         key: result.get(key)
         for key in ("options", "client_type_stats", "money_flow", "open_interest")
         if key in result
     }
+    if "client_type_stats" not in public and "client_type" in result:
+        public["client_type_stats"] = result.get("client_type")
+    return public
 
 
 def _public_refresh_status() -> Dict[str, Any]:
@@ -160,7 +189,7 @@ def _run_refresh(limit: Optional[int] = None) -> None:
             stage="done",
             message=f"به‌روزرسانی کامل شد؛ {result.get('options', 0)} قرارداد",
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("Refresh failed")
         _update_refresh_status(
             last_error="refresh failed",
@@ -174,6 +203,7 @@ def _run_refresh(limit: Optional[int] = None) -> None:
 def _parse_snapshot_date(value: Optional[str]) -> Optional[date_type]:
     if not value:
         return None
+    value = _translate_digits(value.strip())
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         raise HTTPException(400, "invalid date; expected YYYY-MM-DD")
     try:
@@ -219,14 +249,14 @@ def _ensure_snapshot_date(snapshot_date: Optional[str]) -> None:
         )
 
 
-def _begin_refresh() -> bool:
+def _begin_refresh() -> str:
     global _last_refresh_request_at
     now = time.monotonic()
     with _refresh_lock:
         if _refresh_status["running"]:
-            return False
+            return "already_running"
         if now - _last_refresh_request_at < REFRESH_COOLDOWN_SECONDS:
-            return False
+            return "cooldown"
         _last_refresh_request_at = now
         _refresh_status["running"] = True
         _refresh_status["last_error"] = None
@@ -235,7 +265,7 @@ def _begin_refresh() -> bool:
         _refresh_status["message"] = "شروع به‌روزرسانی"
         _refresh_status["started_at"] = _utc_now_iso()
         _refresh_status["finished_at"] = None
-    return True
+    return "started"
 
 
 def _collect_trend_dates(
@@ -291,6 +321,24 @@ async def health(request: Request) -> JSONResponse:
     return _json({"status": "ok"})
 
 
+async def activation_status(request: Request) -> JSONResponse:
+    return _json({"activated": storage.is_activated()})
+
+
+async def activate(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(400, "invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "invalid activation payload")
+    code = payload.get("code")
+    if not isinstance(code, str) or not is_activation_code_valid(code.strip()):
+        raise HTTPException(400, "activation code was not accepted")
+    storage.set_activated(True)
+    return _json({"activated": True})
+
+
 async def summary(request: Request) -> JSONResponse:
     date = _query_value(request, "date")
     _ensure_snapshot_date(date)
@@ -342,6 +390,7 @@ async def underlying_contracts(request: Request) -> JSONResponse:
 async def underlying_trend(request: Request) -> JSONResponse:
     underlying_key = request.path_params["underlying_key"]
     date = _query_value(request, "date")
+    _parse_snapshot_date(date)
     days = _query_int(request, "days", default=7, min_value=2, max_value=10)
     assert days is not None
     end_date = date or storage.get_latest_snapshot_date()
@@ -380,9 +429,11 @@ async def open_interest_history(request: Request) -> JSONResponse:
     date = _query_value(request, "date")
     _parse_snapshot_date(date)
     try:
-        exact_ins_code = int(ins_code)
+        exact_ins_code = int(_clean_numeric_text(ins_code))
     except ValueError as exc:
         raise HTTPException(400, "invalid ins_code") from exc
+    if exact_ins_code <= 0:
+        raise HTTPException(400, "invalid ins_code")
     df = storage.get_open_interest_history_df(ins_code=exact_ins_code, through_date=date)
     return _json({"ins_code": str(exact_ins_code), "date": date, "history": _df_to_records(df)})
 
@@ -393,8 +444,9 @@ async def refresh_status(request: Request) -> JSONResponse:
 
 async def refresh(request: Request) -> JSONResponse:
     limit = _query_int(request, "limit", min_value=1, max_value=5000)
-    if not _begin_refresh():
-        return _json({"status": "already_running"})
+    status = _begin_refresh()
+    if status != "started":
+        return _json({"status": status})
     background_tasks = BackgroundTasks()
     background_tasks.add_task(_run_refresh, limit)
     return _json({"status": "started"}, background=background_tasks)
@@ -420,7 +472,7 @@ def _dashboard_response() -> Response:
     return response
 
 
-async def index() -> Response:
+async def index(request: Request) -> Response:
     return _dashboard_response()
 
 
@@ -430,6 +482,8 @@ async def underlying_page(request: Request) -> Response:
 
 routes = [
     Route("/api/health", health, methods=["GET"]),
+    Route("/api/activation/status", activation_status, methods=["GET"]),
+    Route("/api/activation", activate, methods=["POST"]),
     Route("/api/summary", summary, methods=["GET"]),
     Route("/api/dates", dates, methods=["GET"]),
     Route("/api/contracts", contracts, methods=["GET"]),

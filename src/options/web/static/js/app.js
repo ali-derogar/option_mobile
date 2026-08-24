@@ -28,6 +28,7 @@ const state = {
   trendMetricGroup: "score",
   trendRequestId: 0,
   loading: false,
+  activated: false,
   filters: {
     type: "all",
     expiry: "all",
@@ -179,9 +180,27 @@ const DETAIL_LABELS = {
   max_strike_price: "بیشترین قیمت اعمال",
 };
 
+function asFiniteNumber(value) {
+  if (value == null || value === "") return null;
+  const number = Number(typeof value === "string" ? cleanNumericText(value) : value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function cleanNumericText(value) {
+  return value
+    .trim()
+    .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0))
+    .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x0660))
+    .replaceAll(",", "")
+    .replaceAll("٬", "")
+    .replaceAll("،", "")
+    .replaceAll(" ", "");
+}
+
 function fmtNum(n) {
-  if (n == null || Number.isNaN(Number(n))) return "—";
-  return Number(n).toLocaleString("fa-IR", { maximumFractionDigits: 0 });
+  const number = asFiniteNumber(n);
+  if (number == null) return "—";
+  return number.toLocaleString("fa-IR", { maximumFractionDigits: 0 });
 }
 
 function fmtDate(d) {
@@ -191,32 +210,38 @@ function fmtDate(d) {
     return `${s.slice(0, 4)}/${s.slice(4, 6)}/${s.slice(6, 8)}`;
   }
   try {
-    return new Date(d).toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" });
+    const date = new Date(d);
+    if (Number.isNaN(date.getTime())) return s;
+    return date.toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" });
   } catch {
     return s;
   }
 }
 
 function fmtFlow(n) {
-  if (n == null) return "—";
-  const formatted = fmtNum(n);
-  return n > 0 ? `+${formatted}` : formatted;
+  const number = asFiniteNumber(n);
+  if (number == null) return "—";
+  const formatted = fmtNum(number);
+  return number > 0 ? `+${formatted}` : formatted;
 }
 
 function fmtPct(n, multiplier = 100) {
-  if (n == null || Number.isNaN(Number(n))) return "—";
-  return `${(Number(n) * multiplier).toLocaleString("fa-IR", { maximumFractionDigits: 1 })}٪`;
+  const number = asFiniteNumber(n);
+  if (number == null) return "—";
+  return `${(number * multiplier).toLocaleString("fa-IR", { maximumFractionDigits: 1 })}٪`;
 }
 
 function fmtRatio(n) {
-  if (n == null || Number.isNaN(Number(n))) return "—";
-  return Number(n).toLocaleString("fa-IR", { maximumFractionDigits: 2 });
+  const number = asFiniteNumber(n);
+  if (number == null) return "—";
+  return number.toLocaleString("fa-IR", { maximumFractionDigits: 2 });
 }
 
 function fmtCompactNum(n) {
-  if (n == null || Number.isNaN(Number(n))) return "—";
-  const value = Math.abs(Number(n));
-  const sign = Number(n) < 0 ? "-" : "";
+  const number = asFiniteNumber(n);
+  if (number == null) return "—";
+  const value = Math.abs(number);
+  const sign = number < 0 ? "-" : "";
   if (value >= 1_000_000_000) {
     return `${sign}${(value / 1_000_000_000).toLocaleString("fa-IR", { maximumFractionDigits: 1 })} میلیارد`;
   }
@@ -363,11 +388,75 @@ async function api(path, options = {}) {
     ...options,
     headers,
   });
+  const text = await res.text();
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(err || res.statusText);
+    let message = text || res.statusText;
+    try {
+      const parsed = text ? JSON.parse(text) : null;
+      message = parsed?.detail || parsed?.message || message;
+    } catch {
+      // Keep the raw response text when the server/proxy does not return JSON.
+    }
+    throw new Error(message);
   }
-  return res.json();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("پاسخ نامعتبر از سرور");
+  }
+}
+
+function setActivationGate(locked, message = "") {
+  const overlay = document.getElementById("activationOverlay");
+  const input = document.getElementById("activationCode");
+  const error = document.getElementById("activationError");
+  overlay?.classList.toggle("hidden", !locked);
+  if (error) {
+    error.textContent = message || "کد پذیرفته نشد";
+    error.classList.toggle("hidden", !message);
+  }
+  if (locked) {
+    requestAnimationFrame(() => input?.focus());
+  }
+}
+
+async function ensureActivation() {
+  const status = await api("/api/activation/status");
+  state.activated = Boolean(status.activated);
+  setActivationGate(!state.activated);
+  return state.activated;
+}
+
+async function submitActivationCode(event) {
+  event.preventDefault();
+  const input = document.getElementById("activationCode");
+  const submit = document.getElementById("activationSubmit");
+  const code = input?.value.trim() || "";
+  if (!code) {
+    setActivationGate(true, "کد را وارد کنید");
+    return;
+  }
+  if (submit) submit.disabled = true;
+  try {
+    const result = await api("/api/activation", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    });
+    state.activated = Boolean(result.activated);
+    if (!state.activated) {
+      setActivationGate(true, "کد پذیرفته نشد");
+      return;
+    }
+    if (input) input.value = "";
+    setActivationGate(false);
+    showToast("دسترسی فعال شد");
+    await init();
+  } catch (e) {
+    setActivationGate(true, e.message || "کد پذیرفته نشد");
+  } finally {
+    if (submit) submit.disabled = false;
+  }
 }
 
 async function loadSummary() {
@@ -1246,9 +1335,7 @@ function emptyAnalysisModel() {
 }
 
 function numericValue(value) {
-  if (value == null || value === "") return 0;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
+  return asFiniteNumber(value) ?? 0;
 }
 
 function buildAnalysisModel(rows) {
@@ -1291,8 +1378,8 @@ function rowParticipantVolume(row, prefix) {
 }
 
 function rowTradeVolume(row) {
-  const tradeVolume = numericValue(row.trade_volume);
-  return tradeVolume || Math.max(rowBuyVolume(row), rowSellVolume(row));
+  const tradeVolume = asFiniteNumber(row.trade_volume);
+  return tradeVolume ?? Math.max(rowBuyVolume(row), rowSellVolume(row));
 }
 
 function ratioLabel(num, den) {
@@ -1627,8 +1714,7 @@ function trendPeople() {
 
 function trendMetricValue(item, personKey, metricKey) {
   const person = item.people?.[personKey] || {};
-  const value = person[metricKey];
-  return value == null || Number.isNaN(Number(value)) ? null : Number(value);
+  return asFiniteNumber(person[metricKey]);
 }
 
 function trendDatasetColor(metric, person) {
@@ -2062,9 +2148,13 @@ function exportCsv() {
   const bom = "\uFEFF";
   const blob = new Blob([bom + header + "\n" + rows.join("\n")], { type: "text/csv;charset=utf-8;" });
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(blob);
+  a.href = url;
   a.download = `tsetmc_${state.view}_${Date.now()}.csv`;
+  document.body.appendChild(a);
   a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
   showToast("فایل CSV دانلود شد");
 }
 
@@ -2083,6 +2173,10 @@ async function startRefresh() {
     const res = await api("/api/refresh", { method: "POST" });
     if (res.status === "already_running") {
       showToast("به‌روزرسانی در حال انجام است...", "success");
+    } else if (res.status === "cooldown") {
+      showToast("کمی صبر کنید و دوباره تلاش کنید", "error");
+      setRefreshControlsLoading(false);
+      return;
     } else {
       showToast("به‌روزرسانی شروع شد — ممکن است چند دقیقه طول بکشد");
     }
@@ -2197,6 +2291,8 @@ async function init() {
   setLoading(true);
   try {
     updateViewChrome();
+    const activated = await ensureActivation();
+    if (!activated) return;
     await loadDates();
     await loadSummary();
     await reloadActiveData();
@@ -2210,6 +2306,10 @@ async function init() {
   } finally {
     setLoading(false);
   }
+}
+
+function bindActivation() {
+  document.getElementById("activationForm")?.addEventListener("submit", submitActivationCode);
 }
 
 document.getElementById("btnRefresh")?.addEventListener("click", startRefresh);
@@ -2230,5 +2330,6 @@ window.addEventListener("resize", () => {
 
 bindSearch();
 bindFilters();
+bindActivation();
 bindThemeToggle();
 init();

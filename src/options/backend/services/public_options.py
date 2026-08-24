@@ -8,6 +8,7 @@ the authenticated API is unavailable.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from math import isfinite
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -28,13 +29,15 @@ def fetch_public_option_market_watch() -> List[Dict[str, Any]]:
     response = session.get(OPTION_MARKET_WATCH_URL, timeout=TSETMC_REQUEST_TIMEOUT)
     response.raise_for_status()
     payload = response.json()
-    rows = payload.get("instrumentOptMarketWatch", payload)
-    return rows if isinstance(rows, list) else []
+    rows = payload.get("instrumentOptMarketWatch", []) if isinstance(payload, dict) else payload
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
 def normalize_public_option_pairs(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     contracts: List[Dict[str, Any]] = []
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         call = _normalize_side(row, "C", "call")
         put = _normalize_side(row, "P", "put")
         if call:
@@ -50,10 +53,15 @@ def fetch_public_client_type_latest(ins_code: int) -> Optional[Dict[str, Any]]:
     response = session.get(url, timeout=TSETMC_REQUEST_TIMEOUT)
     response.raise_for_status()
     payload = response.json()
+    if not isinstance(payload, dict):
+        return None
     rows = payload.get("clientType", [])
     if not isinstance(rows, list) or not rows:
         return None
-    latest = max(rows, key=lambda row: _to_int(row.get("recDate")) or 0)
+    valid_rows = [row for row in rows if isinstance(row, dict)]
+    if not valid_rows:
+        return None
+    latest = max(valid_rows, key=lambda row: _to_int(row.get("recDate")) or 0)
     return normalize_public_client_type(latest)
 
 
@@ -70,31 +78,31 @@ def fetch_public_client_type_latest_many(ins_codes: List[int]) -> List[Dict[str,
                 row = future.result()
                 if row:
                     rows.append(row)
-            except requests.RequestException:
+            except (requests.RequestException, ValueError):
                 continue
     return rows
 
 
 def normalize_public_client_type(row: Dict[str, Any]) -> Dict[str, Any]:
-    natural_buy_value = _to_float(row.get("buy_I_Value"))
-    natural_sell_value = _to_float(row.get("sell_I_Value"))
-    legal_buy_value = _to_float(row.get("buy_N_Value"))
-    legal_sell_value = _to_float(row.get("sell_N_Value"))
+    natural_buy_value = _to_float(row.get("buy_N_Value"))
+    natural_sell_value = _to_float(row.get("sell_N_Value"))
+    legal_buy_value = _to_float(row.get("buy_I_Value"))
+    legal_sell_value = _to_float(row.get("sell_I_Value"))
     return {
         "rec_date": _to_int(row.get("recDate")),
         "ins_code": _to_int(row.get("insCode")) or 0,
-        "natural_buy_volume": _to_float(row.get("buy_I_Volume")),
+        "natural_buy_volume": _to_float(row.get("buy_N_Volume")),
         "natural_buy_value": natural_buy_value,
-        "natural_buy_count": _to_int(row.get("buy_I_Count")),
-        "natural_sell_volume": _to_float(row.get("sell_I_Volume")),
+        "natural_buy_count": _to_int(row.get("buy_N_Count")),
+        "natural_sell_volume": _to_float(row.get("sell_N_Volume")),
         "natural_sell_value": natural_sell_value,
-        "natural_sell_count": _to_int(row.get("sell_I_Count")),
-        "legal_buy_volume": _to_float(row.get("buy_N_Volume")),
+        "natural_sell_count": _to_int(row.get("sell_N_Count")),
+        "legal_buy_volume": _to_float(row.get("buy_I_Volume")),
         "legal_buy_value": legal_buy_value,
-        "legal_buy_count": _to_int(row.get("buy_N_Count")),
-        "legal_sell_volume": _to_float(row.get("sell_N_Volume")),
+        "legal_buy_count": _to_int(row.get("buy_I_Count")),
+        "legal_sell_volume": _to_float(row.get("sell_I_Volume")),
         "legal_sell_value": legal_sell_value,
-        "legal_sell_count": _to_int(row.get("sell_N_Count")),
+        "legal_sell_count": _to_int(row.get("sell_I_Count")),
         "natural_money_flow": _net_flow(natural_buy_value, natural_sell_value),
         "legal_money_flow": _net_flow(legal_buy_value, legal_sell_value),
     }
@@ -105,7 +113,10 @@ def _normalize_side(row: Dict[str, Any], suffix: str, option_type: str) -> Optio
     if not ins_code:
         return None
 
-    underlying_price = _to_float(row.get("pDrCotVal_UA")) or _to_float(row.get("pClosing_UA"))
+    underlying_price = _first_present_number(
+        row.get("pDrCotVal_UA"),
+        row.get("pClosing_UA"),
+    )
     strike_price = _to_float(row.get("strikePrice"))
     open_positions = _to_float(row.get(f"oP_{suffix}"))
     yesterday_open_positions = _to_float(row.get(f"yesterdayOP_{suffix}"))
@@ -150,22 +161,55 @@ def _price_change(row: Dict[str, Any], suffix: str) -> Optional[str]:
     return f"{change:+.0f}"
 
 
+def _first_present_number(*values: Any) -> Optional[float]:
+    for value in values:
+        number = _to_float(value)
+        if number is not None:
+            return number
+    return None
+
+
 def _to_float(value: Any) -> Optional[float]:
     if value is None:
         return None
+    if isinstance(value, str):
+        value = _clean_numeric_text(value)
+        if not value:
+            return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if isfinite(number) else None
 
 
 def _to_int(value: Any) -> Optional[int]:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        number = int(value) if isfinite(value) and value.is_integer() else None
+        return number if number is not None and number >= 0 else None
+    if isinstance(value, str):
+        value = _clean_numeric_text(value)
+        if not value:
+            return None
     try:
-        return int(value)
+        number = int(str(value).strip())
     except (TypeError, ValueError):
         return None
+    return number if number >= 0 else None
+
+
+def _clean_numeric_text(value: str) -> str:
+    return (
+        value.strip()
+        .replace(",", "")
+        .replace("٬", "")
+        .replace("،", "")
+        .replace(" ", "")
+    )
 
 
 def _net_flow(buy_value: Optional[float], sell_value: Optional[float]) -> Optional[float]:
