@@ -66,6 +66,7 @@ def get_merged_contracts(storage: Storage, snapshot_date: Optional[str] = None) 
     ct_cols = list(client_type.columns)
     drop_cols = [c for c in ct_cols if c in contracts.columns and c != merge_key]
     client_type = client_type.drop(columns=drop_cols, errors="ignore")
+    client_type = client_type.drop_duplicates(merge_key, keep="last")
     merged = contracts.merge(client_type, on=merge_key, how="left")
     return merged.drop(columns=[merge_key], errors="ignore")
 

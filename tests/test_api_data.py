@@ -185,6 +185,24 @@ def test_get_merged_contracts_normalizes_instrument_code_keys() -> None:
     assert merged["natural_money_flow"].tolist() == [1000.0, -250.0]
 
 
+def test_get_merged_contracts_deduplicates_client_type_rows() -> None:
+    contracts = contracts_df().iloc[[0]].copy()
+    client_type = pd.concat(
+        [
+            client_type_df().iloc[[0]],
+            client_type_df().iloc[[0]].assign(natural_money_flow=999.0),
+        ],
+        ignore_index=True,
+    )
+    storage = FakeStorage(contracts, client_type)
+
+    merged = get_merged_contracts(storage)
+
+    assert len(merged) == 1
+    assert merged.iloc[0]["ins_code"] == 1001
+    assert merged.iloc[0]["natural_money_flow"] == pytest.approx(999.0)
+
+
 def test_get_underlyings_serializes_numpy_scalars_in_underlying_summary() -> None:
     contracts = contracts_df().astype({"underlying_last_price": object, "underlying_closing_price": object})
     contracts.loc[:, "underlying_last_price"] = np.int64(1200)
