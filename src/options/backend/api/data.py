@@ -205,6 +205,33 @@ def _to_finite_float(value: Any) -> Optional[float]:
     return number if isfinite(number) else None
 
 
+def _open_interest_value(row: Any) -> Optional[float]:
+    if hasattr(row, "get"):
+        buy = _to_finite_float(row.get("buy_open_positions"))
+        sell = _to_finite_float(row.get("sell_open_positions"))
+    else:
+        buy = _to_finite_float(getattr(row, "buy_open_positions", None))
+        sell = _to_finite_float(getattr(row, "sell_open_positions", None))
+    if buy is None:
+        return sell
+    if sell is None:
+        return buy
+    return max(buy, sell)
+
+
+def _sum_open_interest_frame(df: pd.DataFrame) -> Optional[float]:
+    if "buy_open_positions" not in df.columns and "sell_open_positions" not in df.columns:
+        return None
+    values = df.apply(_open_interest_value, axis=1)
+    return _sum_or_none(values)
+
+
+def _sum_open_interest_rows(rows: List[Dict[str, Any]]) -> Optional[float]:
+    values = [_open_interest_value(row) for row in rows]
+    numeric = [value for value in values if value is not None]
+    return sum(numeric) if numeric else None
+
+
 def _first_present(series: pd.Series) -> Any:
     for value in series:
         if _is_present(value):
@@ -256,7 +283,7 @@ def get_underlyings(
                 "max_strike_price": _max_or_none(strikes),
                 "trade_volume": _sum_or_none(group.get("trade_volume", pd.Series(dtype=float))),
                 "trade_value": _sum_or_none(group.get("trade_value", pd.Series(dtype=float))),
-                "open_interest": _sum_or_none(group.get("buy_open_positions", pd.Series(dtype=float))),
+                "open_interest": _sum_open_interest_frame(group),
                 "natural_money_flow": _sum_or_none(group.get("natural_money_flow", pd.Series(dtype=float))),
                 "legal_money_flow": _sum_or_none(group.get("legal_money_flow", pd.Series(dtype=float))),
                 "updated_at": _serialize_value(_first_present(group.get("updated_at", pd.Series(dtype=object)))),
@@ -452,11 +479,10 @@ def _build_trend_person(rows: List[Dict[str, Any]], prefix: str) -> Dict[str, An
     call_volume = _sum_participant_volume(call_rows, prefix)
     put_volume = _sum_participant_volume(put_rows, prefix)
 
-    has_current_oi = any(row.get("buy_open_positions") is not None for row in rows)
+    current_oi = _sum_open_interest_rows(rows)
     has_yesterday_oi = any(row.get("yesterday_open_positions") is not None for row in rows)
-    current_oi = _sum_rows(rows, "buy_open_positions") if has_current_oi else None
     yesterday_oi = _sum_rows(rows, "yesterday_open_positions") if has_yesterday_oi else None
-    oi_change = current_oi - yesterday_oi if has_current_oi and has_yesterday_oi else None
+    oi_change = current_oi - yesterday_oi if current_oi is not None and has_yesterday_oi else None
 
     call_signal = 1 if call_buy > call_sell else -1 if call_sell > call_buy else 0
     put_signal = 1 if put_sell > put_buy else -1 if put_buy > put_sell else 0

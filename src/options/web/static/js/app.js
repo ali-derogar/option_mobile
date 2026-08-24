@@ -1323,8 +1323,9 @@ function optionSignalLabel(row) {
 }
 
 function oiChange(row) {
-  if (row.buy_open_positions == null || row.yesterday_open_positions == null) return null;
-  return numericValue(row.buy_open_positions) - numericValue(row.yesterday_open_positions);
+  const current = openInterestValue(row);
+  if (current == null || row.yesterday_open_positions == null) return null;
+  return numericValue(current) - numericValue(row.yesterday_open_positions);
 }
 
 function rowSignalClass(row) {
@@ -1686,7 +1687,7 @@ function emptyAnalysisBucket() {
       bucket[field] = 0;
       return bucket;
     },
-    { contract_count: 0 }
+    { contract_count: 0, open_interest_positions: 0 }
   );
 }
 
@@ -1701,6 +1702,14 @@ function numericValue(value) {
   return asFiniteNumber(value) ?? 0;
 }
 
+function openInterestValue(row) {
+  const buy = asFiniteNumber(row.buy_open_positions);
+  const sell = asFiniteNumber(row.sell_open_positions);
+  if (buy == null) return sell;
+  if (sell == null) return buy;
+  return Math.max(buy, sell);
+}
+
 function buildAnalysisModel(rows) {
   const model = emptyAnalysisModel();
   rows.forEach((row) => {
@@ -1709,6 +1718,7 @@ function buildAnalysisModel(rows) {
     if (!model[optionType] || !model[optionType][moneyness]) return;
     const bucket = model[optionType][moneyness];
     bucket.contract_count += 1;
+    bucket.open_interest_positions += numericValue(openInterestValue(row));
     ANALYSIS_SUM_FIELDS.forEach((field) => {
       bucket[field] += numericValue(row[field]);
     });
@@ -1756,9 +1766,9 @@ function analysisMetricValue(value) {
 }
 
 function openInterestSnapshot(rows) {
-  const hasCurrent = rows.some((row) => row.buy_open_positions != null);
+  const hasCurrent = rows.some((row) => openInterestValue(row) != null);
   const hasYesterday = rows.some((row) => row.yesterday_open_positions != null);
-  const current = hasCurrent ? sumRows(rows, (row) => row.buy_open_positions) : null;
+  const current = hasCurrent ? sumRows(rows, (row) => openInterestValue(row)) : null;
   const yesterday = hasYesterday ? sumRows(rows, (row) => row.yesterday_open_positions) : null;
   return {
     hasCurrent,
@@ -2384,13 +2394,13 @@ function renderSummaryGroup(label, bucket, prefix) {
       <div class="analysis-summary-pair">
         ${renderSummaryTile("خرید", bucket, `${prefix}_buy`)}
         ${renderSummaryTile("فروش", bucket, `${prefix}_sell`)}
-        ${renderOpenInterestTile(bucket.buy_open_positions)}
+        ${renderOpenInterestTile(bucket.open_interest_positions)}
       </div>
     </div>`;
 }
 
 function renderCombinedSummaryGroup(itm, otm, prefix) {
-  const openInterest = numericValue(itm.buy_open_positions) + numericValue(otm.buy_open_positions);
+  const openInterest = numericValue(itm.open_interest_positions) + numericValue(otm.open_interest_positions);
   return `
     <div class="analysis-summary-group analysis-summary-group-total">
       <div class="analysis-summary-group-title">
