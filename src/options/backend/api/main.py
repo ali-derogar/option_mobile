@@ -21,8 +21,10 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from options.backend.activation import is_valid as is_activation_code_valid
+from options.backend import calendar_data
 from options.backend.api.data import (
     _df_to_records,
     _text_mask,
@@ -351,6 +353,39 @@ async def dates(request: Request) -> JSONResponse:
     return _json(get_available_dates(storage))
 
 
+async def calendar_events(request: Request) -> JSONResponse:
+    year = int(request.path_params["year"])
+    month = int(request.path_params["month"])
+    if year < 1200 or year > 1600:
+        raise HTTPException(400, "invalid calendar year")
+    if month < 1 or month > 12:
+        raise HTTPException(400, "invalid calendar month")
+    try:
+        raw_calendar = await run_in_threadpool(calendar_data.fetch_calendar_month, year, month)
+        payload = calendar_data.format_calendar_events(raw_calendar, year, month)
+    except Exception as exc:
+        logger.exception("Calendar fetch failed for %s/%s", year, month)
+        raise HTTPException(503, "calendar fetch failed") from exc
+    return _json(payload)
+
+
+async def calendar_day_info(request: Request) -> JSONResponse:
+    year = int(request.path_params["year"])
+    month = int(request.path_params["month"])
+    day = int(request.path_params["day"])
+    if year < 1200 or year > 1600:
+        raise HTTPException(400, "invalid calendar year")
+    if not calendar_data.valid_jalali_date(year, month, day):
+        raise HTTPException(400, "invalid calendar date")
+    try:
+        raw_calendar = await run_in_threadpool(calendar_data.fetch_calendar_month, year, month, day)
+        payload = calendar_data.day_info_from_calendar(raw_calendar, year, month, day)
+    except Exception as exc:
+        logger.exception("Calendar day fetch failed for %s/%s/%s", year, month, day)
+        raise HTTPException(503, "calendar fetch failed") from exc
+    return _json(payload)
+
+
 async def contracts(request: Request) -> JSONResponse:
     q = _query_value(request, "q")
     date = _query_value(request, "date")
@@ -486,6 +521,8 @@ routes = [
     Route("/api/activation", activate, methods=["POST"]),
     Route("/api/summary", summary, methods=["GET"]),
     Route("/api/dates", dates, methods=["GET"]),
+    Route("/api/calendar/{year:int}/{month:int}/events", calendar_events, methods=["GET"]),
+    Route("/api/calendar/{year:int}/{month:int}/{day:int}/info", calendar_day_info, methods=["GET"]),
     Route("/api/contracts", contracts, methods=["GET"]),
     Route("/api/underlyings", underlyings, methods=["GET"]),
     Route("/api/underlyings/{underlying_key}/contracts", underlying_contracts, methods=["GET"]),

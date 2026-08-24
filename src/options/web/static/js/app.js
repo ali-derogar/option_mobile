@@ -5,13 +5,24 @@
 const underlyingMatch = window.location.pathname.match(/^\/underlying\/(.+)$/);
 const initialParams = new URLSearchParams(window.location.search);
 
+function translateDigits(value) {
+  return String(value || "")
+    .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0))
+    .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x0660));
+}
+
 const state = {
   view: underlyingMatch ? "underlying" : "underlyings",
   underlyingKey: underlyingMatch ? decodeURIComponent(underlyingMatch[1]) : null,
-  selectedDate: initialParams.get("date") || "",
+  selectedDate: validIsoDate(initialParams.get("date") || "") ? translateDigits(initialParams.get("date") || "") : "",
   latestDate: "",
   lastUpdate: "",
   availableDates: [],
+  calendarMonths: {},
+  calendarVisible: false,
+  calendarView: null,
+  calendarRequestId: 0,
+  dateChangeRequestId: 0,
   items: [],
   filtered: [],
   sortKey: null,
@@ -189,8 +200,7 @@ function asFiniteNumber(value) {
 function cleanNumericText(value) {
   return value
     .trim()
-    .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0))
-    .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹٠-٩]/g, (digit) => translateDigits(digit))
     .replaceAll(",", "")
     .replaceAll("٬", "")
     .replaceAll("،", "")
@@ -216,6 +226,112 @@ function fmtDate(d) {
   } catch {
     return s;
   }
+}
+
+const PERSIAN_MONTHS = [
+  "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+  "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند",
+];
+
+function div(a, b) {
+  return ~~(a / b);
+}
+
+function jalaliToGregorian(jy, jm, jd) {
+  jy += 1595;
+  let days = -355668 + (365 * jy) + div(jy, 33) * 8 + div((jy % 33) + 3, 4) + jd;
+  days += jm < 7 ? (jm - 1) * 31 : ((jm - 7) * 30) + 186;
+  let gy = 400 * div(days, 146097);
+  days %= 146097;
+  if (days > 36524) {
+    gy += 100 * div(days - 1, 36524);
+    days = (days - 1) % 36524;
+    if (days >= 365) days += 1;
+  }
+  gy += 4 * div(days, 1461);
+  days %= 1461;
+  if (days > 365) {
+    gy += div(days - 1, 365);
+    days = (days - 1) % 365;
+  }
+  let gd = days + 1;
+  const leap = gy % 4 === 0 && (gy % 100 !== 0 || gy % 400 === 0);
+  const salA = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let gm = 0;
+  while (gm < 12 && gd > salA[gm]) {
+    gd -= salA[gm];
+    gm += 1;
+  }
+  return { gy, gm: gm + 1, gd };
+}
+
+function gregorianToJalali(gy, gm, gd) {
+  const gdm = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+  let jy = gy <= 1600 ? 0 : 979;
+  gy -= gy <= 1600 ? 621 : 1600;
+  const gy2 = gm > 2 ? gy + 1 : gy;
+  let days = (365 * gy) + div(gy2 + 3, 4) - div(gy2 + 99, 100) + div(gy2 + 399, 400) - 80 + gd + gdm[gm - 1];
+  jy += 33 * div(days, 12053);
+  days %= 12053;
+  jy += 4 * div(days, 1461);
+  days %= 1461;
+  if (days > 365) {
+    jy += div(days - 1, 365);
+    days = (days - 1) % 365;
+  }
+  const jm = days < 186 ? 1 + div(days, 31) : 7 + div(days - 186, 30);
+  const jd = 1 + (days < 186 ? days % 31 : (days - 186) % 30);
+  return { jy, jm, jd };
+}
+
+function isJalaliLeapYear(year) {
+  const breaks = [-61, 9, 38, 199, 426, 686, 756, 818, 1111, 1181, 1210, 1635, 2060, 2097, 2192, 2262, 2324, 2394, 2456, 3178];
+  let leapJ = -14;
+  let jp = breaks[0];
+  let jump = 0;
+  for (const jm of breaks.slice(1)) {
+    jump = jm - jp;
+    if (year < jm) break;
+    leapJ += div(jump, 33) * 8 + div(jump % 33, 4);
+    jp = jm;
+  }
+  let n = year - jp;
+  leapJ += div(n, 33) * 8 + div((n % 33) + 3, 4);
+  if (jump % 33 === 4 && jump - n === 4) leapJ += 1;
+  if (jump - n < 6) n = n - jump + div(jump + 4, 33) * 33;
+  let leap = ((n + 1) % 33 - 1) % 4;
+  if (leap === -1) leap = 4;
+  return leap === 0;
+}
+
+function jalaliMonthLength(year, month) {
+  if (month <= 6) return 31;
+  if (month <= 11) return 30;
+  return isJalaliLeapYear(year) ? 30 : 29;
+}
+
+function isoDate(gy, gm, gd) {
+  return `${gy}-${String(gm).padStart(2, "0")}-${String(gd).padStart(2, "0")}`;
+}
+
+function localIsoDate(date = new Date()) {
+  return isoDate(date.getFullYear(), date.getMonth() + 1, date.getDate());
+}
+
+function validIsoDate(value) {
+  const normalized = translateDigits(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return false;
+  const [year, month, day] = normalized.split("-").map(Number);
+  const parsed = new Date(year, month - 1, day);
+  return parsed.getFullYear() === year && parsed.getMonth() === month - 1 && parsed.getDate() === day;
+}
+
+function selectedJalaliDate() {
+  const preferred = translateDigits(state.selectedDate || "");
+  const latest = translateDigits(state.latestDate || "");
+  const base = validIsoDate(preferred) ? preferred : validIsoDate(latest) ? latest : localIsoDate();
+  const [gy, gm, gd] = base.split("-").map(Number);
+  return gregorianToJalali(gy, gm, gd);
 }
 
 function fmtFlow(n) {
@@ -490,8 +606,235 @@ async function loadDates() {
       : "";
   }
   if (input) input.value = state.selectedDate || "";
+  updateDatePickerButton();
+  if (!state.calendarView) state.calendarView = selectedJalaliDate();
+  if (state.calendarVisible) renderDatePicker();
   syncDateToUrl();
   updateFreshnessBadge();
+}
+
+function updateDatePickerButton() {
+  const button = document.getElementById("datePickerButton");
+  if (!button) return;
+  if (!state.selectedDate) {
+    button.textContent = "انتخاب تاریخ";
+    return;
+  }
+  const { jy, jm, jd } = selectedJalaliDate();
+  button.textContent = `${jd.toLocaleString("fa-IR")} ${PERSIAN_MONTHS[jm - 1]} ${jy.toLocaleString("fa-IR")}`;
+}
+
+async function loadCalendarMonth(year, month) {
+  const key = `${year}-${month}`;
+  if (state.calendarMonths[key]) return state.calendarMonths[key];
+  try {
+    const data = await api(`/api/calendar/${year}/${month}/events`);
+    state.calendarMonths[key] = data;
+    return data;
+  } catch (e) {
+    console.warn("calendar month unavailable", e);
+    return { year, month, days: [], events: [], holidays: [] };
+  }
+}
+
+function calendarDayMap(monthData) {
+  const map = new Map();
+  (monthData?.days || []).forEach((day) => {
+    map.set(Number(day.day), {
+      ...day,
+      is_holiday: day.is_holiday === true,
+      is_weekend: day.is_weekend === true,
+      events: day.events || [],
+    });
+  });
+  (monthData?.events || []).forEach((event) => {
+    const day = Number(String(event.jalali_date || "").split("-")[2]);
+    if (!day) return;
+    const item = map.get(day) || { day, events: [], is_holiday: false, is_weekend: false };
+    item.events = item.events || [];
+    const eventKey = event.id ?? `${event.jalali_date}:${event.title}`;
+    const alreadyExists = item.events.some((existing) => (existing.id ?? `${existing.jalali_date}:${existing.title}`) === eventKey);
+    if (!alreadyExists) item.events.push(event);
+    item.is_holiday = item.is_holiday || event.is_holiday === true;
+    map.set(day, item);
+  });
+  return map;
+}
+
+async function renderDatePicker() {
+  const popover = document.getElementById("datePickerPopover");
+  const title = document.getElementById("datePickerTitle");
+  const grid = document.getElementById("datePickerGrid");
+  const foot = document.getElementById("datePickerFoot");
+  if (!popover || !title || !grid || !foot) return;
+  const view = state.calendarView || selectedJalaliDate();
+  const requestId = ++state.calendarRequestId;
+  const viewKey = `${view.jy}-${view.jm}`;
+  title.textContent = `${PERSIAN_MONTHS[view.jm - 1]} ${view.jy.toLocaleString("fa-IR")}`;
+  grid.innerHTML = `<span class="date-picker-loading">در حال دریافت تقویم...</span>`;
+  foot.textContent = "روزهای تعطیل با رنگ قرمز مشخص شده‌اند";
+
+  const monthData = await loadCalendarMonth(view.jy, view.jm);
+  const currentView = state.calendarView || selectedJalaliDate();
+  if (!state.calendarVisible || state.calendarRequestId !== requestId || `${currentView.jy}-${currentView.jm}` !== viewKey) return;
+  const dayMap = calendarDayMap(monthData);
+  const monthLength = jalaliMonthLength(view.jy, view.jm);
+  const firstGregorian = jalaliToGregorian(view.jy, view.jm, 1);
+  const firstOffset = (new Date(firstGregorian.gy, firstGregorian.gm - 1, firstGregorian.gd).getDay() + 1) % 7;
+  const available = new Set(state.availableDates);
+  const selected = selectedJalaliDate();
+  const today = localIsoDate();
+  const cells = [];
+
+  for (let i = 0; i < firstOffset; i += 1) {
+    cells.push('<span class="date-picker-empty"></span>');
+  }
+  for (let day = 1; day <= monthLength; day += 1) {
+    const g = jalaliToGregorian(view.jy, view.jm, day);
+    const date = isoDate(g.gy, g.gm, g.gd);
+    const info = dayMap.get(day) || {};
+    const hasSnapshot = available.has(date);
+    const isFuture = date > today;
+    const isSelected = selected.jy === view.jy && selected.jm === view.jm && selected.jd === day;
+    const isWeeklyHoliday = new Date(g.gy, g.gm - 1, g.gd).getDay() === 5;
+    const isHoliday = info.is_holiday === true || isWeeklyHoliday;
+    const eventTitle = (info.events || []).map((event) => event.title).join("، ");
+    const classes = [
+      "date-picker-day",
+      isHoliday ? "is-holiday" : "",
+      hasSnapshot ? "has-data" : "no-data",
+      isFuture ? "is-disabled" : "",
+      isSelected ? "is-selected" : "",
+    ].filter(Boolean).join(" ");
+    cells.push(`
+      <button type="button" class="${classes}" data-date="${escapeHtml(date)}" ${isFuture ? "disabled" : ""} title="${escapeHtml(eventTitle || (hasSnapshot ? "داده موجود" : isFuture ? "تاریخ آینده" : "بدون داده ذخیره‌شده"))}">
+        <strong>${day.toLocaleString("fa-IR")}</strong>
+        ${isHoliday ? '<small>تعطیل</small>' : ""}
+      </button>
+    `);
+  }
+  grid.innerHTML = cells.join("");
+  grid.querySelectorAll(".date-picker-day").forEach((button) => {
+    button.addEventListener("click", () => selectCalendarDate(button.dataset.date));
+  });
+}
+
+function setDatePickerVisible(visible) {
+  state.calendarVisible = visible;
+  const popover = document.getElementById("datePickerPopover");
+  const button = document.getElementById("datePickerButton");
+  popover?.classList.toggle("hidden", !visible);
+  button?.setAttribute("aria-expanded", String(visible));
+  if (visible) {
+    state.calendarView = selectedJalaliDate();
+    renderDatePicker();
+  }
+}
+
+function shiftCalendarMonth(delta) {
+  const view = state.calendarView || selectedJalaliDate();
+  let jy = view.jy;
+  let jm = view.jm + delta;
+  if (jm < 1) {
+    jy -= 1;
+    jm = 12;
+  } else if (jm > 12) {
+    jy += 1;
+    jm = 1;
+  }
+  state.calendarView = { jy, jm, jd: 1 };
+  renderDatePicker();
+}
+
+async function selectCalendarDate(date) {
+  date = translateDigits(date);
+  if (!date || date === state.selectedDate) {
+    setDatePickerVisible(false);
+    return;
+  }
+  const input = document.getElementById("dateFilter");
+  if (input) input.value = date;
+  const changed = await changeSelectedDate(date);
+  if (changed) {
+    setDatePickerVisible(false);
+  } else if (input) {
+    input.value = state.selectedDate || "";
+  }
+}
+
+async function changeSelectedDate(date) {
+  date = translateDigits(date);
+  if (!validIsoDate(date)) {
+    const input = document.getElementById("dateFilter");
+    if (input) input.value = state.selectedDate || "";
+    showToast("تاریخ انتخابی نامعتبر است", "error");
+    return false;
+  }
+  if (state.loading) return false;
+  const requestId = ++state.dateChangeRequestId;
+  const previous = {
+    selectedDate: state.selectedDate,
+    selectedRowKey: state.selectedRowKey,
+    selectedInsCode: state.selectedInsCode,
+    expandedCardKey: state.expandedCardKey,
+    underlying: state.underlying,
+    analysisVisible: state.analysisVisible,
+    items: state.items,
+    filtered: state.filtered,
+    statusText: document.getElementById("lastUpdate")?.textContent || "",
+  };
+  state.selectedDate = date;
+  state.selectedRowKey = null;
+  state.selectedInsCode = null;
+  state.expandedCardKey = null;
+  state.underlying = null;
+  state.analysisVisible = false;
+  state.trendRequestId += 1;
+  destroyOiChart();
+  destroyTrendChart();
+  syncDateToUrl();
+  updateDatePickerButton();
+  renderDetail(null);
+  setStatusText("در حال دریافت داده تاریخ انتخابی...");
+  setLoading(true);
+  try {
+    await loadSummary();
+    if (requestId !== state.dateChangeRequestId) return false;
+    await reloadActiveData();
+    if (requestId !== state.dateChangeRequestId) return false;
+    await loadDates();
+    if (requestId !== state.dateChangeRequestId) return false;
+    return true;
+  } catch (e) {
+    if (requestId !== state.dateChangeRequestId) return false;
+    state.selectedDate = previous.selectedDate;
+    state.selectedRowKey = previous.selectedRowKey;
+    state.selectedInsCode = previous.selectedInsCode;
+    state.expandedCardKey = previous.expandedCardKey;
+    state.underlying = previous.underlying;
+    state.analysisVisible = previous.analysisVisible;
+    state.items = previous.items;
+    state.filtered = previous.filtered;
+    syncDateToUrl();
+    updateDatePickerButton();
+    const input = document.getElementById("dateFilter");
+    if (input) input.value = previous.selectedDate || "";
+    if (previous.statusText) setStatusText(previous.statusText);
+    applyFilterAndSort();
+    if (previous.selectedInsCode) {
+      const selectedRow = state.filtered.find((row) => getRowKey(row) === previous.selectedRowKey) || null;
+      renderDetail(selectedRow);
+      loadOiChart(previous.selectedInsCode);
+    } else {
+      renderDetail(null);
+    }
+    showToast("خطا در تغییر تاریخ", "error");
+    setEmptyMessage("خطا در دریافت داده", "اتصال یا تاریخ انتخابی را بررسی کنید و دوباره تلاش کنید");
+    console.error(e);
+    return false;
+  } finally {
+    setLoading(false);
+  }
 }
 
 function currentSearch() {
@@ -2229,32 +2572,17 @@ function bindSearch() {
 
 function bindFilters() {
   document.getElementById("dateFilter")?.addEventListener("change", async (event) => {
-    state.selectedDate = event.target.value;
-    state.selectedRowKey = null;
-    state.selectedInsCode = null;
-    state.underlying = null;
-    state.analysisVisible = false;
-    state.trendRequestId += 1;
-    destroyOiChart();
-    destroyTrendChart();
-    syncDateToUrl();
-    renderDetail(null);
-    setStatusText("در حال دریافت داده تاریخ انتخابی...");
-    setLoading(true);
-    try {
-      await loadSummary();
-      await reloadActiveData();
-      await loadDates();
-    } catch (e) {
-      showToast("خطا در تغییر تاریخ", "error");
-      state.items = [];
-      state.filtered = [];
-      renderTable();
-      setEmptyMessage("خطا در دریافت داده", "اتصال یا تاریخ انتخابی را بررسی کنید و دوباره تلاش کنید");
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+    await changeSelectedDate(event.target.value);
+  });
+  document.getElementById("datePickerButton")?.addEventListener("click", () => {
+    setDatePickerVisible(!state.calendarVisible);
+  });
+  document.getElementById("datePickerPrev")?.addEventListener("click", () => shiftCalendarMonth(-1));
+  document.getElementById("datePickerNext")?.addEventListener("click", () => shiftCalendarMonth(1));
+  document.addEventListener("click", (event) => {
+    if (!state.calendarVisible) return;
+    if (event.target.closest(".date-filter") || event.target.closest("#datePickerPopover")) return;
+    setDatePickerVisible(false);
   });
 
   document.getElementById("btnAnalysis")?.addEventListener("click", toggleAnalysisMode);
@@ -2320,6 +2648,10 @@ document.getElementById("closeDetail")?.addEventListener("click", closeDetailShe
 document.getElementById("detailBackdrop")?.addEventListener("click", closeDetailSheet);
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (state.calendarVisible) {
+    setDatePickerVisible(false);
+    return;
+  }
   if (!state.selectedRowKey) return;
   closeDetailSheet();
 });

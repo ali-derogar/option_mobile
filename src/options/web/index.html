@@ -44,11 +44,24 @@
         </button>
       </div>
       <div class="header-actions">
-        <label class="date-filter">
+        <div class="date-filter">
           <span>تاریخ</span>
-          <input type="date" id="dateFilter" aria-label="انتخاب تاریخ" list="availableDates" />
+          <button type="button" class="date-picker-button" id="datePickerButton" aria-haspopup="dialog" aria-expanded="false">انتخاب تاریخ</button>
+          <input type="hidden" id="dateFilter" aria-label="انتخاب تاریخ" />
           <datalist id="availableDates"></datalist>
-        </label>
+        </div>
+        <div class="date-picker-popover hidden" id="datePickerPopover" role="dialog" aria-modal="false" aria-label="تقویم">
+          <div class="date-picker-head">
+            <button type="button" class="date-picker-nav" id="datePickerPrev" aria-label="ماه قبل">‹</button>
+            <strong id="datePickerTitle">—</strong>
+            <button type="button" class="date-picker-nav" id="datePickerNext" aria-label="ماه بعد">›</button>
+          </div>
+          <div class="date-picker-weekdays" aria-hidden="true">
+            <span>ش</span><span>ی</span><span>د</span><span>س</span><span>چ</span><span>پ</span><span>ج</span>
+          </div>
+          <div class="date-picker-grid" id="datePickerGrid"></div>
+          <div class="date-picker-foot" id="datePickerFoot">—</div>
+        </div>
         <span class="last-update" id="lastUpdate">—</span>
         <button type="button" class="btn btn-primary" id="btnRefresh">
           <span class="btn-icon" id="refreshIcon">↻</span>
