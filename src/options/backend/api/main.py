@@ -10,7 +10,7 @@ import time
 from datetime import date as date_type
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from starlette.applications import Starlette
 from starlette.background import BackgroundTasks
@@ -38,6 +38,10 @@ from options.backend.api.data import (
 )
 from options.backend.pipeline import run_pipeline
 from options.backend.services.historical_options import import_public_option_history
+from options.backend.services.public_options import (
+    fetch_public_client_type_current,
+    fetch_public_client_type_current_many,
+)
 from options.backend.storage import MARKET_TZ, Storage
 
 logger = logging.getLogger(__name__)
@@ -91,6 +95,14 @@ class LocalApiTokenMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class NoStoreStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: Dict[str, Any]) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
+
 async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled request error for %s", request.url.path)
     return JSONResponse({"detail": "internal server error"}, status_code=500)
@@ -101,7 +113,10 @@ async def handle_http_error(request: Request, exc: HTTPException) -> JSONRespons
 
 
 def _json(payload: Dict[str, Any], status_code: int = 200, background: Optional[BackgroundTasks] = None) -> JSONResponse:
-    return JSONResponse(payload, status_code=status_code, background=background)
+    response = JSONResponse(payload, status_code=status_code, background=background)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 def _query_value(request: Request, name: str) -> Optional[str]:
@@ -133,6 +148,16 @@ def _query_int(
     if max_value is not None and value > max_value:
         raise HTTPException(400, f"{name} is above maximum")
     return value
+
+
+def _path_ins_code(value: Any) -> int:
+    text = _clean_numeric_text(_translate_digits(str(value or "")))
+    if not text.isdigit():
+        raise HTTPException(400, "invalid instrument code")
+    ins_code = int(text)
+    if ins_code <= 0:
+        raise HTTPException(400, "invalid instrument code")
+    return ins_code
 
 
 def _clean_numeric_text(value: str) -> str:
@@ -432,6 +457,40 @@ async def underlying_contracts(request: Request) -> JSONResponse:
     return _json(payload)
 
 
+async def client_type_current(request: Request) -> JSONResponse:
+    ins_code = _path_ins_code(request.path_params["ins_code"])
+    try:
+        row = await run_in_threadpool(fetch_public_client_type_current, ins_code)
+    except Exception as exc:
+        logger.exception("Client type fetch failed for %s", ins_code)
+        raise HTTPException(503, "client type fetch failed") from exc
+    return _json({"item": row or {"ins_code": str(ins_code)}})
+
+
+async def client_type_current_many(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "invalid JSON body") from exc
+    raw_codes = body.get("ins_codes") if isinstance(body, dict) else None
+    if not isinstance(raw_codes, list):
+        raise HTTPException(400, "ins_codes must be a list")
+    ins_codes: List[int] = []
+    seen: set[int] = set()
+    for raw_code in raw_codes:
+        ins_code = _path_ins_code(raw_code)
+        if ins_code in seen:
+            continue
+        seen.add(ins_code)
+        ins_codes.append(ins_code)
+    try:
+        rows = await run_in_threadpool(fetch_public_client_type_current_many, ins_codes)
+    except Exception as exc:
+        logger.exception("Client type batch fetch failed for %d contracts", len(ins_codes))
+        raise HTTPException(503, "client type fetch failed") from exc
+    return _json({"items": rows, "total": len(rows)})
+
+
 async def underlying_trend(request: Request) -> JSONResponse:
     underlying_key = request.path_params["underlying_key"]
     date = _query_value(request, "date")
@@ -535,6 +594,8 @@ routes = [
     Route("/api/calendar/{year:int}/{month:int}/events", calendar_events, methods=["GET"]),
     Route("/api/calendar/{year:int}/{month:int}/{day:int}/info", calendar_day_info, methods=["GET"]),
     Route("/api/contracts", contracts, methods=["GET"]),
+    Route("/api/client-type", client_type_current_many, methods=["POST"]),
+    Route("/api/client-type/{ins_code}", client_type_current, methods=["GET"]),
     Route("/api/underlyings", underlyings, methods=["GET"]),
     Route("/api/underlyings/{underlying_key}/contracts", underlying_contracts, methods=["GET"]),
     Route("/api/underlyings/{underlying_key}/trend", underlying_trend, methods=["GET"]),
@@ -546,7 +607,7 @@ routes = [
     Route("/underlying/{underlying_key}", underlying_page, methods=["GET"]),
 ]
 if STATIC_DIR.exists():
-    routes.append(Mount("/static", app=StaticFiles(directory=STATIC_DIR), name="static"))
+    routes.append(Mount("/static", app=NoStoreStaticFiles(directory=STATIC_DIR), name="static"))
 
 app = Starlette(
     routes=routes,

@@ -338,6 +338,90 @@ def test_get_latest_client_type_df_keeps_latest_record_per_instrument(storage: S
     ]
 
 
+def test_get_latest_client_type_df_prefers_current_fetch_when_snapshot_has_no_record_date(storage: Storage) -> None:
+    with storage.session() as session:
+        session.add(
+            ClientTypeStats(
+                ins_code=1001,
+                rec_date=20260824,
+                natural_buy_volume=516,
+                natural_sell_volume=69,
+                legal_sell_volume=447,
+                natural_money_flow=4_532_570,
+                legal_money_flow=-4_532_570,
+                fetched_at=datetime(2026, 8, 25, 9, 0, tzinfo=timezone.utc).replace(tzinfo=None),
+            )
+        )
+        session.add(
+            ClientTypeStats(
+                ins_code=1001,
+                rec_date=None,
+                natural_buy_volume=482,
+                natural_sell_volume=264,
+                natural_buy_count=20,
+                natural_sell_count=21,
+                legal_buy_volume=0,
+                legal_sell_volume=218,
+                legal_buy_count=0,
+                legal_sell_count=1,
+                natural_money_flow=None,
+                legal_money_flow=None,
+                fetched_at=datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc).replace(tzinfo=None),
+            )
+        )
+        session.commit()
+
+    df = storage.get_latest_client_type_df(snapshot_date="2026-08-25")
+
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert pd.isna(row["rec_date"])
+    assert row["natural_buy_volume"] == pytest.approx(482.0)
+    assert row["natural_sell_volume"] == pytest.approx(264.0)
+    assert row["natural_buy_count"] == 20
+    assert row["legal_sell_volume"] == pytest.approx(218.0)
+    assert pd.isna(row["natural_money_flow"])
+
+
+def test_get_latest_client_type_df_prefers_current_fetch_for_current_market_day(storage: Storage) -> None:
+    storage.now = lambda: datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
+    with storage.session() as session:
+        session.add(
+            ClientTypeStats(
+                ins_code=1001,
+                rec_date=20260825,
+                natural_buy_volume=999,
+                natural_sell_volume=111,
+                natural_money_flow=123,
+                fetched_at=datetime(2026, 8, 25, 8, 0),
+            )
+        )
+        session.add(
+            ClientTypeStats(
+                ins_code=1001,
+                rec_date=None,
+                natural_buy_volume=482,
+                natural_sell_volume=264,
+                natural_buy_count=20,
+                natural_sell_count=21,
+                legal_sell_volume=218,
+                natural_money_flow=None,
+                legal_money_flow=None,
+                fetched_at=datetime(2026, 8, 25, 10, 0),
+            )
+        )
+        session.commit()
+
+    df = storage.get_latest_client_type_df(snapshot_date="2026-08-25")
+
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert pd.isna(row["rec_date"])
+    assert row["natural_buy_volume"] == pytest.approx(482.0)
+    assert row["natural_sell_volume"] == pytest.approx(264.0)
+    assert pd.isna(row["natural_money_flow"])
+
+
 def test_storage_normalizes_grouped_client_type_record_dates(storage: Storage) -> None:
     storage.insert_client_type_stats(
         [client_type_payload(rec_date="۲۰۲۵/۰۶/۱۴", natural_money_flow=222)]

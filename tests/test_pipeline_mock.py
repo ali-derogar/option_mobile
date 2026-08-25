@@ -40,20 +40,15 @@ def test_pipeline_with_mock_api() -> None:
     ]
     mock_client_type = [
         {
-            "RecDate": 20250614,
-            "InsCode": 1001,
-            "Buy_N_Volume": 1000,
-            "Buy_I_Volume": 5000,
-            "Buy_N_Value": 1_000_000,
-            "Buy_I_Value": 5_000_000,
-            "Buy_Count_ClientN": 10,
-            "Buy_Count_ClientI": 2,
-            "Sell_N_Volume": 800,
-            "Sell_I_Volume": 4000,
-            "Sell_N_Value": 800_000,
-            "Sell_I_Value": 4_000_000,
-            "Sell_Count_ClientN": 8,
-            "Sell_Count_ClientI": 1,
+            "ins_code": 1001,
+            "natural_buy_volume": 5000,
+            "natural_sell_volume": 4000,
+            "natural_buy_count": 2,
+            "natural_sell_count": 1,
+            "legal_buy_volume": 1000,
+            "legal_sell_volume": 800,
+            "legal_buy_count": 10,
+            "legal_sell_count": 8,
         }
     ]
     mock_trades = [
@@ -83,7 +78,6 @@ def test_pipeline_with_mock_api() -> None:
             "option": mock_options,
             "instrument": mock_instruments,
             "trade_last_day": mock_trades,
-            "client_type_by_ins": mock_client_type,
         }
         return mapping.get(endpoint_key, [])
 
@@ -97,12 +91,16 @@ def test_pipeline_with_mock_api() -> None:
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage):
-            result = run_pipeline(limit=None, skip_client_type=False, delay_between_calls=0)
+            with patch("options.backend.pipeline._fetch_direct_instrument_info", return_value={}), patch(
+                "options.backend.pipeline.fetch_public_client_type_current_many",
+                return_value=mock_client_type,
+            ):
+                result = run_pipeline(limit=None, skip_client_type=False, delay_between_calls=0)
 
     assert result["options"] == 1
     assert result["client_type"] == 1
     assert result["client_type_stats"] == 1
-    assert result["money_flow"] == 1
+    assert result["money_flow"] == 0
     assert result["open_interest"] == 1
     assert result["exports"]
 
@@ -212,7 +210,8 @@ def test_pipeline_limit_and_skip_client_type_preserve_stored_numbers() -> None:
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage):
-            result = run_pipeline(limit=1, skip_client_type=True, delay_between_calls=0)
+            with patch("options.backend.pipeline._fetch_direct_instrument_info", return_value={}):
+                result = run_pipeline(limit=1, skip_client_type=True, delay_between_calls=0)
 
         contracts = storage.get_contracts_df()
         client_type = storage.get_latest_client_type_df()
@@ -266,12 +265,83 @@ def test_pipeline_limit_preserves_input_order() -> None:
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage):
-            result = run_pipeline(limit=2, skip_client_type=True, delay_between_calls=0)
+            with patch("options.backend.pipeline._fetch_direct_instrument_info", return_value={}):
+                result = run_pipeline(limit=2, skip_client_type=True, delay_between_calls=0)
 
         contracts = storage.get_contracts_df()
 
     assert result["options"] == 2
     assert contracts["ins_code"].tolist() == [101, 102]
+
+
+def test_pipeline_authenticated_path_prefers_direct_instrument_metadata() -> None:
+    mock_options = [
+        {
+            "InsCode": 5800031174225610,
+            "InstrumentID": "OPT5800031174225610",
+            "BuyOP": 500,
+            "SellOP": 300,
+            "YesterdayOP": 450,
+            "ContractSize": 1000,
+            "StrikePrice": 18630,
+            "UAInsCode": 35425587644337450,
+            "BeginDate": 20250101,
+            "EndDate": 20260930,
+        }
+    ]
+    mock_instruments = [
+        {
+            "InsCode": 5800031174225610,
+            "CValMne": "ضملي7070",
+            "LVal18": "ضملي7070",
+            "LVal30": "اختيارخ فملي-18630-1405/07/08",
+        },
+        {
+            "InsCode": 35425587644337450,
+            "CValMne": "فملي",
+            "LVal18": "فملي",
+        },
+    ]
+    direct_instrument_info = {
+        5800031174225610: {
+            "lVal18AFC": "ضملي7070",
+            "lVal30": "اختيارخ فملي-26000-1405/07/08",
+            "instrumentID": "IRO9FOLD7071",
+        }
+    }
+
+    client = MagicMock()
+    client.login.return_value = "mock-token"
+    client.call.side_effect = lambda endpoint_key, json_body=None: {
+        "option": mock_options,
+        "instrument": mock_instruments,
+        "trade_last_day": [],
+        "client_type_by_ins": [],
+    }.get(endpoint_key, [])
+
+    with TemporaryDirectory() as tmp:
+        storage = Storage(
+            db_path=Path(tmp) / "test_options.db",
+            export_dir=Path(tmp) / "exports",
+        )
+        with patch("options.backend.pipeline.validate_credentials"), patch(
+            "options.backend.pipeline.TsetmcClient", return_value=client
+        ), patch("options.backend.pipeline.Storage", return_value=storage), patch(
+            "options.backend.pipeline._fetch_direct_instrument_info",
+            return_value=direct_instrument_info,
+        ):
+            result = run_pipeline(skip_client_type=True, delay_between_calls=0)
+
+        contracts = storage.get_contracts_df()
+
+    row = contracts.iloc[0]
+    assert result["options"] == 1
+    assert row["ins_code"] == 5800031174225610
+    assert row["symbol"] == "ضملي7070"
+    assert row["long_name"] == "اختيارخ فملي-26000-1405/07/08"
+    assert row["strike_price"] == 26000
+    assert row["end_date"] == 20260930
+    assert row["instrument_id"] == "IRO9FOLD7071"
 
 
 def test_pipeline_rejects_non_positive_limit() -> None:
@@ -345,7 +415,7 @@ def test_pipeline_falls_back_to_public_cdn_when_login_fails() -> None:
             "options.backend.pipeline.fetch_public_instrument_info_many",
             return_value={},
         ), patch(
-            "options.backend.pipeline.fetch_public_client_type_latest_many",
+            "options.backend.pipeline.fetch_public_client_type_current_many",
             return_value=public_client_type,
         ):
             result = run_pipeline(
@@ -389,7 +459,7 @@ def test_pipeline_public_fallback_skip_client_type_does_not_fetch_client_type() 
             "options.backend.pipeline.fetch_public_instrument_info_many",
             return_value={},
         ), patch(
-            "options.backend.pipeline.fetch_public_client_type_latest_many"
+            "options.backend.pipeline.fetch_public_client_type_current_many"
         ) as fetch_client_type:
             result = run_pipeline(skip_client_type=True, delay_between_calls=0)
 
@@ -429,7 +499,7 @@ def test_pipeline_public_fallback_warns_when_client_type_rows_are_not_stored() -
             "options.backend.pipeline.fetch_public_instrument_info_many",
             return_value={},
         ), patch(
-            "options.backend.pipeline.fetch_public_client_type_latest_many",
+            "options.backend.pipeline.fetch_public_client_type_current_many",
             return_value=[{"ins_code": "bad", "natural_money_flow": 10}],
         ):
             result = run_pipeline(skip_client_type=False, delay_between_calls=0)
@@ -478,7 +548,7 @@ def test_pipeline_public_fallback_enriches_contract_metadata_from_direct_instrum
             "options.backend.pipeline.fetch_public_instrument_info_many",
             return_value=instrument_info,
         ), patch(
-            "options.backend.pipeline.fetch_public_client_type_latest_many",
+            "options.backend.pipeline.fetch_public_client_type_current_many",
             return_value=[],
         ):
             result = run_pipeline(skip_client_type=False, delay_between_calls=0)
@@ -489,6 +559,7 @@ def test_pipeline_public_fallback_enriches_contract_metadata_from_direct_instrum
     assert result["options"] == 1
     assert row["long_name"] == "اختیارخ فملی-26000-1405/07/08"
     assert row["strike_price"] == 26000
+    assert row["end_date"] == 20260930
     assert row["instrument_id"] == "IROPT101"
 
 

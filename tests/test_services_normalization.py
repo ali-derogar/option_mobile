@@ -28,8 +28,9 @@ from options.backend.services.options import (
     normalize_option,
 )
 from options.backend.services.public_options import (
+    fetch_public_client_type_current,
+    fetch_public_client_type_current_many,
     fetch_public_client_type_latest,
-    fetch_public_client_type_latest_many,
     fetch_public_option_market_watch,
     normalize_public_client_type,
     normalize_public_option_pairs,
@@ -548,15 +549,54 @@ def test_public_client_type_latest_skips_non_object_rows(monkeypatch) -> None:
     assert normalized["natural_buy_value"] == pytest.approx(20.0)
 
 
+def test_public_client_type_current_reads_live_volume_shape(monkeypatch) -> None:
+    monkeypatch.setattr(
+        public_options,
+        "_session",
+        lambda: FakePublicSession(
+            {
+                "clientType": {
+                    "buy_I_Volume": 482.0,
+                    "buy_N_Volume": 0.0,
+                    "buy_DDD_Volume": 0.0,
+                    "buy_CountI": 20,
+                    "buy_CountN": 0,
+                    "buy_CountDDD": 0,
+                    "sell_I_Volume": 264.0,
+                    "sell_N_Volume": 218.0,
+                    "sell_CountI": 21,
+                    "sell_CountN": 1,
+                }
+            }
+        ),
+    )
+
+    normalized = fetch_public_client_type_current(13869259092326636)
+
+    assert normalized is not None
+    assert normalized["ins_code"] == 13869259092326636
+    assert normalized["rec_date"] is None
+    assert normalized["natural_buy_volume"] == pytest.approx(482.0)
+    assert normalized["natural_buy_count"] == 20
+    assert normalized["natural_sell_volume"] == pytest.approx(264.0)
+    assert normalized["natural_sell_count"] == 21
+    assert normalized["legal_buy_volume"] == pytest.approx(0.0)
+    assert normalized["legal_buy_count"] == 0
+    assert normalized["legal_sell_volume"] == pytest.approx(218.0)
+    assert normalized["legal_sell_count"] == 1
+    assert normalized["natural_money_flow"] is None
+    assert normalized["legal_money_flow"] is None
+
+
 def test_public_client_type_many_skips_invalid_json_response(monkeypatch) -> None:
-    def fake_latest(ins_code: int):
+    def fake_current(ins_code: int):
         if ins_code == 1:
             raise ValueError("bad json")
         return {"ins_code": ins_code, "natural_money_flow": 10}
 
-    monkeypatch.setattr(public_options, "fetch_public_client_type_latest", fake_latest)
+    monkeypatch.setattr(public_options, "fetch_public_client_type_current", fake_current)
 
-    assert fetch_public_client_type_latest_many([1, 2]) == [
+    assert fetch_public_client_type_current_many([1, 2]) == [
         {"ins_code": 2, "natural_money_flow": 10}
     ]
 
@@ -602,6 +642,58 @@ def test_public_option_pair_preserves_zero_underlying_last_price() -> None:
     assert contracts[0]["underlying_last_price"] == 0
     assert contracts[0]["moneyness"] == "ITM"
     assert contracts[0]["intrinsic_value"] == pytest.approx(100.0)
+
+
+def test_public_option_long_name_parser_reads_jalali_expiry_and_persian_digits() -> None:
+    parsed = public_options._parse_option_long_name("اختیارخ فملی-۱۸٬۶۳۰-۱۴۰۵/۰۷/۰۸")
+
+    assert parsed["strike_price"] == pytest.approx(18_630.0)
+    assert parsed["end_date"] == 20260930
+
+
+def test_public_market_watch_and_instrument_info_fields_are_merged_in_expected_places() -> None:
+    market_watch_rows = [
+        {
+            "insCode_C": "5800031174225610",
+            "lVal18AFC_C": "ضملي7070",
+            "lVal30_C": "اختيارخ فملي-18630-1405/07/08",
+            "strikePrice": 18630,
+            "endDate": "20260930",
+            "pDrCotVal_C": 2088,
+            "pClosing_C": 1923,
+            "qTotTran5J_C": 8910,
+            "oP_C": 59333,
+            "uaInsCode": "35425587644337450",
+            "lval30_UA": "فملي",
+        }
+    ]
+    instrument_info = {
+        "insCode": "5800031174225610",
+        "instrumentID": "IRO9MSMI0D71",
+        "lVal18AFC": "ضملي7070",
+        "lVal30": "اختيارخ فملي-18630-1405/07/08",
+        "cIsin": "IRO9MSMI0D73",
+        "dEven": 20260825,
+    }
+
+    contract = normalize_public_option_pairs(market_watch_rows)[0]
+    enriched = public_options.enrich_public_contracts_with_instrument_info(
+        [contract],
+        {5800031174225610: instrument_info},
+    )[0]
+
+    assert contract["last_price"] == pytest.approx(2088.0)
+    assert contract["closing_price"] == pytest.approx(1923.0)
+    assert contract["trade_volume"] == pytest.approx(8910.0)
+    assert contract["buy_open_positions"] == pytest.approx(59333.0)
+    assert enriched["instrument_id"] == "IRO9MSMI0D71"
+    assert enriched["isin"] == "IRO9MSMI0D73"
+    assert enriched["symbol"] == "ضملي7070"
+    assert enriched["long_name"] == "اختيارخ فملي-18630-1405/07/08"
+    assert enriched["strike_price"] == pytest.approx(18_630.0)
+    assert enriched["end_date"] == 20260930
+    assert enriched["last_price"] == pytest.approx(2088.0)
+    assert enriched["buy_open_positions"] == pytest.approx(59333.0)
 
 
 def test_historical_option_rejects_non_finite_numbers() -> None:

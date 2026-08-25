@@ -23,6 +23,7 @@ from options.backend.config import (
 
 OPTION_MARKET_WATCH_URL = "https://cdn.tsetmc.com/api/Instrument/GetInstrumentOptionMarketWatch/1"
 INSTRUMENT_INFO_URL = "https://cdn.tsetmc.com/api/Instrument/GetInstrumentInfo/{ins_code}"
+CLIENT_TYPE_CURRENT_URL = "https://cdn.tsetmc.com/api/ClientType/GetClientType/{ins_code}/1/0"
 CLIENT_TYPE_HISTORY_URL = "https://cdn.tsetmc.com/api/ClientType/GetClientTypeHistory/{ins_code}"
 
 
@@ -114,6 +115,38 @@ def fetch_public_client_type_latest(ins_code: int) -> Optional[Dict[str, Any]]:
     return normalize_public_client_type(latest)
 
 
+def fetch_public_client_type_current(ins_code: int) -> Optional[Dict[str, Any]]:
+    session = _session()
+    url = CLIENT_TYPE_CURRENT_URL.format(ins_code=ins_code)
+    response = session.get(url, timeout=TSETMC_REQUEST_TIMEOUT)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        return None
+    row = payload.get("clientType")
+    if not isinstance(row, dict):
+        return None
+    return normalize_public_client_type({"insCode": ins_code, **row})
+
+
+def fetch_public_client_type_current_many(ins_codes: List[int]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    workers = max(1, TSETMC_PUBLIC_CLIENT_TYPE_WORKERS)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(fetch_public_client_type_current, ins_code): ins_code
+            for ins_code in ins_codes
+        }
+        for future in as_completed(futures):
+            try:
+                row = future.result()
+                if row:
+                    rows.append(row)
+            except (requests.RequestException, ValueError):
+                continue
+    return rows
+
+
 def fetch_public_client_type_latest_many(ins_codes: List[int]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     workers = max(1, TSETMC_PUBLIC_CLIENT_TYPE_WORKERS)
@@ -143,16 +176,16 @@ def normalize_public_client_type(row: Dict[str, Any]) -> Dict[str, Any]:
         "ins_code": _to_int(row.get("insCode")) or 0,
         "natural_buy_volume": _to_float(row.get("buy_I_Volume")),
         "natural_buy_value": natural_buy_value,
-        "natural_buy_count": _to_int(row.get("buy_I_Count")),
+        "natural_buy_count": _first_int(row.get("buy_I_Count"), row.get("buy_CountI")),
         "natural_sell_volume": _to_float(row.get("sell_I_Volume")),
         "natural_sell_value": natural_sell_value,
-        "natural_sell_count": _to_int(row.get("sell_I_Count")),
+        "natural_sell_count": _first_int(row.get("sell_I_Count"), row.get("sell_CountI")),
         "legal_buy_volume": _to_float(row.get("buy_N_Volume")),
         "legal_buy_value": legal_buy_value,
-        "legal_buy_count": _to_int(row.get("buy_N_Count")),
+        "legal_buy_count": _first_int(row.get("buy_N_Count"), row.get("buy_CountN")),
         "legal_sell_volume": _to_float(row.get("sell_N_Volume")),
         "legal_sell_value": legal_sell_value,
-        "legal_sell_count": _to_int(row.get("sell_N_Count")),
+        "legal_sell_count": _first_int(row.get("sell_N_Count"), row.get("sell_CountN")),
         "natural_money_flow": _net_flow(natural_buy_value, natural_sell_value),
         "legal_money_flow": _net_flow(legal_buy_value, legal_sell_value),
     }
@@ -244,6 +277,8 @@ def _merge_public_instrument_info(
                 enriched.get("strike_price"),
                 underlying_price,
             )
+        if parsed.get("end_date") is not None:
+            enriched["end_date"] = parsed["end_date"]
 
     enriched["instrument_id"] = _first_text(
         instrument_info.get("instrumentID"),
@@ -263,13 +298,127 @@ def _merge_public_instrument_info(
 
 
 def _parse_option_long_name(value: str) -> Dict[str, Any]:
-    text = _clean_numeric_text(value.replace("/", ""))
-    match = re.search(r"-(\d+)-(\d{8})", text)
+    text = _clean_numeric_text(value)
+    match = re.search(r"-(\d+)-(\d{4}/?\d{2}/?\d{2}|\d{6})", text)
     if not match:
         return {}
     return {
         "strike_price": _to_float(match.group(1)),
+        "end_date": _jalali_expiry_to_gregorian_int(match.group(2)),
     }
+
+
+def _jalali_expiry_to_gregorian_int(value: str) -> Optional[int]:
+    value = _translate_digits(value.strip())
+    parts = value.split("/")
+    try:
+        if len(parts) == 3:
+            year = int(parts[0])
+            if year < 100:
+                year += 1400
+            month = int(parts[1])
+            day = int(parts[2])
+        elif len(value) == 8 and value.startswith("14"):
+            year = int(value[:4])
+            month = int(value[4:6])
+            day = int(value[6:8])
+        elif len(value) == 6:
+            year = int(value[:2]) + 1400
+            month = int(value[2:4])
+            day = int(value[4:6])
+        else:
+            return None
+    except ValueError:
+        return None
+    if not _valid_jalali_month_day(year, month, day):
+        return None
+    g_year, g_month, g_day = _jalali_to_gregorian(year, month, day)
+    return g_year * 10000 + g_month * 100 + g_day
+
+
+def _valid_jalali_month_day(year: int, month: int, day: int) -> bool:
+    if month < 1 or month > 12 or day < 1:
+        return False
+    if month <= 6:
+        return day <= 31
+    if month <= 11:
+        return day <= 30
+    return day <= (30 if _is_jalali_leap_year(year) else 29)
+
+
+def _is_jalali_leap_year(year: int) -> bool:
+    breaks = [
+        -61,
+        9,
+        38,
+        199,
+        426,
+        686,
+        756,
+        818,
+        1111,
+        1181,
+        1210,
+        1635,
+        2060,
+        2097,
+        2192,
+        2262,
+        2324,
+        2394,
+        2456,
+        3178,
+    ]
+    leap_j = -14
+    jp = breaks[0]
+    jump = 0
+    for jm in breaks[1:]:
+        jump = jm - jp
+        if year < jm:
+            break
+        leap_j += (jump // 33) * 8 + (jump % 33) // 4
+        jp = jm
+    n = year - jp
+    leap_j += (n // 33) * 8 + ((n % 33) + 3) // 4
+    if jump % 33 == 4 and jump - n == 4:
+        leap_j += 1
+    if jump - n < 6:
+        n = n - jump + ((jump + 4) // 33) * 33
+    leap = ((n + 1) % 33 - 1) % 4
+    if leap == -1:
+        leap = 4
+    return leap == 0
+
+
+def _jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple[int, int, int]:
+    jy += 1595
+    days = -355668 + (365 * jy) + ((jy // 33) * 8) + (((jy % 33) + 3) // 4) + jd
+    if jm < 7:
+        days += (jm - 1) * 31
+    else:
+        days += ((jm - 7) * 30) + 186
+    gy = 400 * (days // 146097)
+    days %= 146097
+    if days > 36524:
+        gy += 100 * ((days - 1) // 36524)
+        days = (days - 1) % 36524
+        if days >= 365:
+            days += 1
+    gy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        gy += (days - 1) // 365
+        days = (days - 1) % 365
+    gd = days + 1
+    leap = gy % 4 == 0 and (gy % 100 != 0 or gy % 400 == 0)
+    month_days = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    gm = 1
+    for dim in month_days:
+        if gd <= dim:
+            break
+        gd -= dim
+        gm += 1
+    return gy, gm, gd
 
 
 def _first_text(*values: Any) -> Optional[str]:
@@ -294,6 +443,14 @@ def _price_change(row: Dict[str, Any], suffix: str) -> Optional[str]:
 def _first_present_number(*values: Any) -> Optional[float]:
     for value in values:
         number = _to_float(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _first_int(*values: Any) -> Optional[int]:
+    for value in values:
+        number = _to_int(value)
         if number is not None:
             return number
     return None
@@ -333,13 +490,18 @@ def _to_int(value: Any) -> Optional[int]:
 
 
 def _clean_numeric_text(value: str) -> str:
-    return (
+    text = (
         value.strip()
         .replace(",", "")
         .replace("٬", "")
         .replace("،", "")
         .replace(" ", "")
     )
+    return _translate_digits(text)
+
+
+def _translate_digits(value: str) -> str:
+    return value.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
 
 
 def _net_flow(buy_value: Optional[float], sell_value: Optional[float]) -> Optional[float]:
@@ -354,9 +516,12 @@ def _session() -> requests.Session:
     session.headers.update(
         {
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://tsetmc.com",
+            "Referer": "https://tsetmc.com/",
             "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:153.0) "
+                "Gecko/20100101 Firefox/153.0"
             ),
         }
     )

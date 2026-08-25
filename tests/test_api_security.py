@@ -26,6 +26,20 @@ def test_dashboard_root_serves_index_with_local_token_cookie() -> None:
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_api_and_static_responses_disable_cache() -> None:
+    with TestClient(main.app) as client:
+        api_response = client.get(
+            "/api/activation/status",
+            headers={main.LOCAL_API_HEADER: main.LOCAL_API_TOKEN},
+        )
+        static_response = client.get("/static/js/app.js")
+
+    assert api_response.status_code == 200
+    assert api_response.headers["cache-control"] == "no-store"
+    assert static_response.status_code == 200
+    assert static_response.headers["cache-control"] == "no-store"
+
+
 def test_query_value_strips_whitespace_and_treats_blank_as_missing() -> None:
     assert main._query_value(FakeRequest("q=%20%20"), "q") is None
     assert main._query_value(FakeRequest("q=%20%D8%AE%D9%88%D8%AF%D8%B1%D9%88%20"), "q") == "خودرو"
@@ -127,6 +141,58 @@ def test_open_interest_accepts_grouped_persian_instrument_code(monkeypatch) -> N
     assert response.status_code == 200
     assert response.json()["ins_code"] == "1001"
     assert called["ins_code"] == 1001
+
+
+def test_client_type_endpoint_fetches_current_public_row(monkeypatch) -> None:
+    monkeypatch.setattr(main.storage, "is_activated", lambda: True)
+    seen = {}
+
+    def fake_fetch(ins_code):
+        seen["ins_code"] = ins_code
+        return {
+            "ins_code": ins_code,
+            "natural_buy_volume": 482.0,
+            "natural_sell_volume": 264.0,
+            "legal_buy_volume": 0.0,
+            "legal_sell_volume": 218.0,
+        }
+
+    monkeypatch.setattr(main, "fetch_public_client_type_current", fake_fetch)
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/api/client-type/13869259092326636",
+            headers={main.LOCAL_API_HEADER: main.LOCAL_API_TOKEN},
+        )
+
+    assert response.status_code == 200
+    assert seen["ins_code"] == 13869259092326636
+    assert response.json()["item"]["natural_buy_volume"] == 482.0
+
+
+def test_client_type_batch_endpoint_fetches_all_unique_public_rows(monkeypatch) -> None:
+    monkeypatch.setattr(main.storage, "is_activated", lambda: True)
+    seen = {}
+
+    def fake_fetch_many(ins_codes):
+        seen["ins_codes"] = ins_codes
+        return [
+            {"ins_code": ins_code, "natural_buy_volume": float(index + 1)}
+            for index, ins_code in enumerate(ins_codes)
+        ]
+
+    monkeypatch.setattr(main, "fetch_public_client_type_current_many", fake_fetch_many)
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/client-type",
+            json={"ins_codes": ["13869259092326636", "۱٬۰۰۱", "1001"]},
+            headers={main.LOCAL_API_HEADER: main.LOCAL_API_TOKEN},
+        )
+
+    assert response.status_code == 200
+    assert seen["ins_codes"] == [13869259092326636, 1001]
+    assert response.json()["total"] == 2
 
 
 def test_calendar_today_returns_api_marked_date(monkeypatch) -> None:

@@ -5,15 +5,10 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from options.backend.client import TsetmcClient, TsetmcAPIError
 from options.backend.config import TSETMC_FLOW, validate_credentials
-from options.backend.services.client_type import (
-    fetch_client_type_by_ins,
-    normalize_client_type,
-)
 from options.backend.services.instruments import fetch_instruments, index_by_ins_code
 from options.backend.services.options import (
     enrich_with_underlying,
@@ -23,7 +18,7 @@ from options.backend.services.options import (
 )
 from options.backend.services.public_options import (
     enrich_public_contracts_with_instrument_info,
-    fetch_public_client_type_latest_many,
+    fetch_public_client_type_current_many,
     fetch_public_instrument_info_many,
     fetch_public_option_market_watch,
     normalize_public_option_pairs,
@@ -56,6 +51,16 @@ def _merge_trade(enriched: Dict[str, Any], trade: Optional[Dict[str, Any]]) -> D
     return enriched
 
 
+def _fetch_direct_instrument_info(ins_codes: List[int]) -> Dict[int, Dict[str, Any]]:
+    if not ins_codes:
+        return {}
+    try:
+        return fetch_public_instrument_info_many(ins_codes)
+    except Exception as exc:  # pragma: no cover - defensive guard around external CDN calls.
+        logger.warning("Direct instrument metadata fetch failed: %s", exc)
+        return {}
+
+
 def _store_public_option_fallback(
     storage: Storage,
     skip_client_type: bool = False,
@@ -76,7 +81,7 @@ def _store_public_option_fallback(
             message=f"در حال کنترل مشخصات مستقیم {len(ins_codes)} قرارداد",
             instrument_total=len(ins_codes),
         )
-        instrument_info = fetch_public_instrument_info_many(ins_codes)
+        instrument_info = _fetch_direct_instrument_info(ins_codes)
         contracts = enrich_public_contracts_with_instrument_info(contracts, instrument_info)
     open_interest_rows = [
         {
@@ -105,10 +110,10 @@ def _store_public_option_fallback(
             message=f"در حال دریافت حقیقی/حقوقی عمومی برای {len(ins_codes)} قرارداد",
             client_type_total=len(ins_codes),
         )
-        client_type_rows = fetch_public_client_type_latest_many(ins_codes)
+        client_type_rows = fetch_public_client_type_current_many(ins_codes)
         if client_type_rows:
             client_type_stored = storage.insert_client_type_stats(client_type_rows)
-            money_flow_stored = storage.insert_money_flow(client_type_rows)
+            money_flow_stored = storage.insert_money_flow(_rows_with_money_flow(client_type_rows))
         else:
             client_type_stored = 0
             money_flow_stored = 0
@@ -253,6 +258,13 @@ def run_pipeline(
         except TsetmcAPIError as exc:
             logger.warning("Could not fetch underlying trades: %s", exc)
 
+    progress(
+        stage="direct_instruments",
+        message=f"در حال کنترل مشخصات مستقیم {len(option_ins_codes)} قرارداد",
+        instrument_total=len(option_ins_codes),
+    )
+    direct_instrument_info = _fetch_direct_instrument_info(list(option_ins_codes))
+
     enriched_contracts: List[Dict[str, Any]] = []
     open_interest_rows: List[Dict[str, Any]] = []
 
@@ -265,6 +277,10 @@ def run_pipeline(
             inst_index.get(opt.get("underlying_ins_code")),
             underlying_trade_index.get(opt.get("underlying_ins_code")),
         )
+        enriched = enrich_public_contracts_with_instrument_info(
+            [enriched],
+            direct_instrument_info,
+        )[0]
         enriched_contracts.append(enriched)
         open_interest_rows.append(
             {
@@ -295,28 +311,16 @@ def run_pipeline(
             client_type_done=0,
             client_type_total=total,
         )
-        for i, ins_code in enumerate(sorted(option_ins_codes), 1):
-            try:
-                raw_ct = fetch_client_type_by_ins(client, ins_code)
-                for row in raw_ct:
-                    normalized = normalize_client_type(row)
-                    if normalized["ins_code"]:
-                        client_type_rows.append(normalized)
-                if i % 50 == 0 or i == total:
-                    logger.info("Client type progress: %d/%d", i, total)
-                    progress(
-                        stage="client_type",
-                        message=f"در حال دریافت حقیقی/حقوقی {i}/{total}",
-                        client_type_done=i,
-                        client_type_total=total,
-                    )
-                if delay_between_calls > 0:
-                    time.sleep(delay_between_calls)
-            except TsetmcAPIError as exc:
-                logger.warning("ClientType failed for ins_code=%s: %s", ins_code, exc)
+        client_type_rows = fetch_public_client_type_current_many(sorted(option_ins_codes))
+        progress(
+            stage="client_type",
+            message=f"حقیقی/حقوقی {len(client_type_rows)}/{total} دریافت شد",
+            client_type_done=len(client_type_rows),
+            client_type_total=total,
+        )
 
         client_type_stored = storage.insert_client_type_stats(client_type_rows)
-        money_flow_stored = storage.insert_money_flow(client_type_rows)
+        money_flow_stored = storage.insert_money_flow(_rows_with_money_flow(client_type_rows))
         logger.info("Stored %d client type records", client_type_stored)
         progress(
             stage="client_type_stored",
@@ -339,6 +343,14 @@ def run_pipeline(
         "open_interest": open_interest_stored,
         "exports": {k: str(v) for k, v in export_paths.items()},
     }
+
+
+def _rows_with_money_flow(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if row.get("natural_money_flow") is not None or row.get("legal_money_flow") is not None
+    ]
 
 
 def main(argv: Optional[List[str]] = None) -> int:

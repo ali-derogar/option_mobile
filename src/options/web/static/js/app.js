@@ -30,6 +30,9 @@ const state = {
   sortDir: 1,
   selectedInsCode: null,
   selectedRowKey: null,
+  clientTypeRequestId: 0,
+  clientTypeBatchRequestId: 0,
+  clientTypeByInsCode: {},
   expandedCardKey: null,
   oiChart: null,
   oiRequestId: 0,
@@ -226,12 +229,31 @@ function fmtDate(d) {
   if (!d) return "—";
   const s = String(d);
   if (s.length === 8 && /^\d+$/.test(s)) {
+    const year = Number(s.slice(0, 4));
+    const month = Number(s.slice(4, 6));
+    const day = Number(s.slice(6, 8));
+    if (year >= 1700) {
+      const date = new Date(year, month - 1, day);
+      if (
+        date.getFullYear() === year
+        && date.getMonth() === month - 1
+        && date.getDate() === day
+      ) {
+        const { jy, jm, jd } = gregorianToJalali(year, month, day);
+        const part = (value, digits = 2) => value.toLocaleString("fa-IR", {
+          minimumIntegerDigits: digits,
+          useGrouping: false,
+        });
+        return `${part(jy, 4)}/${part(jm)}/${part(jd)}`;
+      }
+    }
     return `${s.slice(0, 4)}/${s.slice(4, 6)}/${s.slice(6, 8)}`;
   }
   try {
     const date = new Date(d);
     if (Number.isNaN(date.getTime())) return s;
-    return date.toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" });
+    const hasTime = /[T:\s]\d{1,2}:/.test(s);
+    return date.toLocaleString("fa-IR", hasTime ? { dateStyle: "short", timeStyle: "short" } : { dateStyle: "short" });
   } catch {
     return s;
   }
@@ -814,6 +836,8 @@ async function changeSelectedDate(date) {
   state.selectedDate = date;
   state.selectedRowKey = null;
   state.selectedInsCode = null;
+  state.clientTypeRequestId += 1;
+  state.clientTypeBatchRequestId += 1;
   state.expandedCardKey = null;
   state.underlying = null;
   state.analysisVisible = false;
@@ -870,6 +894,7 @@ function currentSearch() {
 }
 
 async function loadUnderlyings(search = "") {
+  state.clientTypeBatchRequestId += 1;
   const q = appendQuery({ q: search });
   const data = await api(`/api/underlyings${q}`);
   state.items = data.items || [];
@@ -880,9 +905,11 @@ async function loadUnderlyingContracts(search = "") {
   const q = appendQuery({ q: search });
   const data = await api(`/api/underlyings/${encodeURIComponent(state.underlyingKey)}/contracts${q}`);
   state.items = data.items || [];
+  applyCachedClientTypes(state.items);
   state.underlying = data.underlying || null;
   populateOptionFilters();
   applyFilterAndSort();
+  loadClientTypesForRows(state.items);
 }
 
 async function reloadActiveData() {
@@ -1117,6 +1144,7 @@ function clearSingleFilter(key) {
   }
   state.selectedRowKey = null;
   state.selectedInsCode = null;
+  state.clientTypeRequestId += 1;
   state.expandedCardKey = null;
   renderDetail(null);
   applyFilterAndSort();
@@ -1140,6 +1168,7 @@ function resetFilters() {
   if (strikeFilter) strikeFilter.value = "all";
   state.selectedRowKey = null;
   state.selectedInsCode = null;
+  state.clientTypeRequestId += 1;
   state.expandedCardKey = null;
   renderDetail(null);
   applyFilterAndSort();
@@ -1155,6 +1184,7 @@ function clearSelectionForFilterChange() {
 function closeDetailSheet() {
   state.selectedInsCode = null;
   state.selectedRowKey = null;
+  state.clientTypeRequestId += 1;
   state.expandedCardKey = null;
   state.oiRequestId += 1;
   renderTable();
@@ -1166,6 +1196,7 @@ function toggleAnalysisMode() {
   state.analysisVisible = !state.analysisVisible;
   state.selectedInsCode = null;
   state.selectedRowKey = null;
+  state.clientTypeRequestId += 1;
   state.expandedCardKey = null;
   destroyOiChart();
   renderDetail(null);
@@ -1451,12 +1482,99 @@ function selectRowByIndex(index) {
   state.selectedInsCode = row?.ins_code ?? null;
   renderTable();
   renderDetail(row);
+  loadClientTypeForSelected(row);
   updateViewChrome();
   if (state.selectedInsCode) {
     loadOiChart(state.selectedInsCode);
   } else {
     document.getElementById("chartBlock")?.classList.add("hidden");
   }
+}
+
+async function loadClientTypeForSelected(row) {
+  const insCode = row?.ins_code;
+  if (!insCode) return;
+  const requestId = ++state.clientTypeRequestId;
+  try {
+    const data = await api(`/api/client-type/${encodeURIComponent(insCode)}`);
+    if (requestId !== state.clientTypeRequestId || String(insCode) !== String(state.selectedInsCode)) return;
+    const item = data.item || {};
+    state.clientTypeByInsCode[String(insCode)] = item;
+    mergeClientTypeIntoRow(row, item);
+    const rowKey = getRowKey(row);
+    state.items.forEach((itemRow) => {
+      if (getRowKey(itemRow) === rowKey) mergeClientTypeIntoRow(itemRow, item);
+    });
+    state.filtered.forEach((itemRow) => {
+      if (getRowKey(itemRow) === rowKey) mergeClientTypeIntoRow(itemRow, item);
+    });
+    renderTable();
+    renderDetail(row);
+    renderAnalysis();
+  } catch (e) {
+    if (requestId === state.clientTypeRequestId && String(insCode) === String(state.selectedInsCode)) {
+      console.error(e);
+    }
+  }
+}
+
+async function loadClientTypesForRows(rows) {
+  const insCodes = [...new Set((rows || []).map((row) => row?.ins_code).filter(Boolean).map(String))];
+  if (!insCodes.length) return;
+  const requestId = ++state.clientTypeBatchRequestId;
+  try {
+    const data = await api("/api/client-type", {
+      method: "POST",
+      body: JSON.stringify({ ins_codes: insCodes }),
+    });
+    if (requestId !== state.clientTypeBatchRequestId) return;
+    (data.items || []).forEach((clientType) => {
+      const insCode = String(clientType?.ins_code || "");
+      if (!insCode) return;
+      state.clientTypeByInsCode[insCode] = clientType;
+      state.items.forEach((row) => {
+        if (String(row?.ins_code) === insCode) mergeClientTypeIntoRow(row, clientType);
+      });
+    });
+    applyFilterAndSort();
+    if (state.selectedRowKey) {
+      const selectedRow = state.filtered.find((row) => getRowKey(row) === state.selectedRowKey) || null;
+      renderDetail(selectedRow);
+    }
+  } catch (e) {
+    if (requestId === state.clientTypeBatchRequestId) console.error(e);
+  }
+}
+
+function applyCachedClientTypes(rows) {
+  (rows || []).forEach((row) => {
+    const clientType = state.clientTypeByInsCode[String(row?.ins_code || "")];
+    if (clientType) mergeClientTypeIntoRow(row, clientType);
+  });
+}
+
+function mergeClientTypeIntoRow(row, clientType) {
+  if (!row || !clientType) return row;
+  [
+    "rec_date",
+    "natural_buy_volume",
+    "natural_buy_value",
+    "natural_buy_count",
+    "natural_sell_volume",
+    "natural_sell_value",
+    "natural_sell_count",
+    "legal_buy_volume",
+    "legal_buy_value",
+    "legal_buy_count",
+    "legal_sell_volume",
+    "legal_sell_value",
+    "legal_sell_count",
+    "natural_money_flow",
+    "legal_money_flow",
+  ].forEach((key) => {
+    if (clientType[key] !== undefined) row[key] = clientType[key];
+  });
+  return row;
 }
 
 function renderDetail(row) {
@@ -1706,9 +1824,10 @@ function emptyAnalysisBucket() {
   return ANALYSIS_SUM_FIELDS.reduce(
     (bucket, field) => {
       bucket[field] = 0;
+      bucket._presentFields[field] = 0;
       return bucket;
     },
-    { contract_count: 0, open_interest_positions: 0 }
+    { contract_count: 0, open_interest_positions: 0, _presentFields: { open_interest_positions: 0 } }
   );
 }
 
@@ -1739,9 +1858,16 @@ function buildAnalysisModel(rows) {
     if (!model[optionType] || !model[optionType][moneyness]) return;
     const bucket = model[optionType][moneyness];
     bucket.contract_count += 1;
-    bucket.open_interest_positions += numericValue(openInterestValue(row));
+    const openInterest = asFiniteNumber(openInterestValue(row));
+    if (openInterest != null) {
+      bucket.open_interest_positions += openInterest;
+      bucket._presentFields.open_interest_positions += 1;
+    }
     ANALYSIS_SUM_FIELDS.forEach((field) => {
-      bucket[field] += numericValue(row[field]);
+      const value = asFiniteNumber(row[field]);
+      if (value == null) return;
+      bucket[field] += value;
+      bucket._presentFields[field] += 1;
     });
   });
   return model;
@@ -2397,17 +2523,32 @@ function renderAnalysisSideSummary(typeModel) {
 
 function combinedMetric(a, b, prefix) {
   return {
-    count: numericValue(a[`${prefix}_count`]) + numericValue(b[`${prefix}_count`]),
-    volume: numericValue(a[`${prefix}_volume`]) + numericValue(b[`${prefix}_volume`]),
-    value: numericValue(a[`${prefix}_value`]) + numericValue(b[`${prefix}_value`]),
+    count: combineAnalysisField(a, b, `${prefix}_count`),
+    volume: combineAnalysisField(a, b, `${prefix}_volume`),
+    value: combineAnalysisField(a, b, `${prefix}_value`),
   };
+}
+
+function hasAnalysisField(bucket, field) {
+  return (bucket?._presentFields?.[field] || 0) > 0;
+}
+
+function analysisFieldValue(bucket, field) {
+  return hasAnalysisField(bucket, field) ? bucket[field] : null;
+}
+
+function combineAnalysisField(a, b, field) {
+  const hasA = hasAnalysisField(a, field);
+  const hasB = hasAnalysisField(b, field);
+  if (!hasA && !hasB) return null;
+  return (hasA ? numericValue(a[field]) : 0) + (hasB ? numericValue(b[field]) : 0);
 }
 
 function renderCombinedSummaryMetric(a, b, prefix) {
   const metric = combinedMetric(a, b, prefix);
   return `
     <span class="analysis-metric analysis-metric-total">
-      <strong>${fmtNum(metric.volume)}</strong>
+      <strong>${analysisMetricValue(metric.volume)}</strong>
     </span>`;
 }
 
@@ -2426,7 +2567,7 @@ function renderSummaryGroup(label, bucket, prefix) {
 }
 
 function renderCombinedSummaryGroup(itm, otm, prefix) {
-  const openInterest = numericValue(itm.open_interest_positions) + numericValue(otm.open_interest_positions);
+  const openInterest = combineAnalysisField(itm, otm, "open_interest_positions");
   return `
     <div class="analysis-summary-group analysis-summary-group-total">
       <div class="analysis-summary-group-title">
@@ -2460,14 +2601,15 @@ function renderOpenInterestTile(value) {
   return `
     <div class="analysis-summary-tile analysis-summary-oi-tile">
       <span>موقعیت</span>
-      <strong>${fmtNum(value)}</strong>
+      <strong>${analysisMetricValue(value)}</strong>
     </div>`;
 }
 
 function renderSummaryMetric(bucket, prefix) {
+  const value = analysisFieldValue(bucket, `${prefix}_volume`);
   return `
     <span class="analysis-metric">
-      <strong>${fmtNum(bucket[`${prefix}_volume`])}</strong>
+      <strong>${analysisMetricValue(value)}</strong>
     </span>`;
 }
 
@@ -2486,9 +2628,9 @@ function renderAnalysisRows(bucket) {
         <tr>
           <td class="${cls}">${person}</td>
           <td>${side}</td>
-          <td>${fmtNum(bucket[countKey])}</td>
-          <td>${fmtNum(bucket[volumeKey])}</td>
-          <td>${fmtNum(bucket[valueKey])}</td>
+          <td>${analysisMetricValue(analysisFieldValue(bucket, countKey))}</td>
+          <td>${analysisMetricValue(analysisFieldValue(bucket, volumeKey))}</td>
+          <td>${analysisMetricValue(analysisFieldValue(bucket, valueKey))}</td>
         </tr>`
     )
     .join("");
@@ -2504,15 +2646,15 @@ function renderAnalysisBucket(label, bucket) {
       <div class="analysis-oi-summary">
         <div>
           <span>موقعیت باز</span>
-          <strong>${fmtNum(bucket.buy_open_positions)}</strong>
+          <strong>${analysisMetricValue(analysisFieldValue(bucket, "buy_open_positions"))}</strong>
         </div>
         <div>
           <span>فروش باز</span>
-          <strong>${fmtNum(bucket.sell_open_positions)}</strong>
+          <strong>${analysisMetricValue(analysisFieldValue(bucket, "sell_open_positions"))}</strong>
         </div>
         <div>
           <span>موقعیت دیروز</span>
-          <strong>${fmtNum(bucket.yesterday_open_positions)}</strong>
+          <strong>${analysisMetricValue(analysisFieldValue(bucket, "yesterday_open_positions"))}</strong>
         </div>
       </div>
       <div class="analysis-table-wrap">
@@ -2586,7 +2728,9 @@ function renderAnalysis() {
     return;
   }
 
-  const rows = state.filtered.filter((row) => row.moneyness === "ITM" || row.moneyness === "OTM");
+  applyCachedClientTypes(state.items);
+  const filteredRows = applyLocalFilters(state.items);
+  const rows = filteredRows.filter((row) => row.moneyness === "ITM" || row.moneyness === "OTM");
   const model = buildAnalysisModel(rows);
   const underlyingName = state.underlying?.underlying_symbol || state.underlying?.underlying_short_name || "";
   const audience = activeAnalysisAudience();
@@ -2684,6 +2828,9 @@ function pollRefreshStatus() {
         await reloadActiveData();
       } else if (st.last_result) {
         showToast(`انجام شد — ${st.last_result.options} قرارداد`);
+        state.selectedDate = "";
+        state.latestDate = "";
+        syncDateToUrl();
         await init();
       }
     } catch {

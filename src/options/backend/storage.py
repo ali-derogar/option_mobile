@@ -585,13 +585,36 @@ class Storage:
             if snapshot_date:
                 snapshot_date = _normalize_date_text(snapshot_date)
                 api_date = int(snapshot_date.replace("-", ""))
+                start = datetime.combine(
+                    datetime.strptime(snapshot_date, "%Y-%m-%d").date(),
+                    time.min,
+                    tzinfo=MARKET_TZ,
+                ).astimezone(timezone.utc)
+                start = start.replace(tzinfo=None)
+                end = start + timedelta(days=1)
+                is_current_market_day = snapshot_date == self.snapshot_date_for(self.now())
+                fetched_count = 0
+                if is_current_market_day:
+                    fetched_count = session.scalar(
+                        select(func.count(ClientTypeStats.id)).where(
+                            ClientTypeStats.fetched_at >= start,
+                            ClientTypeStats.fetched_at < end,
+                        )
+                    ) or 0
                 rec_date_count = session.scalar(
                     select(func.count(ClientTypeStats.id)).where(
                         ClientTypeStats.rec_date == api_date
                     )
                 )
-                if rec_date_count:
+                if fetched_count:
+                    stmt = stmt.where(
+                        ClientTypeStats.fetched_at >= start,
+                        ClientTypeStats.fetched_at < end,
+                    )
+                    prefer_fetched_at = True
+                elif rec_date_count:
                     stmt = stmt.where(ClientTypeStats.rec_date == api_date)
+                    prefer_fetched_at = False
                 else:
                     legacy_rows = session.scalars(
                         select(ClientTypeStats).order_by(ClientTypeStats.ins_code)
@@ -603,22 +626,18 @@ class Storage:
                         ]
                         if not legacy_df.empty:
                             return self._latest_client_type_rows(legacy_df)
-                    start = datetime.combine(
-                        datetime.strptime(snapshot_date, "%Y-%m-%d").date(),
-                        time.min,
-                        tzinfo=MARKET_TZ,
-                    ).astimezone(timezone.utc)
-                    start = start.replace(tzinfo=None)
-                    end = start + timedelta(days=1)
                     stmt = stmt.where(
                         ClientTypeStats.fetched_at >= start,
                         ClientTypeStats.fetched_at < end,
                     )
+                    prefer_fetched_at = True
+            else:
+                prefer_fetched_at = False
             rows = session.scalars(stmt.order_by(ClientTypeStats.ins_code)).all()
             if not rows:
                 return pd.DataFrame()
             df = pd.DataFrame([self._client_type_to_dict(r) for r in rows])
-            return self._latest_client_type_rows(df)
+            return self._latest_client_type_rows(df, prefer_fetched_at=prefer_fetched_at)
 
     def get_open_interest_history_df(
         self,
@@ -763,11 +782,17 @@ class Storage:
         return rec_date if rec_date > 0 else None
 
     @classmethod
-    def _latest_client_type_rows(cls, df: pd.DataFrame) -> pd.DataFrame:
+    def _latest_client_type_rows(cls, df: pd.DataFrame, prefer_fetched_at: bool = False) -> pd.DataFrame:
         if df.empty or "ins_code" not in df.columns:
             return df
         df = df.copy()
         df["_rec_date_key"] = df.get("rec_date", pd.Series(index=df.index, dtype=object)).map(cls._coerce_rec_date)
+        if prefer_fetched_at and "fetched_at" in df.columns:
+            return (
+                df.sort_values(["ins_code", "fetched_at"], na_position="first")
+                .drop_duplicates("ins_code", keep="last")
+                .drop(columns=["_rec_date_key"], errors="ignore")
+            )
         if "fetched_at" not in df.columns:
             return (
                 df.sort_values(["ins_code", "_rec_date_key"], na_position="first")

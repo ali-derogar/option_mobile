@@ -42,7 +42,7 @@ requirement_installer_args = [
     "--resume-retries",
     "20",
 ]
-test_requires = ["pytest>=7.0"]
+test_requires = ["pytest>=7.0", "httpx2>=2.0.0"]
 
 [tool.briefcase.app.options.macOS]
 requires = [
