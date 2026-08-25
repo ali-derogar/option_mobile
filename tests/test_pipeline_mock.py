@@ -342,6 +342,9 @@ def test_pipeline_falls_back_to_public_cdn_when_login_fails() -> None:
             "options.backend.pipeline.fetch_public_option_market_watch",
             return_value=public_rows,
         ), patch(
+            "options.backend.pipeline.fetch_public_instrument_info_many",
+            return_value={},
+        ), patch(
             "options.backend.pipeline.fetch_public_client_type_latest_many",
             return_value=public_client_type,
         ):
@@ -383,6 +386,9 @@ def test_pipeline_public_fallback_skip_client_type_does_not_fetch_client_type() 
             "options.backend.pipeline.fetch_public_option_market_watch",
             return_value=[],
         ), patch(
+            "options.backend.pipeline.fetch_public_instrument_info_many",
+            return_value={},
+        ), patch(
             "options.backend.pipeline.fetch_public_client_type_latest_many"
         ) as fetch_client_type:
             result = run_pipeline(skip_client_type=True, delay_between_calls=0)
@@ -420,6 +426,9 @@ def test_pipeline_public_fallback_warns_when_client_type_rows_are_not_stored() -
             "options.backend.pipeline.fetch_public_option_market_watch",
             return_value=public_rows,
         ), patch(
+            "options.backend.pipeline.fetch_public_instrument_info_many",
+            return_value={},
+        ), patch(
             "options.backend.pipeline.fetch_public_client_type_latest_many",
             return_value=[{"ins_code": "bad", "natural_money_flow": 10}],
         ):
@@ -429,6 +438,58 @@ def test_pipeline_public_fallback_warns_when_client_type_rows_are_not_stored() -
     assert result["client_type_stats"] == 0
     assert result["money_flow"] == 0
     assert result["warning"]
+
+
+def test_pipeline_public_fallback_enriches_contract_metadata_from_direct_instrument_info() -> None:
+    public_rows = [
+        {
+            "insCode_C": 101,
+            "lVal18AFC_C": "ضملی7070",
+            "lVal30_C": "اختیارخ فملی-18630-1405/07/08",
+            "strikePrice": 18630,
+            "uaInsCode": 2001,
+            "pDrCotVal_UA": 25000,
+            "pClosing_UA": 25000,
+            "pDrCotVal_C": 1200,
+            "pClosing_C": 1200,
+        }
+    ]
+    instrument_info = {
+        101: {
+            "lVal18AFC": "ضملی7070",
+            "lVal30": "اختیارخ فملی-26000-1405/07/08",
+            "instrumentID": "IROPT101",
+        }
+    }
+    client = MagicMock()
+    client.login.side_effect = TsetmcAPIError("login failed")
+
+    with TemporaryDirectory() as tmp:
+        storage = Storage(
+            db_path=Path(tmp) / "test_options.db",
+            export_dir=Path(tmp) / "exports",
+        )
+        with patch("options.backend.pipeline.validate_credentials"), patch(
+            "options.backend.pipeline.TsetmcClient", return_value=client
+        ), patch("options.backend.pipeline.Storage", return_value=storage), patch(
+            "options.backend.pipeline.fetch_public_option_market_watch",
+            return_value=public_rows,
+        ), patch(
+            "options.backend.pipeline.fetch_public_instrument_info_many",
+            return_value=instrument_info,
+        ), patch(
+            "options.backend.pipeline.fetch_public_client_type_latest_many",
+            return_value=[],
+        ):
+            result = run_pipeline(skip_client_type=False, delay_between_calls=0)
+
+        contracts = storage.get_contracts_df()
+
+    row = contracts.iloc[0]
+    assert result["options"] == 1
+    assert row["long_name"] == "اختیارخ فملی-26000-1405/07/08"
+    assert row["strike_price"] == 26000
+    assert row["instrument_id"] == "IROPT101"
 
 
 if __name__ == "__main__":

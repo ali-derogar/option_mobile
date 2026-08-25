@@ -36,7 +36,7 @@ def _env_float(name: str, default: float, min_value: float, max_value: float) ->
         return default
     return min(max(value, min_value), max_value)
 
-RUNTIME_ROOT = Path(os.getenv("OPTIONS_RUNTIME_ROOT", Path.home() / ".options"))
+RUNTIME_ROOT = Path(os.getenv("OPTIONS_RUNTIME_ROOT", Path.home()))
 SEED_DATABASE_PATH = PACKAGE_ROOT / "resources" / "data" / "tsetmc_options.db"
 
 DATA_DIR = Path(os.getenv("DATA_DIR", RUNTIME_ROOT / "data" / "exports"))

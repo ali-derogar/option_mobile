@@ -4537,6 +4537,100 @@ html[data-theme="dark"] .filters select {
   flex: 0 0 auto;
 }
 
+/* The shell is intentionally phone-sized even inside wide desktop/tablet windows. */
+.analysis-panel,
+.analysis-content,
+.analysis-conclusion,
+.analysis-side,
+.trend-analysis,
+.trend-chart-panel,
+.trend-tables,
+.trend-person,
+.analysis-bucket {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.analysis-content {
+  grid-template-columns: 1fr;
+  padding: 0.75rem;
+}
+
+.analysis-conclusion-head,
+.analysis-conclusion-person-head,
+.analysis-bucket-header,
+.analysis-side-title,
+.trend-person-title {
+  min-width: 0;
+}
+
+.analysis-conclusion-head span,
+.analysis-conclusion-head strong,
+.analysis-conclusion-person-head span,
+.analysis-conclusion-person-head strong,
+.analysis-bucket-header span,
+.analysis-side-title span,
+.trend-person-title span,
+.trend-person-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-step-grid,
+.analysis-summary-row,
+.analysis-summary-groups,
+.analysis-step-groups,
+.trend-summary-grid {
+  grid-template-columns: 1fr;
+}
+
+.analysis-step {
+  padding: 0.62rem;
+}
+
+.analysis-oi-summary {
+  grid-template-columns: 1fr;
+}
+
+.analysis-oi-summary div {
+  border-left: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.analysis-oi-summary div:last-child {
+  border-bottom: none;
+}
+
+.analysis-table {
+  min-width: 460px;
+}
+
+.trend-table {
+  min-width: 620px;
+}
+
+.trend-chart-wrap {
+  height: 260px;
+}
+
+@media (max-width: 380px) {
+  .analysis-content {
+    padding: 0.6rem;
+  }
+
+  .analysis-audience-tab {
+    padding: 0 0.55rem;
+    font-size: 0.74rem;
+  }
+
+  .analysis-table,
+  .trend-table {
+    font-size: 0.7rem;
+  }
+}
+
 @keyframes skeletonShimmer {
   to {
     background-position: -220% 0;

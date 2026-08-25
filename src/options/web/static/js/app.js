@@ -166,18 +166,26 @@ const DETAIL_LABELS = {
   price_change: "تغییر قیمت",
   trade_volume: "حجم معاملات",
   trade_value: "ارزش معاملات",
-  buy_open_positions: "موقعیت باز",
-  sell_open_positions: "موقعیت فروش",
+  total_buy_volume: "حجم خرید کل",
+  total_sell_volume: "حجم فروش کل",
+  open_interest_positions: "موقعیت باز موثر",
+  open_interest_change: "تغییر موقعیت باز",
+  buy_open_positions: "موقعیت باز خرید",
+  sell_open_positions: "موقعیت باز فروش",
   yesterday_open_positions: "موقعیت دیروز",
   natural_money_flow: "جریان پول حقیقی",
   legal_money_flow: "جریان پول حقوقی",
   natural_buy_count: "تعداد خریدار حقیقی",
+  natural_buy_volume: "حجم خرید حقیقی",
   natural_buy_value: "ارزش خرید حقیقی",
   natural_sell_count: "تعداد فروشنده حقیقی",
+  natural_sell_volume: "حجم فروش حقیقی",
   natural_sell_value: "ارزش فروش حقیقی",
   legal_buy_count: "تعداد خریدار حقوقی",
+  legal_buy_volume: "حجم خرید حقوقی",
   legal_buy_value: "ارزش خرید حقوقی",
   legal_sell_count: "تعداد فروشنده حقوقی",
+  legal_sell_volume: "حجم فروش حقوقی",
   legal_sell_value: "ارزش فروش حقوقی",
   option_type: "نوع قرارداد",
   moneyness: "وضعیت ITM/OTM",
@@ -1484,28 +1492,41 @@ function renderDetail(row) {
     </section>
   `;
 
+  const summaryRows = [
+    ["total_buy_volume", sumPresentValues(row, ["natural_buy_volume", "legal_buy_volume"])],
+    ["total_sell_volume", sumPresentValues(row, ["natural_sell_volume", "legal_sell_volume"])],
+    ["open_interest_positions", openInterestValue(row)],
+    ["open_interest_change", oiChange(row)],
+  ]
+    .filter(([, value]) => value != null)
+    .map(([key, value]) => renderDetailRow(key, value));
+
   const sections = [
     ["اطلاعات قرارداد", ["option_type", "symbol", "short_name", "long_name", "ins_code", "strike_price", "end_date", "contract_size", "moneyness", "intrinsic_value"]],
     ["معاملات", ["last_price", "closing_price", "price_change", "trade_volume", "trade_value"]],
     ["موقعیت", ["buy_open_positions", "sell_open_positions", "yesterday_open_positions"]],
     ["جریان پول", ["natural_money_flow", "legal_money_flow"]],
-    ["حقیقی", ["natural_buy_count", "natural_buy_value", "natural_sell_count", "natural_sell_value"]],
-    ["حقوقی", ["legal_buy_count", "legal_buy_value", "legal_sell_count", "legal_sell_value"]],
+    ["حقیقی", ["natural_buy_count", "natural_buy_volume", "natural_buy_value", "natural_sell_count", "natural_sell_volume", "natural_sell_value"]],
+    ["حقوقی", ["legal_buy_count", "legal_buy_volume", "legal_buy_value", "legal_sell_count", "legal_sell_volume", "legal_sell_value"]],
   ];
 
   let html = hero;
+  if (summaryRows.length) {
+    html += `<div class="detail-section-title">خلاصه حجم و موقعیت</div><div class="detail-grid">${summaryRows.join("")}</div>`;
+  }
   for (const [title, keys] of sections) {
     const rows = keys
       .filter((k) => row[k] != null)
-      .map(
-        (k) =>
-          `<div class="detail-row"><span>${escapeHtml(DETAIL_LABELS[k] || k)}</span><span>${escapeHtml(formatDetailValue(k, row[k]))}</span></div>`
-      );
+      .map((k) => renderDetailRow(k, row[k]));
     if (rows.length) {
       html += `<div class="detail-section-title">${escapeHtml(title)}</div><div class="detail-grid">${rows.join("")}</div>`;
     }
   }
   container.innerHTML = html || '<p class="detail-placeholder">جزئیات موجود نیست</p>';
+}
+
+function renderDetailRow(key, value) {
+  return `<div class="detail-row"><span>${escapeHtml(DETAIL_LABELS[key] || key)}</span><span>${escapeHtml(formatDetailValue(key, value))}</span></div>`;
 }
 
 function renderUnderlyingDetail(row) {
@@ -1728,6 +1749,11 @@ function buildAnalysisModel(rows) {
 
 function sumRows(rows, getter) {
   return rows.reduce((total, row) => total + numericValue(getter(row)), 0);
+}
+
+function sumPresentValues(row, keys) {
+  const values = keys.map((key) => asFiniteNumber(row[key])).filter((value) => value != null);
+  return values.length ? values.reduce((total, value) => total + value, 0) : null;
 }
 
 function rowBuyVolume(row) {

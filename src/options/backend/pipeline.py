@@ -22,7 +22,9 @@ from options.backend.services.options import (
     normalize_option,
 )
 from options.backend.services.public_options import (
+    enrich_public_contracts_with_instrument_info,
     fetch_public_client_type_latest_many,
+    fetch_public_instrument_info_many,
     fetch_public_option_market_watch,
     normalize_public_option_pairs,
 )
@@ -67,6 +69,15 @@ def _store_public_option_fallback(
     progress(stage="public_options", message="در حال دریافت آپشن‌ها از CDN رسمی TSETMC")
     rows = fetch_public_option_market_watch()
     contracts = normalize_public_option_pairs(rows)
+    if contracts:
+        ins_codes = [c["ins_code"] for c in contracts if c.get("ins_code")]
+        progress(
+            stage="public_instruments",
+            message=f"در حال کنترل مشخصات مستقیم {len(ins_codes)} قرارداد",
+            instrument_total=len(ins_codes),
+        )
+        instrument_info = fetch_public_instrument_info_many(ins_codes)
+        contracts = enrich_public_contracts_with_instrument_info(contracts, instrument_info)
     open_interest_rows = [
         {
             "ins_code": c["ins_code"],

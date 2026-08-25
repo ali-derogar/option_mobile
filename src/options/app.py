@@ -54,7 +54,10 @@ class OptionsApp(toga.App):
     def _configure_environment(self) -> None:
         runtime_root = _runtime_root(self)
         runtime_root.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault("OPTIONS_RUNTIME_ROOT", str(runtime_root))
+        canonical_root = Path.home()
+        os.environ.setdefault("OPTIONS_RUNTIME_ROOT", str(canonical_root))
+        os.environ.setdefault("DATABASE_PATH", str(canonical_root / "data" / "tsetmc_options.db"))
+        os.environ.setdefault("DATA_DIR", str(canonical_root / "data" / "exports"))
         os.environ["WEB_OPEN_BROWSER"] = "0"
 
     def _serve(self) -> None:

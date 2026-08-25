@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from math import isfinite
+import re
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -21,6 +22,7 @@ from options.backend.config import (
 )
 
 OPTION_MARKET_WATCH_URL = "https://cdn.tsetmc.com/api/Instrument/GetInstrumentOptionMarketWatch/1"
+INSTRUMENT_INFO_URL = "https://cdn.tsetmc.com/api/Instrument/GetInstrumentInfo/{ins_code}"
 CLIENT_TYPE_HISTORY_URL = "https://cdn.tsetmc.com/api/ClientType/GetClientTypeHistory/{ins_code}"
 
 
@@ -45,6 +47,53 @@ def normalize_public_option_pairs(rows: List[Dict[str, Any]]) -> List[Dict[str, 
         if put:
             contracts.append(put)
     return contracts
+
+
+def fetch_public_instrument_info(ins_code: int) -> Optional[Dict[str, Any]]:
+    session = _session()
+    response = session.get(
+        INSTRUMENT_INFO_URL.format(ins_code=ins_code),
+        timeout=min(TSETMC_REQUEST_TIMEOUT, 10),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if isinstance(payload, dict):
+        for key in ("instrumentInfo", "instrument", "instrumentInfoModel"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                return value
+        return payload
+    return None
+
+
+def fetch_public_instrument_info_many(ins_codes: List[int]) -> Dict[int, Dict[str, Any]]:
+    result: Dict[int, Dict[str, Any]] = {}
+    workers = max(1, TSETMC_PUBLIC_CLIENT_TYPE_WORKERS)
+    unique_codes = sorted({code for code in ins_codes if code})
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(fetch_public_instrument_info, ins_code): ins_code
+            for ins_code in unique_codes
+        }
+        for future in as_completed(futures):
+            ins_code = futures[future]
+            try:
+                row = future.result()
+                if row:
+                    result[ins_code] = row
+            except (requests.RequestException, ValueError):
+                continue
+    return result
+
+
+def enrich_public_contracts_with_instrument_info(
+    contracts: List[Dict[str, Any]],
+    instrument_info_by_code: Dict[int, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    return [
+        _merge_public_instrument_info(contract, instrument_info_by_code.get(contract.get("ins_code") or 0))
+        for contract in contracts
+    ]
 
 
 def fetch_public_client_type_latest(ins_code: int) -> Optional[Dict[str, Any]]:
@@ -151,6 +200,86 @@ def _normalize_side(row: Dict[str, Any], suffix: str, option_type: str) -> Optio
         "trade_count": _to_int(row.get(f"zTotTran_{suffix}")),
         "instrument_meta": row,
     }
+
+
+def _merge_public_instrument_info(
+    contract: Dict[str, Any],
+    instrument_info: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not instrument_info:
+        return contract
+
+    enriched = dict(contract)
+    symbol = _first_text(
+        instrument_info.get("lVal18AFC"),
+        instrument_info.get("LVal18AFC"),
+        instrument_info.get("lVal18"),
+        instrument_info.get("LVal18"),
+        instrument_info.get("cValMne"),
+        instrument_info.get("CValMne"),
+    )
+    long_name = _first_text(
+        instrument_info.get("lVal30"),
+        instrument_info.get("LVal30"),
+    )
+    if symbol:
+        enriched["symbol"] = symbol
+        enriched["short_name"] = symbol
+    if long_name:
+        enriched["long_name"] = long_name
+        parsed = _parse_option_long_name(long_name)
+        if parsed.get("strike_price") is not None:
+            enriched["strike_price"] = parsed["strike_price"]
+            underlying_price = _first_present_number(
+                enriched.get("underlying_last_price"),
+                enriched.get("underlying_closing_price"),
+            )
+            enriched["moneyness"] = compute_moneyness(
+                enriched.get("option_type"),
+                enriched.get("strike_price"),
+                underlying_price,
+            )
+            enriched["intrinsic_value"] = compute_intrinsic_value(
+                enriched.get("option_type"),
+                enriched.get("strike_price"),
+                underlying_price,
+            )
+
+    enriched["instrument_id"] = _first_text(
+        instrument_info.get("instrumentID"),
+        instrument_info.get("InstrumentID"),
+        enriched.get("instrument_id"),
+    )
+    enriched["isin"] = _first_text(
+        instrument_info.get("cIsin"),
+        instrument_info.get("CIsin"),
+        enriched.get("isin"),
+    ) or None
+    enriched["instrument_meta"] = {
+        **(contract.get("instrument_meta") if isinstance(contract.get("instrument_meta"), dict) else {}),
+        "instrumentInfo": instrument_info,
+    }
+    return enriched
+
+
+def _parse_option_long_name(value: str) -> Dict[str, Any]:
+    text = _clean_numeric_text(value.replace("/", ""))
+    match = re.search(r"-(\d+)-(\d{8})", text)
+    if not match:
+        return {}
+    return {
+        "strike_price": _to_float(match.group(1)),
+    }
+
+
+def _first_text(*values: Any) -> Optional[str]:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text.lower() not in {"nan", "none"}:
+            return text
+    return None
 
 
 def _price_change(row: Dict[str, Any], suffix: str) -> Optional[str]:
