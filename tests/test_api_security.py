@@ -308,6 +308,14 @@ def test_refresh_status_maps_legacy_client_type_count() -> None:
         main._refresh_status.update(original_status)
 
 
+def test_refresh_error_message_does_not_expose_internal_details() -> None:
+    message = main._refresh_error_message(RuntimeError("/tmp/private/db.sqlite failed"))
+
+    assert "/tmp/private" not in message
+    assert "db.sqlite" not in message
+    assert message == "خطا در به‌روزرسانی داده. کمی بعد دوباره تلاش کنید."
+
+
 def test_begin_refresh_distinguishes_running_from_cooldown(monkeypatch) -> None:
     original_status = dict(main._refresh_status)
     original_last_request = main._last_refresh_request_at

@@ -203,6 +203,15 @@ def _public_refresh_status() -> Dict[str, Any]:
     return status
 
 
+def _refresh_error_message(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "credential" in text or "username" in text or "password" in text:
+        return "دسترسی رسمی تنظیم نیست و دریافت عمومی هم کامل نشد."
+    if "timeout" in text or "connection" in text or "network" in text:
+        return "خطای ارتباط با سرور داده؛ اتصال اینترنت را بررسی کنید."
+    return "خطا در به‌روزرسانی داده. کمی بعد دوباره تلاش کنید."
+
+
 def _run_refresh(limit: Optional[int] = None) -> None:
     try:
         result = run_pipeline(
@@ -218,11 +227,11 @@ def _run_refresh(limit: Optional[int] = None) -> None:
         )
     except Exception as exc:
         logger.exception("Refresh failed")
-        error_message = str(exc).strip() or exc.__class__.__name__
+        error_message = _refresh_error_message(exc)
         _update_refresh_status(
             last_error=error_message,
             stage="failed",
-            message=f"خطا در به‌روزرسانی داده: {error_message}",
+            message=error_message,
         )
     finally:
         _update_refresh_status(running=False, finished_at=_utc_now_iso())
@@ -275,6 +284,11 @@ def _ensure_snapshot_date(snapshot_date: Optional[str]) -> None:
             len(contracts),
             len(client_type_rows),
         )
+
+
+async def _ensure_snapshot_date_async(snapshot_date: Optional[str]) -> None:
+    if snapshot_date:
+        await run_in_threadpool(_ensure_snapshot_date, snapshot_date)
 
 
 def _begin_refresh() -> str:
@@ -366,7 +380,7 @@ async def activate(request: Request) -> JSONResponse:
 
 async def summary(request: Request) -> JSONResponse:
     date = _query_value(request, "date")
-    _ensure_snapshot_date(date)
+    await _ensure_snapshot_date_async(date)
     payload = get_summary(storage, snapshot_date=date)
     payload["date"] = date or storage.get_latest_snapshot_date()
     return _json(payload)
@@ -422,7 +436,7 @@ async def calendar_day_info(request: Request) -> JSONResponse:
 async def contracts(request: Request) -> JSONResponse:
     q = _query_value(request, "q")
     date = _query_value(request, "date")
-    _ensure_snapshot_date(date)
+    await _ensure_snapshot_date_async(date)
     merged = get_merged_contracts(storage, snapshot_date=date)
     if merged.empty:
         return _json({"items": [], "total": 0})
@@ -434,7 +448,7 @@ async def contracts(request: Request) -> JSONResponse:
 async def underlyings(request: Request) -> JSONResponse:
     q = _query_value(request, "q")
     date = _query_value(request, "date")
-    _ensure_snapshot_date(date)
+    await _ensure_snapshot_date_async(date)
     payload = get_underlyings(storage, q=q, snapshot_date=date)
     payload["date"] = date or storage.get_latest_snapshot_date()
     return _json(payload)
@@ -444,7 +458,7 @@ async def underlying_contracts(request: Request) -> JSONResponse:
     underlying_key = request.path_params["underlying_key"]
     q = _query_value(request, "q")
     date = _query_value(request, "date")
-    _ensure_snapshot_date(date)
+    await _ensure_snapshot_date_async(date)
     payload = get_underlying_contracts(
         storage,
         underlying_key=underlying_key,
@@ -520,7 +534,7 @@ async def underlying_trend(request: Request) -> JSONResponse:
 async def sentiment(request: Request) -> JSONResponse:
     q = _query_value(request, "q")
     date = _query_value(request, "date")
-    _ensure_snapshot_date(date)
+    await _ensure_snapshot_date_async(date)
     payload = get_sentiment(storage, q=q, snapshot_date=date)
     payload["date"] = date or storage.get_latest_snapshot_date()
     return _json(payload)

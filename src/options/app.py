@@ -56,8 +56,15 @@ class OptionsApp(toga.App):
         runtime_root.mkdir(parents=True, exist_ok=True)
         data_root = runtime_root / "data"
         data_root.mkdir(parents=True, exist_ok=True)
+        database_path = data_root / "tsetmc_options.db"
+        legacy_database_path = Path.home() / "data" / "tsetmc_options.db"
+        if not database_path.exists() and legacy_database_path.exists():
+            try:
+                database_path.write_bytes(legacy_database_path.read_bytes())
+            except OSError:
+                pass
         os.environ.setdefault("OPTIONS_RUNTIME_ROOT", str(runtime_root))
-        os.environ.setdefault("DATABASE_PATH", str(data_root / "tsetmc_options.db"))
+        os.environ.setdefault("DATABASE_PATH", str(database_path))
         os.environ.setdefault("DATA_DIR", str(data_root / "exports"))
         os.environ["WEB_OPEN_BROWSER"] = "0"
 

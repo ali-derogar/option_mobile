@@ -500,6 +500,7 @@ function openUnderlyingPage(row) {
 }
 
 function isMobileLayout() {
+  // This dashboard is shipped as a mobile app; desktop breakpoints are not a target surface.
   return true;
 }
 
@@ -1718,6 +1719,7 @@ async function loadOiChart(insCode) {
     }
     block.classList.remove("hidden");
     const labels = history.map((h) => fmtDate(h.fetched_at));
+    const effective = history.map((h) => openInterestValue(h));
     const buy = history.map((h) => h.buy_open_positions);
     const sell = history.map((h) => h.sell_open_positions);
     const palette = chartPalette();
@@ -1729,12 +1731,21 @@ async function loadOiChart(insCode) {
         labels,
         datasets: [
           {
-            label: "موقعیت باز",
-            data: buy,
+            label: "موقعیت باز موثر",
+            data: effective,
             borderColor: palette.accent,
             backgroundColor: currentTheme() === "dark" ? "rgba(32, 183, 174, 0.12)" : "rgba(15, 139, 141, 0.1)",
             tension: 0.3,
             fill: true,
+          },
+          {
+            label: "موقعیت خرید",
+            data: buy,
+            borderColor: palette.green,
+            backgroundColor: currentTheme() === "dark" ? "rgba(52, 211, 153, 0.08)" : "rgba(22, 136, 92, 0.08)",
+            tension: 0.3,
+            fill: false,
+            hidden: true,
           },
           {
             label: "موقعیت فروش",
@@ -1743,6 +1754,7 @@ async function loadOiChart(insCode) {
             backgroundColor: currentTheme() === "dark" ? "rgba(181, 167, 255, 0.1)" : "rgba(109, 91, 208, 0.1)",
             tension: 0.3,
             fill: true,
+            hidden: true,
           },
         ],
       },
