@@ -473,6 +473,32 @@ def test_pipeline_public_fallback_skip_client_type_does_not_fetch_client_type() 
     fetch_client_type.assert_not_called()
 
 
+def test_pipeline_public_fallback_when_credentials_are_missing() -> None:
+    with TemporaryDirectory() as tmp:
+        storage = Storage(
+            db_path=Path(tmp) / "test_options.db",
+            export_dir=Path(tmp) / "exports",
+        )
+        with patch("options.backend.pipeline.validate_credentials", side_effect=ValueError("missing")), patch(
+            "options.backend.pipeline.TsetmcClient"
+        ) as client_cls, patch("options.backend.pipeline.Storage", return_value=storage), patch(
+            "options.backend.pipeline.fetch_public_option_market_watch",
+            return_value=[],
+        ), patch(
+            "options.backend.pipeline.fetch_public_instrument_info_many",
+            return_value={},
+        ), patch(
+            "options.backend.pipeline.fetch_public_client_type_current_many"
+        ) as fetch_client_type:
+            result = run_pipeline(skip_client_type=True, delay_between_calls=0)
+
+    assert result["source"] == "public_cdn"
+    assert result["options"] == 0
+    assert result["open_interest"] == 0
+    client_cls.assert_not_called()
+    fetch_client_type.assert_not_called()
+
+
 def test_pipeline_public_fallback_warns_when_client_type_rows_are_not_stored() -> None:
     public_rows = [
         {

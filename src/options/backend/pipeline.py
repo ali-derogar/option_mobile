@@ -159,13 +159,27 @@ def run_pipeline(
     if limit is not None and limit < 1:
         raise ValueError("limit must be positive")
 
-    validate_credentials()
-    client = TsetmcClient()
     storage = Storage()
 
     def progress(**payload: Any) -> None:
         if progress_callback:
             progress_callback(payload)
+
+    try:
+        validate_credentials()
+    except ValueError as exc:
+        logger.warning("TSETMC credentials are not configured, falling back to public CDN: %s", exc)
+        progress(
+            stage="login_failed",
+            message="ورود رسمی تنظیم نشده است؛ استفاده از CDN رسمی TSETMC",
+        )
+        return _store_public_option_fallback(
+            storage,
+            skip_client_type=skip_client_type,
+            progress_callback=progress_callback,
+        )
+
+    client = TsetmcClient()
 
     logger.info("Logging in to TSETMC API...")
     progress(stage="login", message="در حال ورود به TSETMC")

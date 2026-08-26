@@ -216,12 +216,13 @@ def _run_refresh(limit: Optional[int] = None) -> None:
             stage="done",
             message=f"به‌روزرسانی کامل شد؛ {result.get('options', 0)} قرارداد",
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Refresh failed")
+        error_message = str(exc).strip() or exc.__class__.__name__
         _update_refresh_status(
-            last_error="refresh failed",
+            last_error=error_message,
             stage="failed",
-            message="خطا در به‌روزرسانی داده. کمی بعد دوباره تلاش کنید.",
+            message=f"خطا در به‌روزرسانی داده: {error_message}",
         )
     finally:
         _update_refresh_status(running=False, finished_at=_utc_now_iso())

@@ -1410,7 +1410,7 @@ function renderMobileCards() {
             mobileMetric("اعمال", row.strike_price, "num"),
             mobileMetric("آخرین", row.last_price, "num"),
             mobileMetric("حجم", row.trade_volume, "compact", "metric-volume"),
-            mobileMetric("OI", row.buy_open_positions, "compact"),
+            mobileMetric("OI", openInterestValue(row), "compact"),
           ].join("");
       const note = isUnderlying ? activityLabel(row) : optionSignalLabel(row);
       const action = isUnderlying
@@ -1605,7 +1605,7 @@ function renderDetail(row) {
         ${mobileMetric("اعمال", row.strike_price, "num")}
         ${mobileMetric("سررسید", row.end_date, "date")}
         ${mobileMetric("آخرین", row.last_price, "num")}
-        ${mobileMetric("OI", row.buy_open_positions, "num")}
+        ${mobileMetric("OI", openInterestValue(row), "num")}
       </div>
     </section>
   `;
@@ -2871,6 +2871,7 @@ function exportCsv() {
 }
 
 let refreshPollTimer = null;
+let refreshPollFailures = 0;
 
 function setRefreshControlsLoading(on) {
   document.getElementById("btnRefresh")?.classList.toggle("loading", on);
@@ -2892,9 +2893,10 @@ async function startRefresh() {
     } else {
       showToast("به‌روزرسانی شروع شد — ممکن است چند دقیقه طول بکشد");
     }
+    refreshPollFailures = 0;
     pollRefreshStatus();
   } catch (e) {
-    showToast("خطا در شروع به‌روزرسانی", "error");
+    showToast(`خطا در شروع به‌روزرسانی: ${e.message || "نامشخص"}`, "error");
     setRefreshControlsLoading(false);
   }
 }
@@ -2904,11 +2906,9 @@ function pollRefreshStatus() {
   refreshPollTimer = setInterval(async () => {
     try {
       const st = await api("/api/refresh/status");
+      refreshPollFailures = 0;
       if (st.message) setStatusText(st.message);
       if (st.running) {
-        await loadSummary();
-        if (st.message) setStatusText(st.message);
-        await reloadActiveData();
         return;
       }
       clearInterval(refreshPollTimer);
@@ -2924,10 +2924,15 @@ function pollRefreshStatus() {
         syncDateToUrl();
         await init();
       }
-    } catch {
+    } catch (e) {
+      refreshPollFailures += 1;
+      if (refreshPollFailures < 3) {
+        setStatusText("در حال تلاش دوباره برای دریافت وضعیت به‌روزرسانی...");
+        return;
+      }
       clearInterval(refreshPollTimer);
       setRefreshControlsLoading(false);
-      showToast("ارتباط با وضعیت به‌روزرسانی قطع شد", "error");
+      showToast(`ارتباط با وضعیت به‌روزرسانی قطع شد: ${e.message || "نامشخص"}`, "error");
     }
   }, 3000);
 }

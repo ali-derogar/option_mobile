@@ -315,6 +315,18 @@ def test_get_summary_totals_are_exact() -> None:
     assert summary["total_legal_flow"] == pytest.approx(-50.0)
     assert summary["total_buy_oi"] == pytest.approx(33.0)
     assert summary["total_sell_oi"] == pytest.approx(33.0)
+    assert summary["total_open_interest"] == pytest.approx(33.0)
+
+
+def test_get_summary_open_interest_uses_available_side() -> None:
+    df = contracts_df()
+    df.loc[0, "buy_open_positions"] = None
+    df.loc[0, "sell_open_positions"] = 15.0
+    storage = FakeStorage(df, client_type_df())
+
+    summary = get_summary(storage)
+
+    assert summary["total_open_interest"] == pytest.approx(37.0)
 
 
 def test_get_summary_counts_underlyings_by_code_when_symbol_is_missing() -> None:
@@ -352,6 +364,7 @@ def test_api_aggregates_ignore_infinite_numeric_values() -> None:
     assert summary["total_legal_flow"] == pytest.approx(50.0)
     assert summary["total_buy_oi"] == pytest.approx(22.0)
     assert summary["total_sell_oi"] == pytest.approx(22.0)
+    assert summary["total_open_interest"] == pytest.approx(22.0)
     json.dumps(underlyings, allow_nan=False)
     json.dumps(summary, allow_nan=False)
 

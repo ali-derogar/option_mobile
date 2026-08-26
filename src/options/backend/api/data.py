@@ -381,6 +381,7 @@ def get_summary(storage: Storage, snapshot_date: Optional[str] = None) -> Dict[s
         "total_legal_flow": None,
         "total_buy_oi": None,
         "total_sell_oi": None,
+        "total_open_interest": None,
     }
     if not merged.empty:
         if "natural_money_flow" in merged.columns:
@@ -391,6 +392,7 @@ def get_summary(storage: Storage, snapshot_date: Optional[str] = None) -> Dict[s
             summary["total_buy_oi"] = _sum_or_none(merged["buy_open_positions"])
         if "sell_open_positions" in merged.columns:
             summary["total_sell_oi"] = _sum_or_none(merged["sell_open_positions"])
+        summary["total_open_interest"] = _sum_open_interest_frame(merged)
         merged_with_keys = merged.copy()
         merged_with_keys = _attach_underlying_keys(merged_with_keys)
         summary["underlying_count"] = int(merged_with_keys["underlying_key"].dropna().nunique())
