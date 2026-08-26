@@ -307,23 +307,22 @@ def _collect_trend_dates(
     except HTTPException:
         raise
 
+    available_dates: list[str] = []
+    for snapshot_date in storage.get_available_snapshot_dates():
+        try:
+            parsed_snapshot = _parse_snapshot_date(snapshot_date)
+        except HTTPException:
+            continue
+        if parsed_snapshot is not None and parsed_snapshot <= cursor:
+            available_dates.append(snapshot_date)
+    available_dates.sort(reverse=True)
+
     found: list[str] = []
     sources: dict[str, str] = {}
     skipped: dict[str, str] = {}
-    attempts = 0
-    max_attempts = max(21, days * 4)
-    while len(found) < days and attempts < max_attempts:
-        current = cursor - timedelta(days=attempts)
-        current_date = current.isoformat()
-        had_snapshot = storage.has_contract_snapshot_date(current_date)
-        try:
-            _ensure_snapshot_date(current_date)
-        except HTTPException as exc:
-            if exc.status_code in {404, 503}:
-                skipped[current_date] = str(exc.detail)
-                attempts += 1
-                continue
-            raise
+    for current_date in available_dates:
+        if len(found) >= days:
+            break
         contracts = get_underlying_contracts(
             storage,
             underlying_key=underlying_key,
@@ -331,11 +330,9 @@ def _collect_trend_dates(
         )
         if not contracts.get("items"):
             skipped[current_date] = "no contracts for underlying"
-            attempts += 1
             continue
         found.append(current_date)
-        sources[current_date] = "snapshot" if had_snapshot else "imported"
-        attempts += 1
+        sources[current_date] = "database"
     found.reverse()
     return found, sources, skipped
 

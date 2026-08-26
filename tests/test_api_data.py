@@ -433,3 +433,18 @@ def test_get_underlying_trend_requires_current_and_yesterday_open_interest_for_c
     assert natural["yesterday_open_interest"] is None
     assert natural["open_interest_change"] is None
     assert natural["has_open_interest"] is False
+
+
+def test_get_underlying_trend_treats_missing_participant_volume_as_zero() -> None:
+    storage = FakeStorage(contracts_df())
+
+    result = get_underlying_trend(storage, "2001", ["2025-06-14"])
+    natural = result["items"][0]["people"]["natural"]
+    legal = result["items"][0]["people"]["legal"]
+
+    assert natural["call_buy"] == 0
+    assert natural["call_sell"] == 0
+    assert natural["put_buy"] == 0
+    assert natural["put_sell"] == 0
+    assert legal["call_buy"] == 0
+    assert legal["call_sell"] == 0

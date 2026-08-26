@@ -109,6 +109,33 @@ def test_underlying_trend_validates_date_before_unknown_underlying(monkeypatch) 
     assert response.json()["detail"] == "invalid date; expected YYYY-MM-DD"
 
 
+def test_collect_trend_dates_uses_database_snapshots_only(monkeypatch) -> None:
+    class FakeTrendStorage:
+        def get_available_snapshot_dates(self):
+            return ["2026-08-24", "2026-08-23", "2026-08-22"]
+
+    checked_dates = []
+    monkeypatch.setattr(main, "storage", FakeTrendStorage())
+    monkeypatch.setattr(
+        main,
+        "_ensure_snapshot_date",
+        lambda snapshot_date: (_ for _ in ()).throw(AssertionError("external import should not run")),
+    )
+
+    def fake_contracts(storage, underlying_key, snapshot_date=None):
+        checked_dates.append(snapshot_date)
+        return {"items": [{"ins_code": "1001"}] if snapshot_date != "2026-08-23" else []}
+
+    monkeypatch.setattr(main, "get_underlying_contracts", fake_contracts)
+
+    dates, sources, skipped = main._collect_trend_dates("2001", "2026-08-24", 2)
+
+    assert dates == ["2026-08-22", "2026-08-24"]
+    assert checked_dates == ["2026-08-24", "2026-08-23", "2026-08-22"]
+    assert sources == {"2026-08-24": "database", "2026-08-22": "database"}
+    assert skipped == {"2026-08-23": "no contracts for underlying"}
+
+
 def test_open_interest_rejects_non_positive_instrument_code(monkeypatch) -> None:
     monkeypatch.setattr(main.storage, "is_activated", lambda: True)
 
