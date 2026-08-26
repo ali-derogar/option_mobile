@@ -1825,9 +1825,15 @@ function emptyAnalysisBucket() {
     (bucket, field) => {
       bucket[field] = 0;
       bucket._presentFields[field] = 0;
+      bucket._details[field] = [];
       return bucket;
     },
-    { contract_count: 0, open_interest_positions: 0, _presentFields: { open_interest_positions: 0 } }
+    {
+      contract_count: 0,
+      open_interest_positions: 0,
+      _presentFields: { open_interest_positions: 0 },
+      _details: { open_interest_positions: [] },
+    }
   );
 }
 
@@ -1850,6 +1856,18 @@ function openInterestValue(row) {
   return Math.max(buy, sell);
 }
 
+function analysisContractLabel(row) {
+  return row.symbol || row.short_name || row.long_name || row.ins_code || "قرارداد";
+}
+
+function addAnalysisDetail(bucket, field, row, value) {
+  if (!bucket._details[field]) bucket._details[field] = [];
+  bucket._details[field].push({
+    label: analysisContractLabel(row),
+    value,
+  });
+}
+
 function buildAnalysisModel(rows) {
   const model = emptyAnalysisModel();
   rows.forEach((row) => {
@@ -1862,12 +1880,14 @@ function buildAnalysisModel(rows) {
     if (openInterest != null) {
       bucket.open_interest_positions += openInterest;
       bucket._presentFields.open_interest_positions += 1;
+      addAnalysisDetail(bucket, "open_interest_positions", row, openInterest);
     }
     ANALYSIS_SUM_FIELDS.forEach((field) => {
       const value = asFiniteNumber(row[field]);
       if (value == null) return;
       bucket[field] += value;
       bucket._presentFields[field] += 1;
+      addAnalysisDetail(bucket, field, row, value);
     });
   });
   return model;
@@ -2537,6 +2557,10 @@ function analysisFieldValue(bucket, field) {
   return hasAnalysisField(bucket, field) ? bucket[field] : null;
 }
 
+function analysisFieldDetails(bucket, field) {
+  return Array.isArray(bucket?._details?.[field]) ? bucket._details[field] : [];
+}
+
 function combineAnalysisField(a, b, field) {
   const hasA = hasAnalysisField(a, field);
   const hasB = hasAnalysisField(b, field);
@@ -2544,11 +2568,72 @@ function combineAnalysisField(a, b, field) {
   return (hasA ? numericValue(a[field]) : 0) + (hasB ? numericValue(b[field]) : 0);
 }
 
+function combineAnalysisDetails(a, b, field) {
+  return [...analysisFieldDetails(a, field), ...analysisFieldDetails(b, field)];
+}
+
+function detailLabelParts(details) {
+  const labels = details.map((item) => String(item.label || "").trim()).filter(Boolean);
+  if (labels.length < 2) return { prefix: "", labels };
+  const prefixes = labels.map((label) => label.match(/^[^\d۰-۹٠-٩]+/)?.[0] || "");
+  const prefix = prefixes[0] && prefixes.every((item) => item === prefixes[0]) ? prefixes[0] : "";
+  return {
+    prefix,
+    labels: prefix ? labels.map((label) => label.slice(prefix.length) || label) : labels,
+  };
+}
+
+function renderCalculationDetailLines(details) {
+  if (!details.length) {
+    return `<span class="analysis-calculation-empty">ریز محاسبات موجود نیست</span>`;
+  }
+  const effectiveDetails = details.filter((item) => numericValue(item.value) !== 0);
+  if (!effectiveDetails.length) {
+    return `<span class="analysis-calculation-empty">همه مقادیر صفر هستند</span>`;
+  }
+  const labelParts = detailLabelParts(effectiveDetails);
+  return `
+    <span class="analysis-calculation-line">
+      ${labelParts.prefix ? `<bdi>${escapeHtml(labelParts.prefix)}</bdi>: ` : ""}
+      ${effectiveDetails
+        .map((item, index) => `${escapeHtml(labelParts.labels[index] || item.label)}: ${escapeHtml(fmtNum(item.value))}`)
+        .join(" + ")}
+    </span>`;
+}
+
+function renderCalculationDetails(details) {
+  return `<small class="analysis-calculation">${renderCalculationDetailLines(details)}</small>`;
+}
+
+function renderBucketCalculation(bucket, field) {
+  const value = analysisFieldValue(bucket, field);
+  if (value == null) return "";
+  return renderCalculationDetails(analysisFieldDetails(bucket, field));
+}
+
+function renderCombinedCalculation(itm, otm, field) {
+  const itmValue = analysisFieldValue(itm, field);
+  const otmValue = analysisFieldValue(otm, field);
+  const totalValue = combineAnalysisField(itm, otm, field);
+  if (totalValue == null) return "";
+  const parts = [];
+  if (itmValue != null) parts.push(`ITM ${fmtNum(itmValue)}`);
+  if (otmValue != null) parts.push(`OTM ${fmtNum(otmValue)}`);
+  const formula = parts.length ? `${parts.join(" + ")} = ${fmtNum(totalValue)}` : "";
+  return `
+    <small class="analysis-calculation">
+      ${formula ? `<span class="analysis-calculation-line">${escapeHtml(formula)}</span>` : ""}
+      ${renderCalculationDetailLines(combineAnalysisDetails(itm, otm, field))}
+    </small>`;
+}
+
 function renderCombinedSummaryMetric(a, b, prefix) {
   const metric = combinedMetric(a, b, prefix);
+  const field = `${prefix}_volume`;
   return `
     <span class="analysis-metric analysis-metric-total">
       <strong>${analysisMetricValue(metric.volume)}</strong>
+      ${renderCombinedCalculation(a, b, field)}
     </span>`;
 }
 
@@ -2561,7 +2646,10 @@ function renderSummaryGroup(label, bucket, prefix) {
       <div class="analysis-summary-pair">
         ${renderSummaryTile("خرید", bucket, `${prefix}_buy`)}
         ${renderSummaryTile("فروش", bucket, `${prefix}_sell`)}
-        ${renderOpenInterestTile(bucket.open_interest_positions)}
+        ${renderOpenInterestTile(
+          analysisFieldValue(bucket, "open_interest_positions"),
+          renderBucketCalculation(bucket, "open_interest_positions")
+        )}
       </div>
     </div>`;
 }
@@ -2576,7 +2664,7 @@ function renderCombinedSummaryGroup(itm, otm, prefix) {
       <div class="analysis-summary-pair">
         ${renderCombinedSummaryTile("خرید", itm, otm, `${prefix}_buy`)}
         ${renderCombinedSummaryTile("فروش", itm, otm, `${prefix}_sell`)}
-        ${renderOpenInterestTile(openInterest)}
+        ${renderOpenInterestTile(openInterest, renderCombinedCalculation(itm, otm, "open_interest_positions"))}
       </div>
     </div>`;
 }
@@ -2597,19 +2685,22 @@ function renderCombinedSummaryTile(label, itm, otm, prefix) {
     </div>`;
 }
 
-function renderOpenInterestTile(value) {
+function renderOpenInterestTile(value, calculation = "") {
   return `
     <div class="analysis-summary-tile analysis-summary-oi-tile">
       <span>موقعیت</span>
       <strong>${analysisMetricValue(value)}</strong>
+      ${calculation}
     </div>`;
 }
 
 function renderSummaryMetric(bucket, prefix) {
-  const value = analysisFieldValue(bucket, `${prefix}_volume`);
+  const field = `${prefix}_volume`;
+  const value = analysisFieldValue(bucket, field);
   return `
     <span class="analysis-metric">
       <strong>${analysisMetricValue(value)}</strong>
+      ${renderBucketCalculation(bucket, field)}
     </span>`;
 }
 

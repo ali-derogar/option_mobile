@@ -1402,6 +1402,39 @@ select:focus-visible {
   font-size: 0.68rem;
 }
 
+.analysis-metric .analysis-calculation,
+.analysis-summary-oi-tile .analysis-calculation {
+  display: grid;
+  gap: 0.08rem;
+  margin-top: 0.2rem;
+  max-height: 4.8rem;
+  overflow: auto;
+  color: var(--text-muted);
+  direction: rtl;
+  font-size: 0.62rem;
+  line-height: 1.6;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.analysis-calculation-line,
+.analysis-calculation-empty {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.analysis-calculation-line {
+  color: var(--text-muted);
+}
+
+.analysis-calculation-line bdi {
+  color: var(--accent);
+  font-weight: 700;
+}
+
 .analysis-metric-total {
   padding: 0;
   background: transparent;
