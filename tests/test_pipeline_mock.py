@@ -84,10 +84,7 @@ def test_pipeline_with_mock_api() -> None:
     client.call = mock_call
 
     with TemporaryDirectory() as tmp:
-        storage = Storage(
-            db_path=Path(tmp) / "test_options.db",
-            export_dir=Path(tmp) / "exports",
-        )
+        storage = Storage(db_path=Path(tmp) / "test_options.db")
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage):
@@ -102,7 +99,6 @@ def test_pipeline_with_mock_api() -> None:
     assert result["client_type_stats"] == 1
     assert result["money_flow"] == 0
     assert result["open_interest"] == 1
-    assert result["exports"]
 
 
 def test_pipeline_limit_and_skip_client_type_preserve_stored_numbers() -> None:
@@ -203,10 +199,7 @@ def test_pipeline_limit_and_skip_client_type_preserve_stored_numbers() -> None:
     }.get(endpoint_key, [])
 
     with TemporaryDirectory() as tmp:
-        storage = Storage(
-            db_path=Path(tmp) / "test_options.db",
-            export_dir=Path(tmp) / "exports",
-        )
+        storage = Storage(db_path=Path(tmp) / "test_options.db")
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage):
@@ -258,10 +251,7 @@ def test_pipeline_limit_preserves_input_order() -> None:
     }.get(endpoint_key, [])
 
     with TemporaryDirectory() as tmp:
-        storage = Storage(
-            db_path=Path(tmp) / "test_options.db",
-            export_dir=Path(tmp) / "exports",
-        )
+        storage = Storage(db_path=Path(tmp) / "test_options.db")
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage):
@@ -320,10 +310,7 @@ def test_pipeline_authenticated_path_prefers_direct_instrument_metadata() -> Non
     }.get(endpoint_key, [])
 
     with TemporaryDirectory() as tmp:
-        storage = Storage(
-            db_path=Path(tmp) / "test_options.db",
-            export_dir=Path(tmp) / "exports",
-        )
+        storage = Storage(db_path=Path(tmp) / "test_options.db")
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage), patch(
@@ -402,10 +389,7 @@ def test_pipeline_falls_back_to_public_cdn_when_login_fails() -> None:
     progress_events = []
 
     with TemporaryDirectory() as tmp:
-        storage = Storage(
-            db_path=Path(tmp) / "test_options.db",
-            export_dir=Path(tmp) / "exports",
-        )
+        storage = Storage(db_path=Path(tmp) / "test_options.db")
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage), patch(
@@ -446,10 +430,7 @@ def test_pipeline_public_fallback_skip_client_type_does_not_fetch_client_type() 
     client.login.side_effect = TsetmcAPIError("login failed")
 
     with TemporaryDirectory() as tmp:
-        storage = Storage(
-            db_path=Path(tmp) / "test_options.db",
-            export_dir=Path(tmp) / "exports",
-        )
+        storage = Storage(db_path=Path(tmp) / "test_options.db")
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage), patch(
@@ -475,10 +456,7 @@ def test_pipeline_public_fallback_skip_client_type_does_not_fetch_client_type() 
 
 def test_pipeline_public_fallback_when_credentials_are_missing() -> None:
     with TemporaryDirectory() as tmp:
-        storage = Storage(
-            db_path=Path(tmp) / "test_options.db",
-            export_dir=Path(tmp) / "exports",
-        )
+        storage = Storage(db_path=Path(tmp) / "test_options.db")
         with patch("options.backend.pipeline.validate_credentials", side_effect=ValueError("missing")), patch(
             "options.backend.pipeline.TsetmcClient"
         ) as client_cls, patch("options.backend.pipeline.Storage", return_value=storage), patch(
@@ -512,10 +490,7 @@ def test_pipeline_public_fallback_warns_when_client_type_rows_are_not_stored() -
     client.login.side_effect = TsetmcAPIError("login failed")
 
     with TemporaryDirectory() as tmp:
-        storage = Storage(
-            db_path=Path(tmp) / "test_options.db",
-            export_dir=Path(tmp) / "exports",
-        )
+        storage = Storage(db_path=Path(tmp) / "test_options.db")
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage), patch(
@@ -561,10 +536,7 @@ def test_pipeline_public_fallback_enriches_contract_metadata_from_direct_instrum
     client.login.side_effect = TsetmcAPIError("login failed")
 
     with TemporaryDirectory() as tmp:
-        storage = Storage(
-            db_path=Path(tmp) / "test_options.db",
-            export_dir=Path(tmp) / "exports",
-        )
+        storage = Storage(db_path=Path(tmp) / "test_options.db")
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage), patch(

@@ -17,13 +17,52 @@ class FakeRequest:
         self.query_params = QueryParams(query_string)
 
 
-def test_dashboard_root_serves_index_with_local_token_cookie() -> None:
+def dashboard_path(path: str = "") -> str:
+    return f"/dashboard/{main.DASHBOARD_SESSION_ID}{path}"
+
+
+def test_dashboard_root_does_not_issue_local_token_cookie() -> None:
     with TestClient(main.app) as client:
         response = client.get("/")
 
+    assert response.status_code == 404
+    assert "set-cookie" not in response.headers
+
+
+def test_dashboard_session_serves_index_with_local_token_cookie() -> None:
+    with TestClient(main.app) as client:
+        response = client.get(dashboard_path())
+
     assert response.status_code == 200
-    assert "options_api_token=" in response.headers["set-cookie"]
+    cookie = response.headers["set-cookie"]
+    assert "options_api_token=" in cookie
+    assert "Path=/api" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=strict" in cookie
     assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert "unsafe-inline" not in response.headers["content-security-policy"]
+    assert 'src="/static/js/theme.js"' in response.text
+
+
+def test_dashboard_rejects_unknown_session() -> None:
+    with TestClient(main.app) as client:
+        response = client.get("/dashboard/not-the-session")
+
+    assert response.status_code == 404
+    assert "set-cookie" not in response.headers
+
+
+def test_api_accepts_http_only_dashboard_cookie() -> None:
+    with TestClient(main.app) as client:
+        client.get(dashboard_path())
+        response = client.get(
+            "/api/activation/status",
+            headers={"sec-fetch-site": "same-origin"},
+        )
+
+    assert response.status_code == 200
 
 
 def test_api_and_static_responses_disable_cache() -> None:
@@ -33,11 +72,98 @@ def test_api_and_static_responses_disable_cache() -> None:
             headers={main.LOCAL_API_HEADER: main.LOCAL_API_TOKEN},
         )
         static_response = client.get("/static/js/app.js")
+        theme_response = client.get("/static/js/theme.js")
 
     assert api_response.status_code == 200
     assert api_response.headers["cache-control"] == "no-store"
+    assert api_response.headers["x-content-type-options"] == "nosniff"
     assert static_response.status_code == 200
     assert static_response.headers["cache-control"] == "no-store"
+    assert static_response.headers["x-content-type-options"] == "nosniff"
+    assert theme_response.status_code == 200
+    assert theme_response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_vendored_chart_js_version_is_pinned_locally() -> None:
+    chart_js = (main.STATIC_DIR / "vendor" / "chart.umd.min.js").read_text(
+        encoding="utf-8",
+        errors="ignore",
+    )
+
+    assert "Chart.js v4.5.1" in chart_js[:120]
+
+
+def test_api_rejects_missing_token() -> None:
+    with TestClient(main.app) as client:
+        response = client.get("/api/activation/status")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "forbidden"
+
+
+def test_api_rejects_cross_origin_browser_requests() -> None:
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/api/activation/status",
+            headers={
+                main.LOCAL_API_HEADER: main.LOCAL_API_TOKEN,
+                "origin": "http://evil.example",
+                "sec-fetch-site": "cross-site",
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "forbidden"
+
+
+def test_client_type_batch_rejects_large_payload(monkeypatch) -> None:
+    monkeypatch.setattr(main.storage, "is_activated", lambda: True)
+    payload = {"ins_codes": [str(index + 1) for index in range(main.MAX_CLIENT_TYPE_BATCH_SIZE + 1)]}
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/client-type",
+            json=payload,
+            headers={main.LOCAL_API_HEADER: main.LOCAL_API_TOKEN},
+        )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "too many instrument codes"
+
+
+def test_client_type_batch_rejects_large_body(monkeypatch) -> None:
+    monkeypatch.setattr(main.storage, "is_activated", lambda: True)
+    body = b'{"ins_codes":["' + (b"1" * (main.MAX_API_JSON_BODY_BYTES + 1)) + b'"]}'
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/client-type",
+            content=body,
+            headers={
+                main.LOCAL_API_HEADER: main.LOCAL_API_TOKEN,
+                "content-type": "application/json",
+            },
+        )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "request body is too large"
+
+
+def test_activation_rejects_large_body() -> None:
+    body = b'{"code":"' + (b"1" * (main.MAX_ACTIVATION_JSON_BODY_BYTES + 1)) + b'"}'
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/activation",
+            content=body,
+            headers={
+                main.LOCAL_API_HEADER: main.LOCAL_API_TOKEN,
+                "content-type": "application/json",
+            },
+        )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "request body is too large"
 
 
 def test_query_value_strips_whitespace_and_treats_blank_as_missing() -> None:
@@ -244,40 +370,6 @@ def test_calendar_today_returns_api_marked_date(monkeypatch) -> None:
     assert response.json()["gregorian_date"] == "2026-08-24"
 
 
-def test_refresh_status_does_not_expose_export_paths() -> None:
-    original_status = dict(main._refresh_status)
-    try:
-        main._refresh_status.update(
-            {
-                "running": False,
-                "last_error": None,
-                "last_result": {
-                    "options": 12,
-                    "client_type_stats": 8,
-                    "money_flow": 8,
-                    "open_interest": 12,
-                    "exports": {"contracts": "/tmp/private/contracts.csv"},
-                },
-                "stage": "done",
-                "message": "ok",
-                "started_at": "2026-08-23T00:00:00+00:00",
-                "finished_at": "2026-08-23T00:00:01+00:00",
-            }
-        )
-
-        status = main._public_refresh_status()
-
-        assert status["last_result"] == {
-            "options": 12,
-            "client_type_stats": 8,
-            "money_flow": 8,
-            "open_interest": 12,
-        }
-    finally:
-        main._refresh_status.clear()
-        main._refresh_status.update(original_status)
-
-
 def test_refresh_status_maps_legacy_client_type_count() -> None:
     original_status = dict(main._refresh_status)
     try:
@@ -288,7 +380,6 @@ def test_refresh_status_maps_legacy_client_type_count() -> None:
                 "last_result": {
                     "options": 12,
                     "client_type": 8,
-                    "exports": {"contracts": "/tmp/private/contracts.csv"},
                 },
                 "stage": "done",
                 "message": "ok",

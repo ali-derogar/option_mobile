@@ -2,7 +2,10 @@
  * TSETMC Options Dashboard — frontend
  */
 
-const underlyingMatch = window.location.pathname.match(/^\/underlying\/(.+)$/);
+const dashboardMatch = window.location.pathname.match(/^\/dashboard\/([^/]+)(?:\/underlying\/([^/]+))?\/?$/);
+const legacyUnderlyingMatch = window.location.pathname.match(/^\/underlying\/(.+)$/);
+const dashboardBasePath = dashboardMatch ? `/dashboard/${dashboardMatch[1]}` : "";
+const underlyingPathKey = dashboardMatch?.[2] || legacyUnderlyingMatch?.[1] || null;
 const initialParams = new URLSearchParams(window.location.search);
 
 function translateDigits(value) {
@@ -12,8 +15,8 @@ function translateDigits(value) {
 }
 
 const state = {
-  view: underlyingMatch ? "underlying" : "underlyings",
-  underlyingKey: underlyingMatch ? decodeURIComponent(underlyingMatch[1]) : null,
+  view: underlyingPathKey ? "underlying" : "underlyings",
+  underlyingKey: underlyingPathKey ? decodeURIComponent(underlyingPathKey) : null,
   selectedDate: validIsoDate(initialParams.get("date") || "") ? translateDigits(initialParams.get("date") || "") : "",
   latestDate: "",
   lastUpdate: "",
@@ -53,7 +56,6 @@ const state = {
 };
 
 const THEME_STORAGE_KEY = "options-theme";
-const API_TOKEN_COOKIE = "options_api_token";
 
 function safeStorageSet(key, value) {
   try {
@@ -438,6 +440,18 @@ function optionTypeClass(value) {
   return "type-unknown";
 }
 
+function allowedClass(value, allowed, fallback) {
+  return allowed.includes(value) ? value : fallback;
+}
+
+function trendStateClass(value) {
+  return allowedClass(value, ["bullish", "cautious", "weak", "neutral"], "neutral");
+}
+
+function toastTypeClass(value) {
+  return allowedClass(value, ["success", "error"], "success");
+}
+
 function setText(id, value) {
   const el = document.getElementById(id);
   if (el) el.textContent = value;
@@ -447,7 +461,7 @@ function showToast(msg, type = "success") {
   const el = document.getElementById("toast");
   if (!el) return;
   el.textContent = msg;
-  el.className = `toast ${type}`;
+  el.className = `toast ${toastTypeClass(type)}`;
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => el.classList.add("hidden"), 3500);
 }
@@ -487,7 +501,7 @@ function dateQuery(prefix = "?") {
 }
 
 function goBackToUnderlyings() {
-  window.location.assign(`/${dateQuery()}`);
+  window.location.assign(`${dashboardBasePath || "/"}${dateQuery()}`);
 }
 
 function openUnderlyingPage(row) {
@@ -496,7 +510,7 @@ function openUnderlyingPage(row) {
     showToast("شناسه سهم برای باز کردن صفحه موجود نیست", "error");
     return;
   }
-  window.location.assign(`/underlying/${encodeURIComponent(key)}${dateQuery()}`);
+  window.location.assign(`${dashboardBasePath}/underlying/${encodeURIComponent(key)}${dateQuery()}`);
 }
 
 function isMobileLayout() {
@@ -521,23 +535,13 @@ function syncDateToUrl() {
   window.history.replaceState({}, "", `${url.pathname}${url.search}`);
 }
 
-function readCookie(name) {
-  const prefix = `${name}=`;
-  return document.cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(prefix))
-    ?.slice(prefix.length) || "";
-}
-
 async function api(path, options = {}) {
-  const token = readCookie(API_TOKEN_COOKIE);
   const headers = {
     "Content-Type": "application/json",
-    ...(token ? { "X-Options-Api-Token": token } : {}),
     ...(options.headers || {}),
   };
   const res = await fetch(path, {
+    credentials: "same-origin",
     ...options,
     headers,
   });
@@ -2309,7 +2313,7 @@ function renderTrendAnalysis(data) {
 }
 
 function renderTrendSummary(label, summary, cls) {
-  const className = summary?.class_name || "neutral";
+  const className = trendStateClass(summary?.class_name);
   return `
     <article class="trend-summary-card trend-${className}">
       <span class="${cls}">${escapeHtml(label)}</span>
@@ -2367,6 +2371,22 @@ function trendDatasetColor(metric, person) {
   return legalColors[metric.color] || metric.color;
 }
 
+function trendLineColorClass(color) {
+  const classes = {
+    "#38bdf8": "trend-line-sky",
+    "#34d399": "trend-line-green",
+    "#f97316": "trend-line-orange",
+    "#f472b6": "trend-line-pink",
+    "#a78bfa": "trend-line-purple",
+    "#22d3ee": "trend-line-cyan",
+    "#facc15": "trend-line-yellow",
+    "#fb7185": "trend-line-rose",
+    "#818cf8": "trend-line-indigo",
+    "#c084fc": "trend-line-violet",
+  };
+  return classes[color] || "trend-line-default";
+}
+
 function buildTrendDatasets(items) {
   const group = activeTrendMetricGroup();
   return trendPeople().flatMap((person) =>
@@ -2415,9 +2435,8 @@ function renderTrendLineFilters(chart) {
       return `
         <button
           type="button"
-          class="trend-line-chip ${active ? "active" : ""}"
+          class="trend-line-chip ${escapeHtml(trendLineColorClass(dataset.borderColor))} ${active ? "active" : ""}"
           data-dataset-index="${index}"
-          style="--line-color: ${escapeHtml(dataset.borderColor)}"
         >
           ${escapeHtml(dataset.label)}
         </button>`;
@@ -2511,7 +2530,7 @@ function renderTrendPersonTable(label, key, items, cls) {
 
 function renderTrendRow(item, key) {
   const person = item.people?.[key] || {};
-  const className = person.class_name || "neutral";
+  const className = trendStateClass(person.class_name);
   const oi = person.has_open_interest ? fmtNum(person.open_interest_change) : "—";
   return `
     <tr>
@@ -2852,36 +2871,6 @@ function renderAnalysis() {
   if (audience.trendOnly) loadTrendAnalysis();
 }
 
-function exportCsv() {
-  if (!state.filtered.length) {
-    showToast("داده برای خروجی موجود نیست", "error");
-    return;
-  }
-  const config = VIEW_CONFIG[state.view];
-  const keys = config.columns.map((c) => c.key);
-  const escapeCsv = (value) => {
-    const s = value == null ? "" : String(value);
-    return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
-  };
-  const header = config.columns.map((c) => escapeCsv(c.label)).join(",");
-  const rows = state.filtered.map((row) =>
-    keys.map((k) => {
-      return escapeCsv(row[k]);
-    }).join(",")
-  );
-  const bom = "\uFEFF";
-  const blob = new Blob([bom + header + "\n" + rows.join("\n")], { type: "text/csv;charset=utf-8;" });
-  const a = document.createElement("a");
-  const url = URL.createObjectURL(blob);
-  a.href = url;
-  a.download = `tsetmc_${state.view}_${Date.now()}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-  showToast("فایل CSV دانلود شد");
-}
-
 let refreshPollTimer = null;
 let refreshPollFailures = 0;
 
@@ -3031,7 +3020,6 @@ function bindActivation() {
 
 document.getElementById("btnRefresh")?.addEventListener("click", startRefresh);
 document.getElementById("btnEmptyRefresh")?.addEventListener("click", startRefresh);
-document.getElementById("btnExport")?.addEventListener("click", exportCsv);
 document.getElementById("btnBack")?.addEventListener("click", goBackToUnderlyings);
 document.getElementById("closeDetail")?.addEventListener("click", closeDetailSheet);
 document.getElementById("detailBackdrop")?.addEventListener("click", closeDetailSheet);

@@ -972,7 +972,52 @@ select:focus-visible {
 }
 
 .trend-line-chip {
+  --line-color: var(--accent);
   border-color: var(--line-color);
+}
+
+.trend-line-default {
+  --line-color: var(--accent);
+}
+
+.trend-line-sky {
+  --line-color: #38bdf8;
+}
+
+.trend-line-green {
+  --line-color: #34d399;
+}
+
+.trend-line-orange {
+  --line-color: #f97316;
+}
+
+.trend-line-pink {
+  --line-color: #f472b6;
+}
+
+.trend-line-purple {
+  --line-color: #a78bfa;
+}
+
+.trend-line-cyan {
+  --line-color: #22d3ee;
+}
+
+.trend-line-yellow {
+  --line-color: #facc15;
+}
+
+.trend-line-rose {
+  --line-color: #fb7185;
+}
+
+.trend-line-indigo {
+  --line-color: #818cf8;
+}
+
+.trend-line-violet {
+  --line-color: #c084fc;
 }
 
 .trend-line-chip::before {

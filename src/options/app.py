@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import secrets
+import shutil
 import socket
+import sqlite3
 import tempfile
 import threading
 import time
@@ -12,6 +15,16 @@ from pathlib import Path
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN
+
+
+USER_DATA_TABLES = (
+    "contracts",
+    "contract_snapshots",
+    "open_interest",
+    "client_type_stats",
+    "money_flow",
+    "app_state",
+)
 
 
 def _runtime_root(app: toga.App) -> Path:
@@ -28,13 +41,64 @@ def _free_port() -> int:
         return int(server.getsockname()[1])
 
 
+def _database_score(path: Path) -> int:
+    if not path.exists() or path.stat().st_size == 0:
+        return 0
+    try:
+        with sqlite3.connect(path) as db:
+            total = 0
+            for table in USER_DATA_TABLES:
+                exists = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    (table,),
+                ).fetchone()
+                if exists:
+                    total += int(db.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+            return total
+    except (OSError, sqlite3.DatabaseError):
+        return 0
+
+
+def _legacy_database_candidates(runtime_root: Path, database_path: Path) -> list[Path]:
+    candidates = [
+        Path.home() / "data" / "tsetmc_options.db",
+        Path.home() / "tsetmc_options.db",
+        runtime_root.parent / "data" / "tsetmc_options.db",
+    ]
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        if candidate == database_path or candidate in seen:
+            continue
+        seen.add(candidate)
+        unique.append(candidate)
+    return unique
+
+
+def _restore_legacy_database_if_needed(database_path: Path, candidates: list[Path]) -> None:
+    if _database_score(database_path) > 0:
+        return
+    legacy = max(candidates, key=_database_score, default=None)
+    if legacy is None or _database_score(legacy) <= 0:
+        return
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    if database_path.exists() and database_path.stat().st_size > 0:
+        backup = database_path.with_name(
+            f"{database_path.stem}.empty-before-migration-{int(time.time())}{database_path.suffix}"
+        )
+        shutil.copy2(database_path, backup)
+    shutil.copy2(legacy, database_path)
+
+
 class OptionsApp(toga.App):
     """Mobile shell for the same FastAPI + HTML/CSS/JS dashboard as desktop."""
 
     def startup(self) -> None:
         self._configure_environment()
         self._port = _free_port()
-        self._url = f"http://127.0.0.1:{self._port}"
+        self._dashboard_session = secrets.token_urlsafe(24)
+        os.environ["OPTIONS_DASHBOARD_SESSION"] = self._dashboard_session
+        self._url = f"http://127.0.0.1:{self._port}/dashboard/{self._dashboard_session}"
 
         self.main_window = toga.MainWindow(title=self.formal_name)
         self.webview: toga.WebView | None = None
@@ -57,15 +121,12 @@ class OptionsApp(toga.App):
         data_root = runtime_root / "data"
         data_root.mkdir(parents=True, exist_ok=True)
         database_path = data_root / "tsetmc_options.db"
-        legacy_database_path = Path.home() / "data" / "tsetmc_options.db"
-        if not database_path.exists() and legacy_database_path.exists():
-            try:
-                database_path.write_bytes(legacy_database_path.read_bytes())
-            except OSError:
-                pass
+        _restore_legacy_database_if_needed(
+            database_path,
+            _legacy_database_candidates(runtime_root, database_path),
+        )
         os.environ.setdefault("OPTIONS_RUNTIME_ROOT", str(runtime_root))
         os.environ.setdefault("DATABASE_PATH", str(database_path))
-        os.environ.setdefault("DATA_DIR", str(data_root / "exports"))
         os.environ["WEB_OPEN_BROWSER"] = "0"
 
     def _serve(self) -> None:

@@ -1,4 +1,4 @@
-"""Main data pipeline: fetch, store, and export TSETMC options data."""
+"""Main data pipeline: fetch and store TSETMC options data."""
 
 from __future__ import annotations
 
@@ -126,7 +126,6 @@ def _store_public_option_fallback(
         client_type_stored = 0
         money_flow_stored = 0
 
-    export_paths = storage.export_csv(prefix="public")
     return {
         "options": options_stored,
         "client_type": client_type_stored,
@@ -139,7 +138,6 @@ def _store_public_option_fallback(
             if skip_client_type or client_type_stored
             else "داده حقیقی/حقوقی عمومی برای قراردادها دریافت نشد."
         ),
-        "exports": {k: str(v) for k, v in export_paths.items()},
     }
 
 
@@ -211,7 +209,6 @@ def run_pipeline(
             "client_type_stats": 0,
             "money_flow": 0,
             "open_interest": 0,
-            "exports": {},
         }
 
     normalized_options: List[Dict[str, Any]] = []
@@ -345,9 +342,7 @@ def run_pipeline(
         client_type_stored = 0
         money_flow_stored = 0
 
-    progress(stage="export", message="در حال ساخت خروجی CSV")
-    export_paths = storage.export_csv()
-    logger.info("Pipeline complete. Exports: %s", export_paths)
+    logger.info("Pipeline complete.")
 
     return {
         "options": options_stored,
@@ -355,7 +350,6 @@ def run_pipeline(
         "client_type_stats": client_type_stored,
         "money_flow": money_flow_stored,
         "open_interest": open_interest_stored,
-        "exports": {k: str(v) for k, v in export_paths.items()},
     }
 
 

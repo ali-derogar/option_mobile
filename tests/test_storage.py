@@ -1,4 +1,4 @@
-"""Storage tests for numeric persistence and exports."""
+"""Storage tests for numeric persistence."""
 
 import sqlite3
 from datetime import datetime, timezone
@@ -19,7 +19,7 @@ from options.backend.storage import (
 
 @pytest.fixture()
 def storage(tmp_path: Path) -> Storage:
-    return Storage(db_path=tmp_path / "options.db", export_dir=tmp_path / "exports")
+    return Storage(db_path=tmp_path / "options.db")
 
 
 def contract_payload(**overrides):
@@ -177,7 +177,7 @@ def test_storage_migrates_legacy_contract_snapshot_columns(tmp_path: Path) -> No
             """
         )
 
-    storage = Storage(db_path=db_path, export_dir=tmp_path / "exports")
+    storage = Storage(db_path=db_path)
 
     assert storage.insert_contract_snapshot([contract_payload()], snapshot_date="2025-06-14") == 1
     df = storage.get_contract_snapshot_df("2025-06-14")
@@ -521,33 +521,6 @@ def test_contract_metadata_lookup_skips_bad_instrument_codes(storage: Storage, m
     }
 
 
-def test_export_csv_writes_numeric_tables(storage: Storage) -> None:
-    storage.upsert_contracts([contract_payload()])
-    storage.insert_open_interest(
-        [
-            {
-                "ins_code": 1001,
-                "buy_open_positions": 500,
-                "sell_open_positions": 300,
-                "yesterday_open_positions": 450,
-            }
-        ]
-    )
-    storage.insert_client_type_stats([client_type_payload()])
-
-    paths = storage.export_csv(prefix="unit")
-
-    assert set(paths) == {"contracts", "client_type_stats", "money_flow", "open_interest"}
-    contracts = pd.read_csv(paths["contracts"])
-    client_type = pd.read_csv(paths["client_type_stats"])
-    money_flow = pd.read_csv(paths["money_flow"])
-    open_interest = pd.read_csv(paths["open_interest"])
-
-    assert contracts.loc[0, "strike_price"] == pytest.approx(12_000.0)
-    assert contracts.loc[0, "trade_value"] == pytest.approx(120_000_000.0)
-    assert client_type.loc[0, "natural_money_flow"] == pytest.approx(-250_000.0)
-    assert money_flow.loc[0, "legal_money_flow"] == pytest.approx(1_000_000.0)
-    assert open_interest.loc[0, "buy_open_positions"] == pytest.approx(500.0)
 
 
 def test_open_interest_history_keeps_latest_refresh_per_market_day(storage: Storage) -> None:

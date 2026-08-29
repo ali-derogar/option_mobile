@@ -4,6 +4,10 @@ dist/
 __pycache__/
 *.pyc
 .git/
+.env
+.env.*
+!.env.example
+android-keystore/
 output/
 logs/
 *.egg-info/

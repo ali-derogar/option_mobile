@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import json
+import os
 import re
 import secrets
 import threading
@@ -11,6 +13,7 @@ from datetime import date as date_type
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from starlette.applications import Starlette
 from starlette.background import BackgroundTasks
@@ -52,17 +55,24 @@ STATIC_DIR = WEB_ROOT / "static"
 LOCAL_API_HEADER = "x-options-api-token"
 LOCAL_API_COOKIE = "options_api_token"
 LOCAL_API_TOKEN = secrets.token_urlsafe(32)
+DASHBOARD_SESSION_ID = os.getenv("OPTIONS_DASHBOARD_SESSION") or secrets.token_urlsafe(24)
 MAX_HISTORICAL_LOOKBACK_DAYS = 370
+MAX_API_JSON_BODY_BYTES = 32 * 1024
+MAX_ACTIVATION_JSON_BODY_BYTES = 1024
+MAX_CLIENT_TYPE_BATCH_SIZE = 300
 REFRESH_COOLDOWN_SECONDS = 60
 DASHBOARD_CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline'; "
-    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
     "img-src 'self' data:; "
     "font-src 'self'; "
     "connect-src 'self'; "
+    "object-src 'none'; "
+    "frame-src 'none'; "
     "base-uri 'none'; "
     "frame-ancestors 'none'; "
+    "manifest-src 'self'; "
     "form-action 'none'"
 )
 
@@ -82,16 +92,71 @@ _refresh_status: Dict[str, Any] = {
 _last_refresh_request_at = 0.0
 
 
+def _origin_key(value: str) -> Optional[tuple[str, str, int]]:
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        return None
+    if not parts.scheme or not parts.hostname:
+        return None
+    if port is None:
+        port = 443 if parts.scheme.lower() == "https" else 80
+    return (parts.scheme.lower(), parts.hostname.lower(), port)
+
+
+def _request_origin_key(request: Request) -> Optional[tuple[str, str, int]]:
+    request_url = urlsplit(str(request.url))
+    host = request.headers.get("host") or request_url.netloc
+    return _origin_key(f"{request_url.scheme}://{host}")
+
+
+def _api_request_allowed_by_browser_headers(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    if origin and _origin_key(origin) != _request_origin_key(request):
+        return False
+    fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
+    return not fetch_site or fetch_site == "same-origin"
+
+
+def _has_local_api_token(request: Request) -> bool:
+    for token in (request.headers.get(LOCAL_API_HEADER), request.cookies.get(LOCAL_API_COOKIE)):
+        if isinstance(token, str) and secrets.compare_digest(token, LOCAL_API_TOKEN):
+            return True
+    return False
+
+
+def _has_dashboard_session(request: Request) -> bool:
+    session_id = request.path_params.get("dashboard_session")
+    return isinstance(session_id, str) and secrets.compare_digest(session_id, DASHBOARD_SESSION_ID)
+
+
+def _apply_common_security_headers(response: Response) -> Response:
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    return response
+
+
+def _apply_dashboard_security_headers(response: Response) -> Response:
+    _apply_common_security_headers(response)
+    response.headers["Content-Security-Policy"] = DASHBOARD_CSP
+    return response
+
+
 class LocalApiTokenMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path.startswith("/api/") and request.headers.get(LOCAL_API_HEADER) != LOCAL_API_TOKEN:
-            return JSONResponse({"detail": "forbidden"}, status_code=403)
+        if request.url.path.startswith("/api/") and (
+            not _api_request_allowed_by_browser_headers(request) or not _has_local_api_token(request)
+        ):
+            return _json({"detail": "forbidden"}, status_code=403)
         if (
             request.url.path.startswith("/api/")
             and request.url.path not in {"/api/health", "/api/activation/status", "/api/activation"}
             and not storage.is_activated()
         ):
-            return JSONResponse({"detail": "activation_required"}, status_code=423)
+            return _json({"detail": "activation_required"}, status_code=423)
         return await call_next(request)
 
 
@@ -100,23 +165,23 @@ class NoStoreStaticFiles(StaticFiles):
         response = await super().get_response(path, scope)
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
-        return response
+        return _apply_common_security_headers(response)
 
 
 async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled request error for %s", request.url.path)
-    return JSONResponse({"detail": "internal server error"}, status_code=500)
+    return _json({"detail": "internal server error"}, status_code=500)
 
 
 async def handle_http_error(request: Request, exc: HTTPException) -> JSONResponse:
-    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    return _json({"detail": exc.detail}, status_code=exc.status_code)
 
 
 def _json(payload: Dict[str, Any], status_code: int = 200, background: Optional[BackgroundTasks] = None) -> JSONResponse:
     response = JSONResponse(payload, status_code=status_code, background=background)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
-    return response
+    return _apply_common_security_headers(response)
 
 
 def _query_value(request: Request, name: str) -> Optional[str]:
@@ -148,6 +213,26 @@ def _query_int(
     if max_value is not None and value > max_value:
         raise HTTPException(400, f"{name} is above maximum")
     return value
+
+
+async def _read_json_payload(request: Request, max_bytes: int, invalid_detail: str) -> Dict[str, Any]:
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise HTTPException(413, "request body is too large")
+        except ValueError as exc:
+            raise HTTPException(400, "invalid content length") from exc
+    body = await request.body()
+    if len(body) > max_bytes:
+        raise HTTPException(413, "request body is too large")
+    try:
+        payload = json.loads(body or b"{}")
+    except ValueError as exc:
+        raise HTTPException(400, invalid_detail) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(400, invalid_detail)
+    return payload
 
 
 def _path_ins_code(value: Any) -> int:
@@ -365,12 +450,11 @@ async def activation_status(request: Request) -> JSONResponse:
 
 
 async def activate(request: Request) -> JSONResponse:
-    try:
-        payload = await request.json()
-    except ValueError as exc:
-        raise HTTPException(400, "invalid JSON") from exc
-    if not isinstance(payload, dict):
-        raise HTTPException(400, "invalid activation payload")
+    payload = await _read_json_payload(
+        request,
+        max_bytes=MAX_ACTIVATION_JSON_BODY_BYTES,
+        invalid_detail="invalid activation payload",
+    )
     code = payload.get("code")
     if not isinstance(code, str) or not is_activation_code_valid(code.strip()):
         raise HTTPException(400, "activation code was not accepted")
@@ -480,13 +564,16 @@ async def client_type_current(request: Request) -> JSONResponse:
 
 
 async def client_type_current_many(request: Request) -> JSONResponse:
-    try:
-        body = await request.json()
-    except Exception as exc:
-        raise HTTPException(400, "invalid JSON body") from exc
+    body = await _read_json_payload(
+        request,
+        max_bytes=MAX_API_JSON_BODY_BYTES,
+        invalid_detail="invalid JSON body",
+    )
     raw_codes = body.get("ins_codes") if isinstance(body, dict) else None
     if not isinstance(raw_codes, list):
         raise HTTPException(400, "ins_codes must be a list")
+    if len(raw_codes) > MAX_CLIENT_TYPE_BATCH_SIZE:
+        raise HTTPException(413, "too many instrument codes")
     ins_codes: List[int] = []
     seen: set[int] = set()
     for raw_code in raw_codes:
@@ -568,7 +655,9 @@ async def refresh(request: Request) -> JSONResponse:
     return _json({"status": "started"}, background=background_tasks)
 
 
-def _dashboard_response() -> Response:
+def _dashboard_response(request: Request) -> Response:
+    if not _has_dashboard_session(request):
+        raise HTTPException(404, "dashboard session not found")
     index_path = WEB_ROOT / "index.html"
     if not index_path.exists():
         raise HTTPException(404, "index.html not found")
@@ -576,24 +665,25 @@ def _dashboard_response() -> Response:
     response.set_cookie(
         LOCAL_API_COOKIE,
         LOCAL_API_TOKEN,
-        path="/",
-        secure=False,
-        httponly=False,
+        path="/api",
+        secure=request.url.scheme == "https",
+        httponly=True,
         samesite="strict",
     )
     response.headers["Cache-Control"] = "no-store"
-    response.headers["Content-Security-Policy"] = DASHBOARD_CSP
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return response
+    return _apply_dashboard_security_headers(response)
 
 
 async def index(request: Request) -> Response:
-    return _dashboard_response()
+    return _dashboard_response(request)
 
 
 async def underlying_page(request: Request) -> Response:
-    return _dashboard_response()
+    return _dashboard_response(request)
+
+
+async def dashboard_not_found(request: Request) -> Response:
+    raise HTTPException(404, "dashboard session required")
 
 
 routes = [
@@ -615,8 +705,10 @@ routes = [
     Route("/api/open-interest/{ins_code}", open_interest_history, methods=["GET"]),
     Route("/api/refresh/status", refresh_status, methods=["GET"]),
     Route("/api/refresh", refresh, methods=["POST"]),
-    Route("/", index, methods=["GET"]),
-    Route("/underlying/{underlying_key}", underlying_page, methods=["GET"]),
+    Route("/", dashboard_not_found, methods=["GET"]),
+    Route("/dashboard/{dashboard_session}", index, methods=["GET"]),
+    Route("/dashboard/{dashboard_session}/", index, methods=["GET"]),
+    Route("/dashboard/{dashboard_session}/underlying/{underlying_key}", underlying_page, methods=["GET"]),
 ]
 if STATIC_DIR.exists():
     routes.append(Mount("/static", app=NoStoreStaticFiles(directory=STATIC_DIR), name="static"))

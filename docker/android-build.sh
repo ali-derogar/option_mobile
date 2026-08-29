@@ -35,6 +35,12 @@ clean_stale_gradle_locks() {
     fi
 }
 
+clean_stale_chaquopy_pip_dirs() {
+    local python_build_dir="${GRADLE_DIR}/app/build/python"
+    [[ -d "${python_build_dir}" ]] || return 0
+    rm -rf "${python_build_dir}/pip" 2>/dev/null || true
+}
+
 patch_gradle_properties() {
     local props="${GRADLE_DIR}/gradle.properties"
     [[ -f "${props}" ]] || return 0
@@ -145,6 +151,7 @@ briefcase update android --no-input --update-resources --update-requirements
 patch_gradle_properties
 patch_pip_options
 clean_stale_gradle_locks
+clean_stale_chaquopy_pip_dirs
 
 harden_android_manifest
 patch_android_theme

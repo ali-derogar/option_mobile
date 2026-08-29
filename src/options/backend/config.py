@@ -39,7 +39,6 @@ def _env_float(name: str, default: float, min_value: float, max_value: float) ->
 RUNTIME_ROOT = Path(os.getenv("OPTIONS_RUNTIME_ROOT", Path.home()))
 SEED_DATABASE_PATH = PACKAGE_ROOT / "resources" / "data" / "tsetmc_options.db"
 
-DATA_DIR = Path(os.getenv("DATA_DIR", RUNTIME_ROOT / "data" / "exports"))
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", RUNTIME_ROOT / "data" / "tsetmc_options.db"))
 
 TSETMC_USERNAME = os.getenv("TSETMC_USERNAME", "").strip()
@@ -55,7 +54,6 @@ TSETMC_TRUST_ENV_PROXY = os.getenv("TSETMC_TRUST_ENV_PROXY", "0").strip().lower(
 )
 TSETMC_PUBLIC_CLIENT_TYPE_WORKERS = _env_int("TSETMC_PUBLIC_CLIENT_TYPE_WORKERS", 16, 1, 16)
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 if not DATABASE_PATH.exists() and SEED_DATABASE_PATH.exists():

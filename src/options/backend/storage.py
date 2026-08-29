@@ -1,4 +1,4 @@
-"""SQLite storage and CSV export."""
+"""SQLite storage."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from options.backend.config import DATA_DIR, DATABASE_PATH
+from options.backend.config import DATABASE_PATH
 
 logger = logging.getLogger(__name__)
 MARKET_TZ = ZoneInfo("Asia/Tehran")
@@ -176,14 +176,12 @@ class AppState(Base):
 
 
 class Storage:
-    def __init__(self, db_path: Optional[Path] = None, export_dir: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None):
         self.db_path = db_path or DATABASE_PATH
-        self.export_dir = export_dir or DATA_DIR
         self.engine = create_engine(f"sqlite:///{self.db_path}")
         Base.metadata.create_all(self.engine)
         self._ensure_schema()
         self.SessionLocal = sessionmaker(bind=self.engine)
-        self.export_dir.mkdir(parents=True, exist_ok=True)
         self._backfill_current_contract_snapshot()
 
     def session(self) -> Session:
@@ -804,40 +802,6 @@ class Storage:
             .drop_duplicates("ins_code", keep="last")
             .drop(columns=["_rec_date_key"], errors="ignore")
         )
-
-    def export_csv(self, prefix: str = "") -> Dict[str, Path]:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        prefix = f"{prefix}_" if prefix else ""
-        paths: Dict[str, Path] = {}
-
-        contracts_df = self.get_contracts_df()
-        if not contracts_df.empty:
-            p = self.export_dir / f"{prefix}contracts_{timestamp}.csv"
-            contracts_df.to_csv(p, index=False, encoding="utf-8-sig")
-            paths["contracts"] = p
-
-        ct_df = self.get_latest_client_type_df()
-        if not ct_df.empty:
-            p = self.export_dir / f"{prefix}client_type_stats_{timestamp}.csv"
-            ct_df.to_csv(p, index=False, encoding="utf-8-sig")
-            paths["client_type_stats"] = p
-
-            mf = ct_df[
-                ["ins_code", "rec_date", "natural_money_flow", "legal_money_flow", "fetched_at"]
-            ].copy()
-            p = self.export_dir / f"{prefix}money_flow_{timestamp}.csv"
-            mf.to_csv(p, index=False, encoding="utf-8-sig")
-            paths["money_flow"] = p
-
-        oi_df = self.get_open_interest_history_df()
-        if not oi_df.empty:
-            latest_oi = oi_df.sort_values("fetched_at").groupby("ins_code").tail(1)
-            p = self.export_dir / f"{prefix}open_interest_{timestamp}.csv"
-            latest_oi.to_csv(p, index=False, encoding="utf-8-sig")
-            paths["open_interest"] = p
-
-        logger.info("Exported CSV files: %s", list(paths.keys()))
-        return paths
 
     @staticmethod
     def _contract_to_dict(r: Contract) -> Dict[str, Any]:
