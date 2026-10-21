@@ -3029,6 +3029,7 @@ async function init() {
     updateViewChrome();
     const activated = await ensureActivation();
     if (!activated) return;
+    window.ExpiryPanel?.initialize();
     await loadDates();
     await loadSummary();
     await reloadActiveData();

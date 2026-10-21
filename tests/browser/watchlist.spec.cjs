@@ -23,11 +23,18 @@ function underlying(symbol = "خودرو") {
   return { underlying_key: "2001", underlying_ins_code: "2001", underlying_symbol: symbol, available: true, data_status: "ready", contract_count: 1 };
 }
 
-async function fixture(t, view = "symbols") {
+async function fixture(t, view = "symbols", { pauseClock = false } = {}) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   t.after(() => context.close());
   const page = await context.newPage();
-  await page.clock.install();
+  if (pauseClock) {
+    const start = Date.UTC(2026, 9, 21, 12);
+    await page.clock.install({ time: new Date(start) });
+    // Freeze before navigation, while no application timers have started.
+    await page.clock.pauseAt(new Date(start + 60000));
+  } else {
+    await page.clock.install();
+  }
   const state = {
     items: [{ ins_code: "2001", symbol: "خودرو", name: "خودرو", available: true, options_trade_volume: 10, underlying_trade_volume: 20 }],
     saved: [], refresh: { running: false, last_result: null },
@@ -54,6 +61,7 @@ async function fixture(t, view = "symbols") {
         if (state.failRefreshStatus) return route.fulfill({ status: 503, json: { detail: "status unavailable" } });
         return json(state.refreshHandler ? await state.refreshHandler(state.refreshCalls) : state.refresh);
       case "/api/dates": return json({ items: [], latest: null });
+      case "/api/expiries": return json({ items: [], total: 0, as_of_date: "2026-10-21", fetched_at: null, nearest_days: null, refresh: { running: false } });
       case "/api/calendar/today": return json({ gregorian_date: "2026-10-21" });
       case "/api/calendar/1405/7/events": return json(state.calendarData || {
         year: 1405, month: 7, days: [], events: [], holidays: [], events_available: false, source: "fallback",
@@ -113,14 +121,13 @@ test("older catalogue responses cannot replace a newer catalogue", async (t) => 
 });
 
 test("restoring the editor refreshes its status and ignores responses from its previous visit", async (t) => {
-  const { page, state } = await fixture(t);
+  const { page, state } = await fixture(t, "symbols", { pauseClock: true });
   const original = state.items.map((row) => ({ ...row }));
   let release;
   const pending = new Promise((resolve) => { release = resolve; });
   t.after(() => release(original));
   state.catalogHandler = (call) => call === 2 ? pending : state.items;
   await state.open();
-  await page.clock.pauseAt(await page.evaluate(() => Date.now()));
   await page.locator("#symbolList input").check();
   await expect(page.locator("#saveSymbols")).toBeEnabled();
   await page.clock.fastForward(3100);

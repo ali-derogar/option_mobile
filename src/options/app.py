@@ -26,6 +26,7 @@ USER_DATA_TABLES = (
     "app_state",
     "underlying_catalog",
     "watchlist",
+    "expiry_contracts",
 )
 
 

@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/static/css/app.css" />
   <script src="/static/vendor/chart.umd.min.js" defer></script>
   <script src="/static/js/common.js" defer></script>
+  <script src="/static/js/expiries.js" defer></script>
   <script src="/static/js/app.js" defer></script>
 </head>
 <body>
@@ -55,6 +56,26 @@
     </header>
 
     <p class="refresh-warning hidden" id="refreshWarning" role="status" aria-live="polite"></p>
+
+    <section class="expiry-section hidden" id="expirySection">
+      <button type="button" class="btn btn-ghost expiry-toggle" id="btnExpiries" aria-expanded="false" aria-controls="expiryPanel">
+        <span>نزدیک‌ترین سررسیدها</span>
+        <span class="expiry-badge hidden" id="expiryBadge" aria-live="polite"></span>
+      </button>
+      <section class="panel expiry-panel hidden" id="expiryPanel" aria-labelledby="expiryTitle">
+        <div class="panel-header">
+          <h2 id="expiryTitle">سررسیدهای کل بازار</h2>
+          <span class="badge" id="expiryCount"></span>
+        </div>
+        <div class="expiry-controls">
+          <button type="button" class="btn btn-primary" id="btnExpiryRefresh">به‌روزرسانی سررسیدها</button>
+          <span class="last-update" id="expiryLastUpdate">هنوز دریافت نشده</span>
+        </div>
+        <p class="expiry-status" id="expiryStatus" role="status" aria-live="polite">ابتدا سررسیدها را به‌روزرسانی کنید</p>
+        <p class="refresh-warning hidden" id="expiryWarning" role="status" aria-live="polite"></p>
+        <ol class="expiry-list" id="expiryList" aria-label="قراردادها به ترتیب نزدیک‌ترین سررسید"></ol>
+      </section>
+    </section>
 
     <section class="stats-grid" id="statsGrid">
       <article class="stat-card">

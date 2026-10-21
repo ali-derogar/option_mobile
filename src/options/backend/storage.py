@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -197,6 +197,18 @@ class WatchlistEntry(Base):
     created_at = Column(DateTime, nullable=False)
 
 
+class ExpiryContract(Base):
+    __tablename__ = "expiry_contracts"
+
+    ins_code = Column(Integer, primary_key=True)
+    symbol = Column(String(128), nullable=False)
+    underlying_ins_code = Column(Integer, nullable=True)
+    underlying_symbol = Column(String(128), nullable=True)
+    option_type = Column(String(16), nullable=False)
+    strike_price = Column(Float, nullable=True)
+    end_date = Column(Integer, nullable=False, index=True)
+
+
 class Storage:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = db_path or DATABASE_PATH
@@ -211,6 +223,55 @@ class Storage:
 
     def now(self) -> datetime:
         return datetime.now(timezone.utc)
+
+    def replace_expiry_contracts(self, rows: list[dict[str, Any]], warning: str | None = None) -> None:
+        """Replace the independent market snapshot and its metadata atomically."""
+        now = self.now()
+        with self.session() as session:
+            session.execute(delete(ExpiryContract))
+            session.add_all(ExpiryContract(**row) for row in rows)
+            metadata = session.get(AppState, "expiry_snapshot")
+            if metadata is None:
+                metadata = AppState(key="expiry_snapshot")
+                session.add(metadata)
+            metadata.value = json.dumps({"warning": warning}, ensure_ascii=False)
+            metadata.updated_at = now
+            session.commit()
+
+    def get_expiry_snapshot(self, today: date, limit: int = 50) -> dict[str, Any]:
+        """Read rows and metadata from the same committed SQLite snapshot."""
+        cutoff = int(today.strftime("%Y%m%d"))
+        with self.session() as session:
+            # SQLite's legacy driver does not begin a read transaction on SELECT.
+            session.execute(text("BEGIN"))
+            metadata = session.get(AppState, "expiry_snapshot")
+            total = session.scalar(select(func.count()).select_from(ExpiryContract).where(
+                ExpiryContract.end_date >= cutoff,
+            ))
+            rows = session.scalars(select(ExpiryContract).where(
+                ExpiryContract.end_date >= cutoff,
+            ).order_by(ExpiryContract.end_date, ExpiryContract.ins_code).limit(limit)).all()
+            items = [
+                {
+                    "ins_code": str(row.ins_code),
+                    "symbol": row.symbol,
+                    "underlying_ins_code": str(row.underlying_ins_code) if row.underlying_ins_code else None,
+                    "underlying_symbol": row.underlying_symbol,
+                    "option_type": row.option_type,
+                    "strike_price": row.strike_price,
+                    "end_date": row.end_date,
+                    "days_remaining": (date.fromisoformat(str(row.end_date)) - today).days,
+                }
+                for row in rows
+            ]
+            return {
+                "items": items,
+                "total": total,
+                "as_of_date": today.isoformat(),
+                "fetched_at": metadata.updated_at.replace(tzinfo=timezone.utc).isoformat() if metadata else None,
+                "warning": json.loads(metadata.value).get("warning") if metadata else None,
+                "nearest_days": items[0]["days_remaining"] if items else None,
+            }
 
     def get_watchlist_codes(self) -> List[int]:
         with self.session() as session:

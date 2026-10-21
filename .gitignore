@@ -40,6 +40,7 @@ logs/
 
 # Tests
 .pytest_cache/
+node_modules/
 .coverage
 coverage.xml
 htmlcov/

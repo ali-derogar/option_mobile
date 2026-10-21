@@ -40,6 +40,7 @@ from options.backend.api.data import (
     get_watchlist_underlyings,
 )
 from options.backend.pipeline import run_pipeline
+from options.backend.services.expiries import ExpiryRefresh
 from options.backend.services.historical_options import import_public_option_history
 from options.backend.services.public_options import (
     fetch_public_client_type_current,
@@ -79,6 +80,7 @@ DASHBOARD_CSP = (
 
 storage = Storage()
 catalog_refresh_job = CatalogRefresh()
+expiry_refresh_job = ExpiryRefresh()
 
 _refresh_lock = threading.RLock()
 _history_import_lock = threading.Lock()
@@ -689,6 +691,22 @@ async def refresh_catalog(request: Request) -> JSONResponse:
     return _json({"status": "started"}, status_code=202, background=tasks)
 
 
+def expiries(request: Request) -> JSONResponse:
+    refresh = expiry_refresh_job.status()
+    payload = storage.get_expiry_snapshot(datetime.now(MARKET_TZ).date())
+    payload["refresh"] = refresh
+    return _json(payload)
+
+
+async def refresh_expiries(request: Request) -> JSONResponse:
+    status = expiry_refresh_job.begin()
+    if status != "started":
+        return _json({"status": status})
+    tasks = BackgroundTasks()
+    tasks.add_task(expiry_refresh_job.run, storage)
+    return _json({"status": status}, status_code=202, background=tasks)
+
+
 async def refresh(request: Request) -> JSONResponse:
     limit = _query_int(request, "limit", min_value=1, max_value=5000)
     # Serialize selection reads and updates with the refresh reservation.
@@ -755,6 +773,8 @@ routes = [
     Route("/api/watchlist", watchlist, methods=["GET", "PUT"]),
     Route("/api/underlyings/catalog", underlying_catalog, methods=["GET"]),
     Route("/api/underlyings/catalog/refresh", refresh_catalog, methods=["POST"]),
+    Route("/api/expiries", expiries, methods=["GET"]),
+    Route("/api/expiries/refresh", refresh_expiries, methods=["POST"]),
     Route("/api/underlyings/{underlying_key}/contracts", underlying_contracts, methods=["GET"]),
     Route("/api/underlyings/{underlying_key}/trend", underlying_trend, methods=["GET"]),
     Route("/api/sentiment", sentiment, methods=["GET"]),
