@@ -61,6 +61,22 @@ class FakePublicSession:
         return FakePublicResponse(self.payload)
 
 
+@pytest.mark.parametrize("payload", [
+    {"instrumentInfo": None}, {"instrument": []}, {"instrumentInfoModel": "unavailable"},
+])
+def test_public_instrument_info_missing_wrapped_record_returns_none(monkeypatch, payload):
+    monkeypatch.setattr(public_options, "_session", lambda: FakePublicSession(payload))
+    assert public_options.fetch_public_instrument_info(1001) is None
+
+
+@pytest.mark.parametrize("wrapper", [None, "instrumentInfo", "instrument", "instrumentInfoModel"])
+def test_public_instrument_info_preserves_flat_and_wrapped_records(monkeypatch, wrapper):
+    record = {"insCode": "1001", "lVal18AFC": "ضخود", "lVal30": "اختیارخ خودرو-1000-1405/07/29"}
+    payload = {wrapper: record} if wrapper else record
+    monkeypatch.setattr(public_options, "_session", lambda: FakePublicSession(payload))
+    assert public_options.fetch_public_instrument_info(1001) == record
+
+
 class FakeClient:
     def __init__(self, mapping):
         self.mapping = mapping
@@ -465,6 +481,10 @@ def test_public_option_pair_normalization_creates_call_and_put_with_exact_values
                 "pDrCotVal_P": 25,
                 "pClosing_C": 240,
                 "pClosing_P": 30,
+                "pMeOf_C": 255,
+                "pMeOf_P": 27,
+                "qTitMeOf_C": 5,
+                "qTitMeOf_P": 8,
                 "priceYesterday_C": 200,
                 "priceYesterday_P": 30,
                 "qTotTran5J_C": 100,
@@ -483,11 +503,13 @@ def test_public_option_pair_normalization_creates_call_and_put_with_exact_values
     assert call["moneyness"] == "ITM"
     assert call["intrinsic_value"] == pytest.approx(200.0)
     assert call["price_change"] == "+50"
+    assert (call["ask_price"], call["ask_volume"]) == (255, 5)
     assert put["ins_code"] == 102
     assert put["option_type"] == "put"
     assert put["moneyness"] == "OTM"
     assert put["intrinsic_value"] == pytest.approx(0.0)
     assert put["price_change"] == "-5"
+    assert (put["ask_price"], put["ask_volume"]) == (27, 8)
 
 
 def test_public_option_pair_accepts_grouped_numeric_strings() -> None:

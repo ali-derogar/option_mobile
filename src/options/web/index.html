@@ -71,7 +71,35 @@
           <button type="button" class="btn btn-primary" id="btnExpiryRefresh">به‌روزرسانی سررسیدها</button>
           <span class="last-update" id="expiryLastUpdate">هنوز دریافت نشده</span>
         </div>
+        <div class="expiry-filters" id="expiryFilters" aria-label="فیلتر سررسیدها">
+          <label>سهم پایه
+            <select id="expiryUnderlyingFilter" data-expiry-filter="underlying_ins_code"><option value="">همهٔ سهم‌ها</option></select>
+          </label>
+          <label>نوع اختیار
+            <select data-expiry-filter="option_type"><option value="">همه</option><option value="call">اختیار خرید</option><option value="put">اختیار فروش</option></select>
+          </label>
+          <label>حداقل روز تا سررسید
+            <input type="text" inputmode="numeric" autocomplete="off" data-expiry-filter="min_days" placeholder="۰" />
+          </label>
+          <label>حداکثر روز تا سررسید
+            <input type="text" inputmode="numeric" autocomplete="off" data-expiry-filter="max_days" placeholder="بدون محدودیت" />
+          </label>
+          <label>وضعیت قرارداد
+            <select data-expiry-filter="moneyness"><option value="">همه</option><option value="ITM">در سود (ITM)</option><option value="ATM">بی‌تفاوت (ATM)</option><option value="OTM">در زیان (OTM)</option></select>
+          </label>
+          <label>حداقل اختلاف با ارزش ذاتی (%)
+            <input type="text" inputmode="decimal" autocomplete="off" data-expiry-filter="min_score" placeholder="بدون محدودیت" />
+          </label>
+          <label>حداقل حجم معاملات
+            <input type="text" inputmode="numeric" autocomplete="off" data-expiry-filter="min_volume" placeholder="بدون محدودیت" />
+          </label>
+          <button type="button" class="btn btn-ghost" id="btnExpiryClearFilters" disabled>پاک کردن فیلترها</button>
+        </div>
+        <p class="refresh-warning hidden" id="expiryFilterError" role="alert"></p>
+        <p class="expiry-status hidden" id="expiryPricingNote"></p>
         <p class="expiry-status" id="expiryStatus" role="status" aria-live="polite">ابتدا سررسیدها را به‌روزرسانی کنید</p>
+        <progress class="expiry-progress hidden" id="expiryProgress" max="100" aria-label="پیشرفت بررسی سررسیدها"></progress>
+        <p class="expiry-status hidden" id="expiryPreviewNote">نتایج موقت هستند و با تکمیل بررسی به‌روز می‌شوند.</p>
         <p class="refresh-warning hidden" id="expiryWarning" role="status" aria-live="polite"></p>
         <ol class="expiry-list" id="expiryList" aria-label="قراردادها به ترتیب نزدیک‌ترین سررسید"></ol>
       </section>

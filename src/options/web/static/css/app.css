@@ -4837,6 +4837,51 @@ html[data-theme="dark"] .filters select {
   font-size: 0.78rem;
 }
 
+.expiry-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  align-items: end;
+  gap: 0.7rem;
+  padding: 0 0.85rem 0.85rem;
+}
+
+.expiry-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.expiry-filters input,
+.expiry-filters select {
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+}
+
+.expiry-filters [aria-invalid="true"] {
+  border-color: var(--red);
+}
+
+.expiry-filters .btn {
+  white-space: normal;
+}
+
+.expiry-progress {
+  display: block;
+  width: calc(100% - 1.7rem);
+  height: 0.5rem;
+  margin: 0 0.85rem 0.85rem;
+  accent-color: var(--accent);
+}
+
 .expiry-panel .refresh-warning {
   margin: 0 0.85rem 0.85rem;
 }

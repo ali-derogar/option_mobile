@@ -7,6 +7,7 @@ the authenticated API is unavailable.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from math import isfinite
 import re
@@ -61,15 +62,23 @@ def fetch_public_instrument_info(ins_code: int) -> Optional[Dict[str, Any]]:
     response.raise_for_status()
     payload = response.json()
     if isinstance(payload, dict):
-        for key in ("instrumentInfo", "instrument", "instrumentInfoModel"):
+        wrapper_keys = ("instrumentInfo", "instrument", "instrumentInfoModel")
+        for key in wrapper_keys:
             value = payload.get(key)
             if isinstance(value, dict):
                 return value
-        return payload
+        # A present envelope with no record is missing metadata, not a flat
+        # instrument record. Keep supporting genuine unwrapped responses.
+        return None if any(key in payload for key in wrapper_keys) else payload
     return None
 
 
-def fetch_public_instrument_info_many(ins_codes: List[int]) -> Dict[int, Dict[str, Any]]:
+def fetch_public_instrument_info_many(
+    ins_codes: list[int],
+    *,
+    on_result: Callable[[int, dict[str, Any] | None], None] | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Fetch metadata concurrently and optionally process each completed result."""
     result: Dict[int, Dict[str, Any]] = {}
     workers = max(1, TSETMC_PUBLIC_CLIENT_TYPE_WORKERS)
     unique_codes = sorted({code for code in ins_codes if code})
@@ -80,12 +89,15 @@ def fetch_public_instrument_info_many(ins_codes: List[int]) -> Dict[int, Dict[st
         }
         for future in as_completed(futures):
             ins_code = futures[future]
+            row = None
             try:
                 row = future.result()
                 if row:
                     result[ins_code] = row
             except (requests.RequestException, ValueError):
-                continue
+                pass
+            if on_result is not None:
+                on_result(ins_code, row)
     return result
 
 
@@ -229,6 +241,8 @@ def _normalize_side(row: Dict[str, Any], suffix: str, option_type: str) -> Optio
         "end_date": _to_int(row.get("endDate")),
         "last_price": _to_float(row.get(f"pDrCotVal_{suffix}")),
         "closing_price": _to_float(row.get(f"pClosing_{suffix}")),
+        "ask_price": _to_float(row.get(f"pMeOf_{suffix}")),
+        "ask_volume": _to_float(row.get(f"qTitMeOf_{suffix}")),
         "price_change": _price_change(row, suffix),
         "trade_volume": _to_float(row.get(f"qTotTran5J_{suffix}")),
         "trade_value": _to_float(row.get(f"qTotCap_{suffix}")),
@@ -459,7 +473,7 @@ def _first_int(*values: Any) -> Optional[int]:
 
 
 def _to_float(value: Any) -> Optional[float]:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     if isinstance(value, str):
         value = _clean_numeric_text(value)
@@ -467,7 +481,7 @@ def _to_float(value: Any) -> Optional[float]:
             return None
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if isfinite(number) else None
 

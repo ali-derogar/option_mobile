@@ -9,6 +9,7 @@ import re
 import secrets
 import threading
 import time
+from math import isfinite
 from datetime import date as date_type
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,6 +42,7 @@ from options.backend.api.data import (
 )
 from options.backend.pipeline import run_pipeline
 from options.backend.services.expiries import ExpiryRefresh
+from options.backend.services.expiry_selection import ExpiryFilters
 from options.backend.services.historical_options import import_public_option_history
 from options.backend.services.public_options import (
     fetch_public_client_type_current,
@@ -691,10 +693,39 @@ async def refresh_catalog(request: Request) -> JSONResponse:
     return _json({"status": "started"}, status_code=202, background=tasks)
 
 
+def _expiry_filters(request: Request) -> ExpiryFilters:
+    option_type = _query_value(request, "option_type")
+    moneyness = _query_value(request, "moneyness")
+    if option_type is not None and option_type not in {"call", "put"}:
+        raise HTTPException(400, "invalid option_type")
+    if moneyness is not None and moneyness not in {"ITM", "ATM", "OTM"}:
+        raise HTTPException(400, "invalid moneyness")
+    min_days = _query_int(request, "min_days", default=0, min_value=0)
+    max_days = _query_int(request, "max_days", min_value=0)
+    if max_days is not None and max_days < min_days:
+        raise HTTPException(400, "max_days is below min_days")
+    min_score = None
+    raw_score = _query_value(request, "min_score")
+    if raw_score is not None:
+        try:
+            min_score = float(_clean_numeric_text(raw_score).replace("٫", "."))
+        except ValueError as exc:
+            raise HTTPException(400, "invalid min_score") from exc
+        if not isfinite(min_score):
+            raise HTTPException(400, "invalid min_score")
+    return ExpiryFilters(
+        underlying_ins_code=_query_int(request, "underlying_ins_code", min_value=1, max_value=2**63 - 1),
+        option_type=option_type, min_days=min_days, max_days=max_days, moneyness=moneyness,
+        min_score=min_score, min_volume=_query_int(request, "min_volume", min_value=0),
+    )
+
+
 def expiries(request: Request) -> JSONResponse:
-    refresh = expiry_refresh_job.status()
-    payload = storage.get_expiry_snapshot(datetime.now(MARKET_TZ).date())
-    payload["refresh"] = refresh
+    filters = _expiry_filters(request)
+    today = datetime.now(MARKET_TZ).date()
+    progress = expiry_refresh_job.view(today, filters)
+    payload = storage.get_expiry_snapshot(today, filters=filters)
+    payload.update(progress)
     return _json(payload)
 
 

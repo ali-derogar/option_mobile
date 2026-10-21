@@ -8,7 +8,14 @@
   const badge = document.getElementById("expiryBadge");
   const refreshButton = document.getElementById("btnExpiryRefresh");
   const list = document.getElementById("expiryList");
+  const filterControls = [...document.querySelectorAll("[data-expiry-filter]")];
+  const underlyingFilter = document.getElementById("expiryUnderlyingFilter");
+  const clearFiltersButton = document.getElementById("btnExpiryClearFilters");
+  // Filters belong to this page visit; a reload starts without restrictions.
+  filterControls.forEach((control) => { control.value = ""; });
+  const REQUEST_TIMEOUT_MS = 15000;
   const numberFormat = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 0 });
+  const scoreFormat = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 2 });
   const dayFormat = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Tehran", year: "numeric", month: "2-digit", day: "2-digit",
   });
@@ -30,6 +37,72 @@
   let readId = 0;
   let pollTimer = null;
   let dayTimer = null;
+  let filterTimer = null;
+  let filterError = "";
+  let filterPending = false;
+  let lastValidQuery = "";
+
+  function readFilters() {
+    const params = new URLSearchParams();
+    filterError = "";
+    for (const control of filterControls) {
+      control.removeAttribute("aria-invalid");
+      let value = control.value.trim();
+      if (!value) continue;
+      if (control.tagName === "INPUT") {
+        value = value.replace(/[۰-۹٠-٩]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩".indexOf(digit) % 10))
+          .replace(/[,٬،\s]/g, "").replace(/٫/g, ".");
+        const score = control.dataset.expiryFilter === "min_score";
+        const valid = score ? /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) && Number.isFinite(Number(value))
+          : /^\d+$/.test(value) && Number.isSafeInteger(Number(value));
+        if (!valid) {
+          control.setAttribute("aria-invalid", "true");
+          filterError = "مقادیر فیلتر باید عدد معتبر باشند؛ روز و حجم باید عدد صحیح نامنفی باشند.";
+          continue;
+        }
+      }
+      params.set(control.dataset.expiryFilter, value);
+    }
+    if (params.has("max_days") && Number(params.get("max_days")) < Number(params.get("min_days") || 0)) {
+      filterError = "حداکثر روز تا سررسید نباید از حداقل کمتر باشد.";
+      filterControls.find((control) => control.dataset.expiryFilter === "max_days").setAttribute("aria-invalid", "true");
+    }
+    return filterError ? null : params;
+  }
+
+  function renderUnderlyingOptions() {
+    const selected = underlyingFilter.value;
+    const options = new Map((snapshot?.underlyings || []).map((row) => [row.ins_code, row.symbol]));
+    if (selected && !options.has(selected)) {
+      options.set(selected, underlyingFilter.selectedOptions[0]?.textContent || selected);
+    }
+    const signature = JSON.stringify([...options]);
+    if (underlyingFilter.dataset.options === signature) return;
+    const fragment = document.createDocumentFragment();
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = "همهٔ سهم‌ها";
+    fragment.append(all);
+    for (const [value, text] of options) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      fragment.append(option);
+    }
+    underlyingFilter.replaceChildren(fragment);
+    underlyingFilter.value = selected;
+    underlyingFilter.dataset.options = signature;
+  }
+
+  async function expiryApi(path, options = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      return await api(path, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   function marketDate() {
     const parts = Object.fromEntries(dayFormat.formatToParts(new Date()).map(({ type, value }) => [type, value]));
@@ -40,11 +113,21 @@
     return days === 0 ? "امروز" : `${numberFormat.format(days)} روز`;
   }
 
+  function priceLabel(value) {
+    return value == null ? "—" : numberFormat.format(value);
+  }
+
   function setBadge(element, days) {
     const tone = days <= 1 ? "urgent" : days <= 5 ? "soon" : "safe";
     element.className = `expiry-badge expiry-${tone}`;
     element.textContent = daysLabel(days);
     element.setAttribute("aria-label", days === 0 ? "روز سررسید: امروز" : `${daysLabel(days)} تا سررسید`);
+  }
+
+  function setPendingCalendarBadge(element) {
+    element.className = "expiry-badge";
+    element.textContent = "نیازمند بررسی";
+    element.setAttribute("aria-label", "روزشمار هنوز برای روز جاری بررسی نشده است");
   }
 
   function addMetric(parent, label, value) {
@@ -57,7 +140,7 @@
     parent.append(item);
   }
 
-  function renderRows() {
+  function renderRows(calendarCurrent, pricingCurrent) {
     const fragment = document.createDocumentFragment();
     for (const row of snapshot?.items || []) {
       const card = document.createElement("li");
@@ -67,7 +150,8 @@
       const symbol = document.createElement("strong");
       symbol.textContent = row.symbol;
       const remaining = document.createElement("span");
-      setBadge(remaining, row.days_remaining);
+      if (calendarCurrent) setBadge(remaining, row.days_remaining);
+      else setPendingCalendarBadge(remaining);
       heading.append(symbol, remaining);
       const metrics = document.createElement("dl");
       metrics.className = "expiry-metrics";
@@ -75,8 +159,16 @@
       const date = new Date(Date.UTC(Number(rawDate.slice(0, 4)), Number(rawDate.slice(4, 6)) - 1, Number(rawDate.slice(6))));
       addMetric(metrics, "سهم پایه", row.underlying_symbol);
       addMetric(metrics, "نوع", row.option_type === "call" ? "اختیار خرید" : "اختیار فروش");
-      addMetric(metrics, "قیمت اعمال", row.strike_price == null ? "—" : numberFormat.format(row.strike_price));
+      addMetric(metrics, "قیمت اعمال", priceLabel(row.strike_price));
       addMetric(metrics, "سررسید", expiryFormat.format(date));
+      addMetric(metrics, "بهترین عرضه", priceLabel(row.ask_price));
+      addMetric(metrics, "حجم بهترین عرضه", priceLabel(row.ask_volume));
+      addMetric(metrics, "قیمت سهم پایه", priceLabel(row.underlying_last_price));
+      addMetric(metrics, "ارزش ذاتی", priceLabel(row.intrinsic_value));
+      addMetric(metrics, "اختلاف با ارزش ذاتی (%)", !pricingCurrent ? "نیازمند به‌روزرسانی"
+        : row.intrinsic_gap_percent == null ? "نامشخص" : `${scoreFormat.format(row.intrinsic_gap_percent)}٪`);
+      addMetric(metrics, "حجم معاملات", priceLabel(row.trade_volume));
+      addMetric(metrics, "وضعیت", row.moneyness === "unknown" ? "نامشخص" : row.moneyness);
       card.append(heading, metrics);
       fragment.append(card);
     }
@@ -85,35 +177,69 @@
 
   function render() {
     const busy = starting || running;
+    const partial = Boolean(snapshot?.partial);
+    const calendarCurrent = snapshot?.as_of_date === marketDate();
+    const calendarPending = Boolean((snapshot?.fetched_at || partial) && !calendarCurrent);
+    const pricingCurrent = Boolean(snapshot?.pricing_current && calendarCurrent);
     refreshButton.disabled = busy;
     refreshButton.textContent = busy ? "در حال به‌روزرسانی…" : "به‌روزرسانی سررسیدها";
-    panel.setAttribute("aria-busy", String(busy));
-    if (snapshot?.fetched_at) {
-      document.getElementById("expiryLastUpdate").textContent = `آخرین دریافت: ${updateFormat.format(new Date(snapshot.fetched_at))}`;
+    document.getElementById("expiryLastUpdate").textContent = snapshot?.fetched_at
+      ? `${partial ? "آخرین دریافت کامل" : "آخرین دریافت"}: ${updateFormat.format(new Date(snapshot.fetched_at))}`
+      : partial ? "در حال تکمیل نخستین دریافت…" : "هنوز دریافت نشده";
+    if (snapshot?.fetched_at || (partial && Number.isInteger(snapshot.nearest_days))) {
       badge.classList.remove("hidden");
-      if (Number.isInteger(snapshot.nearest_days)) {
+      if (!calendarCurrent) {
+        setPendingCalendarBadge(badge);
+      } else if (Number.isInteger(snapshot.nearest_days)) {
         setBadge(badge, snapshot.nearest_days);
       } else {
         badge.className = "expiry-badge";
-        badge.textContent = "بدون سررسید";
-        badge.setAttribute("aria-label", "سررسید پیش‌رو موجود نیست");
+        badge.textContent = partial ? "در حال بررسی" : "بدون سررسید";
+        badge.setAttribute("aria-label", partial ? "بررسی سررسیدها ادامه دارد" : "سررسید پیش‌رو موجود نیست");
       }
-      badge.title = "بر اساس آخرین دریافت و تاریخ امروز به وقت تهران";
+      badge.title = !calendarCurrent ? "روز تقویمی تغییر کرده؛ روزشمار نیازمند بررسی دوباره است"
+        : partial ? "نتیجهٔ موقت؛ بررسی سررسیدها ادامه دارد" : "بر اساس آخرین دریافت و تاریخ امروز به وقت تهران";
     } else {
       badge.className = "expiry-badge hidden";
-      document.getElementById("expiryLastUpdate").textContent = "هنوز دریافت نشده";
     }
-    document.getElementById("expiryCount").textContent = snapshot?.total
+    document.getElementById("expiryCount").textContent = snapshot?.fetched_at || partial
       ? `${numberFormat.format(snapshot.items.length)} از ${numberFormat.format(snapshot.total)} قرارداد` : "";
+    renderUnderlyingOptions();
+    clearFiltersButton.disabled = !filterControls.some((control) => control.value.trim());
+    const filterWarning = document.getElementById("expiryFilterError");
+    filterWarning.textContent = filterError;
+    filterWarning.classList.toggle("hidden", !filterError);
+    const pricingNote = document.getElementById("expiryPricingNote");
+    pricingNote.classList.toggle("hidden", !snapshot?.fetched_at && !partial);
+    pricingNote.textContent = pricingCurrent
+      ? `مبنای قیمت: ${updateFormat.format(new Date(snapshot.market_received_at))}؛ اختلاف درصدی پیش از کارمزد. سررسیدهای امروز بر اساس امتیاز مرتب می‌شوند.`
+      : "برای محاسبهٔ امتیاز، سررسیدها را امروز به‌روزرسانی کنید.";
+    const refresh = !starting && snapshot?.refresh?.running ? snapshot.refresh : {};
+    const total = refresh.total || 0;
+    const processed = refresh.processed || 0;
+    const percent = total ? Math.min(100, Math.floor(processed * 100 / total)) : 0;
+    const progress = document.getElementById("expiryProgress");
+    progress.classList.toggle("hidden", !busy);
+    if (total) progress.value = percent;
+    else progress.removeAttribute("value");
+    document.getElementById("expiryPreviewNote").classList.toggle("hidden", !partial);
     document.getElementById("expiryStatus").textContent = busy
-      ? "در حال دریافت سررسیدهای کل بازار…"
-      : !snapshot?.fetched_at ? "ابتدا سررسیدها را به‌روزرسانی کنید"
+      ? refresh.stage === "saving" ? "در حال ذخیرهٔ نتیجهٔ نهایی…"
+        : total ? `بررسی ${numberFormat.format(processed)} از ${numberFormat.format(total)} قرارداد (${numberFormat.format(percent)}٪)`
+          : "در حال دریافت فهرست اولیهٔ بازار…"
+      : filterPending && !filterError ? "در حال اعمال فیلترها…"
+        : calendarPending ? "اطلاعات قبلی نمایش داده می‌شوند؛ وضعیت روز جاری هنوز تأیید نشده است."
+        : partial ? "نتایج موقت؛ برای بررسی وضعیت دوباره تلاش کنید."
+        : !snapshot?.fetched_at ? "ابتدا سررسیدها را به‌روزرسانی کنید"
         : snapshot.items.length ? "به ترتیب نزدیک‌ترین سررسید؛ روزهای تقویمی به وقت تهران"
-          : "سررسید پیش‌رو موجود نیست";
+          : snapshot.total_upcoming && !pricingCurrent && filterControls.some((control) => control.dataset.expiryFilter === "min_score" && control.value.trim())
+            ? "فیلتر امتیاز نیازمند به‌روزرسانی اطلاعات امروز است."
+            : snapshot.total_upcoming ? "نتیجه‌ای مطابق فیلترها نیست" : "سررسید پیش‌رو موجود نیست";
     const warning = document.getElementById("expiryWarning");
-    warning.textContent = [startErrorMessage, errorMessage, snapshot?.refresh?.last_error, snapshot?.warning].filter(Boolean).join(" ");
+    const calendarWarning = calendarPending ? "روز تقویمی تغییر کرده؛ روزشمار تا خواندن اطلاعات روز جاری نیازمند بررسی است." : "";
+    warning.textContent = [calendarWarning, startErrorMessage, errorMessage, snapshot?.refresh?.last_error, snapshot?.warning].filter(Boolean).join(" ");
     warning.classList.toggle("hidden", !warning.textContent);
-    renderRows();
+    renderRows(calendarCurrent, pricingCurrent);
   }
 
   function schedulePoll() {
@@ -123,10 +249,16 @@
 
   async function loadSnapshot() {
     if (!active || starting) return;
+    // Expire the cached calendar view immediately, even if this read hangs.
+    if (snapshot && snapshot.as_of_date !== marketDate()) render();
+    clearTimeout(filterTimer);
+    const params = readFilters();
+    if (params) lastValidQuery = params.toString();
     const id = ++readId;
     clearTimeout(pollTimer);
     try {
-      const response = await api("/api/expiries");
+      const query = lastValidQuery;
+      const response = await expiryApi(`/api/expiries${query ? `?${query}` : ""}`);
       if (!active || id !== readId) return;
       running = Boolean(response.refresh?.running);
       if (running || response.refresh?.last_error || (response.fetched_at ?? null) !== (snapshot?.fetched_at ?? null)) {
@@ -135,15 +267,37 @@
       snapshot = response;
       errorMessage = "";
       failures = 0;
+      filterPending = !params;
       render();
       if (running) schedulePoll();
     } catch {
       if (!active || id !== readId) return;
       failures += 1;
-      if (failures >= 3) running = false;
+      if (failures >= 3) {
+        running = false;
+        filterPending = false;
+      }
       errorMessage = "خواندن وضعیت سررسیدها ناموفق بود؛ دوباره تلاش کنید.";
       render();
       if (failures < 3) schedulePoll();
+    }
+  }
+
+  function changeFilters(debounce = false) {
+    // Invalidate old responses immediately, including during the debounce.
+    readId += 1;
+    clearTimeout(pollTimer);
+    clearTimeout(filterTimer);
+    filterPending = true;
+    failures = 0;
+    readFilters();
+    render();
+    // Invalid draft values must not cancel status reconciliation: the server
+    // may have accepted a refresh whose POST response was lost. loadSnapshot
+    // keeps using the last valid query until the draft is corrected.
+    if (active) {
+      if (debounce) filterTimer = setTimeout(loadSnapshot, 300);
+      else loadSnapshot();
     }
   }
 
@@ -158,7 +312,7 @@
     failures = 0;
     render();
     try {
-      const response = await api("/api/expiries/refresh", { method: "POST" });
+      const response = await expiryApi("/api/expiries/refresh", { method: "POST" });
       if (!active || generation !== lifecycle) {
         // An old POST can still change the server after the page is restored.
         loadSnapshot();
@@ -168,6 +322,8 @@
       if (response.status === "cooldown") {
         errorMessage = "بین شروع به‌روزرسانی‌ها حداقل یک دقیقه صبر کنید.";
         render();
+        // The previous job may have completed while status reads were offline.
+        schedulePoll();
         return;
       }
       running = true;
@@ -195,6 +351,13 @@
     panel.classList.toggle("hidden", !expanded);
   });
   refreshButton.addEventListener("click", startRefresh);
+  for (const control of filterControls) {
+    control.addEventListener(control.tagName === "INPUT" ? "input" : "change", () => changeFilters(control.tagName === "INPUT"));
+  }
+  clearFiltersButton.addEventListener("click", () => {
+    filterControls.forEach((control) => { control.value = ""; });
+    changeFilters();
+  });
   window.addEventListener("pagehide", () => {
     active = false;
     starting = false;
@@ -202,6 +365,7 @@
     readId += 1;
     clearTimeout(pollTimer);
     clearInterval(dayTimer);
+    clearTimeout(filterTimer);
     dayTimer = null;
   });
   window.addEventListener("focus", () => { if (active) loadSnapshot(); });
@@ -215,7 +379,10 @@
       root.classList.remove("hidden");
       if (dayTimer === null) {
         dayTimer = setInterval(() => {
-          if (snapshot?.as_of_date !== marketDate()) loadSnapshot();
+          if (snapshot?.as_of_date !== marketDate()) {
+            render();
+            loadSnapshot();
+          }
         }, 60000);
       }
       loadSnapshot();
