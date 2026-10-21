@@ -20,6 +20,7 @@ const state = {
   selectedDate: validIsoDate(initialParams.get("date") || "") ? translateDigits(initialParams.get("date") || "") : "",
   latestDate: "",
   lastUpdate: "",
+  summary: null,
   availableDates: [],
   calendarMonths: {},
   calendarVisible: false,
@@ -538,6 +539,12 @@ function syncDateToUrl() {
 
 async function loadSummary() {
   const s = await api(`/api/summary${dateQuery()}`);
+  renderSummary(s);
+}
+
+function renderSummary(summary) {
+  state.summary = summary;
+  const s = summary || {};
   state.watchlistCount = s.underlying_count || 0;
   state.lastUpdate = s.last_update || "";
   setText("statContracts", fmtNum(s.underlying_count));
@@ -755,6 +762,7 @@ async function changeSelectedDate(date) {
   state.dataRequestId += 1;
   const previous = {
     selectedDate: state.selectedDate,
+    summary: state.summary,
     selectedRowKey: state.selectedRowKey,
     selectedInsCode: state.selectedInsCode,
     expandedCardKey: state.expandedCardKey,
@@ -798,6 +806,7 @@ async function changeSelectedDate(date) {
     state.analysisVisible = previous.analysisVisible;
     state.items = previous.items;
     state.filtered = previous.filtered;
+    renderSummary(previous.summary);
     syncDateToUrl();
     updateDatePickerButton();
     const input = document.getElementById("dateFilter");

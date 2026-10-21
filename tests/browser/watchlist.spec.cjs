@@ -58,10 +58,10 @@ async function fixture(t, view = "symbols") {
       case "/api/calendar/1405/7/events": return json(state.calendarData || {
         year: 1405, month: 7, days: [], events: [], holidays: [], events_available: false, source: "fallback",
       });
-      case "/api/summary": return json(state.summary);
+      case "/api/summary": return json(state.summaryHandler ? await state.summaryHandler(url.searchParams) : state.summary);
       case "/api/underlyings": {
         if (state.failSearch && url.searchParams.get("q")) return route.fulfill({ status: 503, json: { detail: "search unavailable" } });
-        const items = state.underlyingsHandler ? await state.underlyingsHandler(url.searchParams.get("q")) : [underlying()];
+        const items = state.underlyingsHandler ? await state.underlyingsHandler(url.searchParams.get("q"), url.searchParams) : [underlying()];
         if (items.error) return route.fulfill({ status: 503, json: { detail: items.error } });
         return json({ items, total: items.length, watchlist_count: 1 });
       }
@@ -385,4 +385,19 @@ test("holiday information recovers after a temporary calendar outage without rel
   await page.locator("#datePickerButton").click();
   await expect(page.locator("#datePickerFoot")).toHaveText("روزهای تعطیل با رنگ قرمز مشخص شده‌اند");
   await expect(page.locator('.date-picker-day[data-date="2026-10-21"]')).toHaveClass(/is-holiday/);
+});
+
+test("a failed date change restores both the previous rows and the previous summary", async (t) => {
+  const { page, state } = await fixture(t, "dashboard");
+  state.summaryHandler = (params) => ({ ...state.summary, contract_count: params.get("date") ? 17 : 1 });
+  state.underlyingsHandler = (query, params) => params.get("date") ? { error: "date unavailable" } : [underlying()];
+  await state.open();
+  await expect(page.locator("#statBuyOi")).toHaveText("۱");
+  await page.locator("#datePickerButton").click();
+  await page.locator('.date-picker-day[data-date="2026-10-20"]').click();
+  await expect(page.locator("#toast")).toHaveText("خطا در تغییر تاریخ");
+  await expect(page.locator("#mobileCardList .mobile-card-head strong")).toHaveText("خودرو");
+  await expect(page).toHaveURL("http://options.test/dashboard/test");
+  await expect(page.locator("#statBuyOi")).toHaveText("۱");
+  await expect(page.locator("#lastUpdate")).not.toHaveClass(/stale/);
 });
