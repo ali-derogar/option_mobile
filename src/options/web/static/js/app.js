@@ -605,11 +605,12 @@ async function loadCalendarMonth(year, month) {
   if (state.calendarMonths[key]) return state.calendarMonths[key];
   try {
     const data = await api(`/api/calendar/${year}/${month}/events`);
-    state.calendarMonths[key] = data;
+    // Retry temporary fallbacks the next time this month is opened.
+    if (data.events_available !== false) state.calendarMonths[key] = data;
     return data;
   } catch (e) {
     console.warn("calendar month unavailable", e);
-    return { year, month, days: [], events: [], holidays: [] };
+    return { year, month, days: [], events: [], holidays: [], events_available: false };
   }
 }
 
@@ -653,6 +654,9 @@ async function renderDatePicker() {
   const monthData = await loadCalendarMonth(view.jy, view.jm);
   const currentView = state.calendarView || selectedJalaliDate();
   if (!state.calendarVisible || state.calendarRequestId !== requestId || `${currentView.jy}-${currentView.jm}` !== viewKey) return;
+  foot.textContent = monthData.events_available === false
+    ? "اطلاعات تعطیلات در دسترس نیست؛ فقط جمعه‌ها مشخص شده‌اند."
+    : "روزهای تعطیل با رنگ قرمز مشخص شده‌اند";
   const dayMap = calendarDayMap(monthData);
   const monthLength = jalaliMonthLength(view.jy, view.jm);
   const firstGregorian = jalaliToGregorian(view.jy, view.jm, 1);

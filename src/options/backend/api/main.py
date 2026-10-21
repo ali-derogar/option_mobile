@@ -374,11 +374,6 @@ def _ensure_snapshot_date(snapshot_date: Optional[str]) -> None:
         )
 
 
-async def _ensure_snapshot_date_async(snapshot_date: Optional[str]) -> None:
-    if snapshot_date:
-        await run_in_threadpool(_ensure_snapshot_date, snapshot_date)
-
-
 def _begin_refresh() -> str:
     global _last_refresh_request_at
     now = time.monotonic()
@@ -465,19 +460,21 @@ async def activate(request: Request) -> JSONResponse:
     return _json({"activated": True})
 
 
-async def summary(request: Request) -> JSONResponse:
+# Starlette runs synchronous endpoints in its thread pool. Keep SQLite reads
+# and pandas analysis off the event loop so status requests remain responsive.
+def summary(request: Request) -> JSONResponse:
     date = _query_value(request, "date")
     _parse_snapshot_date(date)
     codes = set(storage.get_watchlist_codes())
     if codes:
-        await _ensure_snapshot_date_async(date)
+        _ensure_snapshot_date(date)
     payload = get_summary(storage, snapshot_date=date, underlying_ins_codes=codes)
     payload["underlying_count"] = len(codes)
     payload["date"] = date or storage.get_latest_snapshot_date()
     return _json(payload)
 
 
-async def dates(request: Request) -> JSONResponse:
+def dates(request: Request) -> JSONResponse:
     return _json(get_available_dates(storage))
 
 
@@ -524,13 +521,13 @@ async def calendar_day_info(request: Request) -> JSONResponse:
     return _json(payload)
 
 
-async def contracts(request: Request) -> JSONResponse:
+def contracts(request: Request) -> JSONResponse:
     q = _query_value(request, "q")
     date = _query_value(request, "date")
     _parse_snapshot_date(date)
     codes = set(storage.get_watchlist_codes())
     if codes:
-        await _ensure_snapshot_date_async(date)
+        _ensure_snapshot_date(date)
     merged = get_merged_contracts(storage, snapshot_date=date, underlying_ins_codes=codes)
     if merged.empty:
         return _json({"items": [], "total": 0})
@@ -539,22 +536,22 @@ async def contracts(request: Request) -> JSONResponse:
     return _json({"items": _df_to_records(merged), "total": len(merged)})
 
 
-async def underlyings(request: Request) -> JSONResponse:
+def underlyings(request: Request) -> JSONResponse:
     q = _query_value(request, "q")
     date = _query_value(request, "date")
     _parse_snapshot_date(date)
     if storage.get_watchlist_codes():
-        await _ensure_snapshot_date_async(date)
+        _ensure_snapshot_date(date)
     payload = get_watchlist_underlyings(storage, q=q, snapshot_date=date)
     payload["date"] = date or storage.get_latest_snapshot_date()
     return _json(payload)
 
 
-async def underlying_contracts(request: Request) -> JSONResponse:
+def underlying_contracts(request: Request) -> JSONResponse:
     underlying_key = request.path_params["underlying_key"]
     q = _query_value(request, "q")
     date = _query_value(request, "date")
-    await _ensure_snapshot_date_async(date)
+    _ensure_snapshot_date(date)
     payload = get_underlying_contracts(
         storage,
         underlying_key=underlying_key,
@@ -602,7 +599,7 @@ async def client_type_current_many(request: Request) -> JSONResponse:
     return _json({"items": rows, "total": len(rows)})
 
 
-async def underlying_trend(request: Request) -> JSONResponse:
+def underlying_trend(request: Request) -> JSONResponse:
     underlying_key = request.path_params["underlying_key"]
     date = _query_value(request, "date")
     _parse_snapshot_date(date)
@@ -630,16 +627,16 @@ async def underlying_trend(request: Request) -> JSONResponse:
     return _json(payload)
 
 
-async def sentiment(request: Request) -> JSONResponse:
+def sentiment(request: Request) -> JSONResponse:
     q = _query_value(request, "q")
     date = _query_value(request, "date")
-    await _ensure_snapshot_date_async(date)
+    _ensure_snapshot_date(date)
     payload = get_sentiment(storage, q=q, snapshot_date=date)
     payload["date"] = date or storage.get_latest_snapshot_date()
     return _json(payload)
 
 
-async def open_interest_history(request: Request) -> JSONResponse:
+def open_interest_history(request: Request) -> JSONResponse:
     ins_code = request.path_params["ins_code"]
     date = _query_value(request, "date")
     _parse_snapshot_date(date)
@@ -674,7 +671,7 @@ async def watchlist(request: Request) -> JSONResponse:
     return _json({"ins_codes": [str(code) for code in storage.get_watchlist_codes()]})
 
 
-async def underlying_catalog(request: Request) -> JSONResponse:
+def underlying_catalog(request: Request) -> JSONResponse:
     items = storage.get_underlying_catalog()
     return _json({
         "items": items,

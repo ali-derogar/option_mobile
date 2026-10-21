@@ -55,6 +55,9 @@ async function fixture(t, view = "symbols") {
         return json(state.refreshHandler ? await state.refreshHandler(state.refreshCalls) : state.refresh);
       case "/api/dates": return json({ items: [], latest: null });
       case "/api/calendar/today": return json({ gregorian_date: "2026-10-21" });
+      case "/api/calendar/1405/7/events": return json(state.calendarData || {
+        year: 1405, month: 7, days: [], events: [], holidays: [], events_available: false, source: "fallback",
+      });
       case "/api/summary": return json(state.summary);
       case "/api/underlyings": {
         if (state.failSearch && url.searchParams.get("q")) return route.fulfill({ status: 503, json: { detail: "search unavailable" } });
@@ -355,4 +358,31 @@ test("Basama can be found and saved even when both trading volumes are zero", as
   await expect(page.locator("#mobileCardList .mobile-card-head strong")).toHaveText("بساما");
   await expect(page.locator("#mobileCardList")).toContainText("نیازمند به‌روزرسانی");
   assert.deepEqual(state.saved, [code]);
+});
+
+test("the date picker remains usable and marks unavailable holiday information", async (t) => {
+  const { page, state } = await fixture(t, "dashboard");
+  await state.open();
+  await page.locator("#datePickerButton").click();
+  await expect(page.locator("#datePickerFoot")).toContainText("اطلاعات تعطیلات در دسترس نیست");
+  await expect(page.locator(".date-picker-day")).toHaveCount(30);
+  await expect(page.locator('.date-picker-day[data-date="2026-10-21"]')).toBeEnabled();
+  await page.locator('.date-picker-day[data-date="2026-10-21"]').click();
+  await expect(page).toHaveURL(/date=2026-10-21/);
+});
+
+test("holiday information recovers after a temporary calendar outage without reloading the page", async (t) => {
+  const { page, state } = await fixture(t, "dashboard");
+  await state.open();
+  await page.locator("#datePickerButton").click();
+  await expect(page.locator("#datePickerFoot")).toContainText("اطلاعات تعطیلات در دسترس نیست");
+  await page.locator("#datePickerButton").click();
+  state.calendarData = {
+    year: 1405, month: 7, days: [{ day: 29, is_holiday: true }],
+    events: [], holidays: [], events_available: true, source: "time.ir",
+  };
+  await page.clock.fastForward(61000);
+  await page.locator("#datePickerButton").click();
+  await expect(page.locator("#datePickerFoot")).toHaveText("روزهای تعطیل با رنگ قرمز مشخص شده‌اند");
+  await expect(page.locator('.date-picker-day[data-date="2026-10-21"]')).toHaveClass(/is-holiday/);
 });

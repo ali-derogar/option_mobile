@@ -1,10 +1,22 @@
-"""Calendar data helpers backed by Time.ir."""
+"""Calendar data with cached Time.ir events and a local date fallback."""
 
 from __future__ import annotations
 
 import json
-from datetime import date
+import logging
+import threading
+import time
+from datetime import date, datetime
 from typing import Any, Dict, List
+from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
+CALENDAR_RETRY_SECONDS = 60
+CALENDAR_CACHE_SECONDS = 300
+_calendar_lock = threading.Lock()
+_calendar_cache: dict[tuple, tuple[float, Dict[str, Any]]] = {}
+_calendar_retry_at = 0.0
+_market_timezone = ZoneInfo("Asia/Tehran")
 
 
 def _api_bool(value: Any) -> bool:
@@ -125,9 +137,11 @@ def shift_jalali_month(year: int, month: int, delta: int) -> tuple[int, int]:
 
 
 def fetch_calendar_month(year: int, month: int, day: int = 0, base1: int = 0, base2: int = 1, base3: int = 2) -> Dict[str, Any]:
+    from urllib.error import HTTPError
     from urllib.parse import urlencode
     from urllib.request import Request, urlopen
 
+    global _calendar_retry_at
     headers = {
         "User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0",
         "Accept": "application/json, text/plain, */*",
@@ -150,9 +164,52 @@ def fetch_calendar_month(year: int, month: int, day: int = 0, base1: int = 0, ba
         "base3": str(base3),
     }
 
-    request = Request(f"https://api.time.ir/v1/event/fa/events/calendar?{urlencode(params)}", headers=headers)
-    with urlopen(request, timeout=10.0) as response:
-        return json.loads(response.read().decode("utf-8"))
+    # Include the Tehran date because cached responses contain is_today flags.
+    today = datetime.now(_market_timezone).date()
+    key = (year, month, day, base1, base2, base3, today)
+    with _calendar_lock:
+        now = time.monotonic()
+        cached = _calendar_cache.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+        if now < _calendar_retry_at:
+            return _local_calendar_month(year, month, today)
+        request = Request(f"https://api.time.ir/v1/event/fa/events/calendar?{urlencode(params)}", headers=headers)
+        try:
+            with urlopen(request, timeout=10.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+                raise ValueError("invalid calendar response")
+        except HTTPError as exc:
+            reason = f"HTTP {exc.code}"
+            # HTTPError owns a response stream even though urlopen never entered
+            # the context manager above.
+            exc.close()
+        except (OSError, ValueError) as exc:
+            reason = type(exc).__name__
+        else:
+            payload.update(source="time.ir", events_available=True)
+            if len(_calendar_cache) >= 24:
+                _calendar_cache.pop(next(iter(_calendar_cache)))
+            _calendar_cache[key] = (time.monotonic() + CALENDAR_CACHE_SECONDS, payload)
+            return payload
+        _calendar_retry_at = time.monotonic() + CALENDAR_RETRY_SECONDS
+        logger.warning("Calendar service unavailable (%s); using local dates for %ss", reason, CALENDAR_RETRY_SECONDS)
+        return _local_calendar_month(year, month, today)
+
+
+def _local_calendar_month(year: int, month: int, today: date) -> Dict[str, Any]:
+    days = []
+    for day in range(1, jalali_month_length(year, month) + 1):
+        gregorian = date(*jalali_to_gregorian(year, month, day))
+        friday = gregorian.weekday() == 4
+        days.append({
+            "index_in_base1": day,
+            "is_holiday": friday,
+            "is_weekend": friday,
+            "is_today": gregorian == today,
+        })
+    return {"data": {"day_list": days, "event_list": []}, "source": "fallback", "events_available": False}
 
 
 def format_calendar_events(calendar_data: Dict[str, Any], year: int, month: int, day: int = 0) -> Dict[str, Any]:
@@ -167,6 +224,8 @@ def format_calendar_events(calendar_data: Dict[str, Any], year: int, month: int,
             "days": [],
             "total_events": 0,
             "total_holidays": 0,
+            "source": "fallback",
+            "events_available": False,
         }
 
     events = []
@@ -234,6 +293,8 @@ def format_calendar_events(calendar_data: Dict[str, Any], year: int, month: int,
         "days": days,
         "total_events": len(events),
         "total_holidays": len(holidays),
+        "source": calendar_data.get("source", "time.ir"),
+        "events_available": calendar_data.get("events_available", True),
     }
 
 
@@ -251,6 +312,8 @@ def day_info_from_calendar(calendar_data: Dict[str, Any], year: int, month: int,
         "is_weekend": bool(day_info and _api_bool(day_info.get("is_weekend"))),
         "is_today": bool(day_info and _api_bool(day_info.get("is_today"))),
         "enabled": day_info.get("enabled", True) if day_info else True,
+        "source": formatted["source"],
+        "events_available": formatted["events_available"],
     }
 
 
@@ -272,7 +335,8 @@ def today_from_calendar(calendar_data: Dict[str, Any], year: int, month: int) ->
         "is_holiday": bool(today.get("is_holiday")),
         "is_weekend": bool(today.get("is_weekend")),
         "events": today.get("events", []),
-        "source": "time.ir",
+        "source": formatted["source"],
+        "events_available": formatted["events_available"],
     }
 
 
@@ -282,9 +346,14 @@ def fetch_calendar_today(reference_date: date, month_window: int = 2) -> Dict[st
         reference_date.month,
         reference_date.day,
     )
-    for delta in range(-month_window, month_window + 1):
+    # Start with the current month; stop scanning after a service failure.
+    deltas = [0] + [delta for distance in range(1, month_window + 1) for delta in (-distance, distance)]
+    for delta in deltas:
         year, month = shift_jalali_month(approx_year, approx_month, delta)
-        today = today_from_calendar(fetch_calendar_month(year, month), year, month)
+        calendar = fetch_calendar_month(year, month)
+        if calendar.get("events_available") is False:
+            break
+        today = today_from_calendar(calendar, year, month)
         if today:
             return today
     gy, gm, gd = reference_date.year, reference_date.month, reference_date.day
@@ -295,8 +364,9 @@ def fetch_calendar_today(reference_date: date, month_window: int = 2) -> Dict[st
         "year": jy,
         "month": jm,
         "day": jd,
-        "is_holiday": False,
-        "is_weekend": False,
+        "is_holiday": True if reference_date.weekday() == 4 else None,
+        "is_weekend": reference_date.weekday() == 4,
         "events": [],
         "source": "fallback",
+        "events_available": False,
     }
