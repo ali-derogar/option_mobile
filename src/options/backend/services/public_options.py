@@ -21,13 +21,15 @@ from options.backend.config import (
     TSETMC_TRUST_ENV_PROXY,
 )
 
-OPTION_MARKET_WATCH_URL = "https://cdn.tsetmc.com/api/Instrument/GetInstrumentOptionMarketWatch/1"
+# Market 0 includes both Bourse (1) and Farabourse (2).
+OPTION_MARKET_WATCH_URL = "https://cdn.tsetmc.com/api/Instrument/GetInstrumentOptionMarketWatch/0"
 INSTRUMENT_INFO_URL = "https://cdn.tsetmc.com/api/Instrument/GetInstrumentInfo/{ins_code}"
 CLIENT_TYPE_CURRENT_URL = "https://cdn.tsetmc.com/api/ClientType/GetClientType/{ins_code}/1/0"
 CLIENT_TYPE_HISTORY_URL = "https://cdn.tsetmc.com/api/ClientType/GetClientTypeHistory/{ins_code}"
 
 
 def fetch_public_option_market_watch() -> List[Dict[str, Any]]:
+    """Fetch option pairs across all exchanges, including zero-volume contracts."""
     session = _session()
     response = session.get(OPTION_MARKET_WATCH_URL, timeout=TSETMC_REQUEST_TIMEOUT)
     response.raise_for_status()

@@ -11,12 +11,14 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     Float,
     Integer,
     String,
     Text,
+    cast,
     create_engine,
     delete,
     func,
@@ -175,6 +177,26 @@ class AppState(Base):
     updated_at = Column(DateTime, nullable=False)
 
 
+class UnderlyingCatalog(Base):
+    __tablename__ = "underlying_catalog"
+
+    ins_code = Column(Integer, primary_key=True)
+    symbol = Column(String(128), nullable=False)
+    name = Column(String(256), nullable=True)
+    underlying_trade_volume = Column(Float, nullable=True)
+    options_trade_volume = Column(Float, nullable=True)
+    market_date = Column(String(10), nullable=True)
+    available = Column(Boolean, nullable=False, default=True)
+    fetched_at = Column(DateTime, nullable=False)
+
+
+class WatchlistEntry(Base):
+    __tablename__ = "watchlist"
+
+    ins_code = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, nullable=False)
+
+
 class Storage:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = db_path or DATABASE_PATH
@@ -189,6 +211,50 @@ class Storage:
 
     def now(self) -> datetime:
         return datetime.now(timezone.utc)
+
+    def get_watchlist_codes(self) -> List[int]:
+        with self.session() as session:
+            return list(session.scalars(select(WatchlistEntry.ins_code).order_by(WatchlistEntry.ins_code)))
+
+    def replace_watchlist(self, ins_codes: List[int]) -> None:
+        with self.session() as session:
+            session.execute(delete(WatchlistEntry))
+            session.add_all(WatchlistEntry(ins_code=code, created_at=self.now()) for code in sorted(set(ins_codes)))
+            session.commit()
+
+    def get_underlying_catalog(self) -> List[Dict[str, Any]]:
+        with self.session() as session:
+            rows = session.scalars(select(UnderlyingCatalog).order_by(UnderlyingCatalog.ins_code)).all()
+            return [
+                {
+                    "ins_code": str(row.ins_code),
+                    "symbol": row.symbol,
+                    "name": row.name,
+                    "underlying_trade_volume": row.underlying_trade_volume,
+                    "options_trade_volume": row.options_trade_volume,
+                    "market_date": row.market_date,
+                    "available": row.available,
+                    "fetched_at": row.fetched_at.replace(tzinfo=timezone.utc).isoformat(),
+                }
+                for row in rows
+            ]
+
+    def replace_underlying_catalog(self, rows: List[Dict[str, Any]]) -> None:
+        now = self.now()
+        with self.session() as session:
+            for existing in session.scalars(select(UnderlyingCatalog)):
+                existing.available = False
+            for item in rows:
+                code = int(item["ins_code"])
+                row = session.get(UnderlyingCatalog, code)
+                if row is None:
+                    row = UnderlyingCatalog(ins_code=code)
+                    session.add(row)
+                for key in ("symbol", "name", "underlying_trade_volume", "options_trade_volume", "market_date"):
+                    setattr(row, key, item.get(key))
+                row.available = True
+                row.fetched_at = now
+            session.commit()
 
     def is_activated(self) -> bool:
         with self.session() as session:
@@ -469,7 +535,7 @@ class Storage:
             rows = session.scalars(select(Contract)).all()
             if not rows:
                 return pd.DataFrame()
-            return pd.DataFrame([self._contract_to_dict(r) for r in rows])
+            return self._contract_frame(rows)
 
     def get_contract_snapshot_df(self, snapshot_date: Optional[str] = None) -> pd.DataFrame:
         with self.session() as session:
@@ -479,24 +545,34 @@ class Storage:
                 snapshot_date = _normalize_date_text(snapshot_date)
             if snapshot_date is None:
                 return pd.DataFrame()
-            latest_fetched_at = session.scalar(
-                select(func.max(ContractSnapshot.fetched_at)).where(
-                    ContractSnapshot.snapshot_date == snapshot_date
-                )
+            # Refreshes may cover different watchlists on the same date. Keep
+            # the latest complete batch for each underlying, rather than
+            # discarding other assets whenever one asset is refreshed.
+            asset_key = func.coalesce(
+                cast(ContractSnapshot.underlying_ins_code, String),
+                ContractSnapshot.underlying_symbol,
+                ContractSnapshot.underlying_short_name,
+                cast(ContractSnapshot.ins_code, String),
             )
-            if latest_fetched_at is None:
-                return pd.DataFrame()
+            latest_batches = (
+                select(asset_key.label("asset_key"), func.max(ContractSnapshot.fetched_at).label("fetched_at"))
+                .where(ContractSnapshot.snapshot_date == snapshot_date)
+                .group_by(asset_key)
+                .subquery()
+            )
             rows = session.scalars(
                 select(ContractSnapshot)
-                .where(
-                    ContractSnapshot.snapshot_date == snapshot_date,
-                    ContractSnapshot.fetched_at == latest_fetched_at,
+                .join(
+                    latest_batches,
+                    (asset_key == latest_batches.c.asset_key)
+                    & (ContractSnapshot.fetched_at == latest_batches.c.fetched_at),
                 )
+                .where(ContractSnapshot.snapshot_date == snapshot_date)
                 .order_by(ContractSnapshot.ins_code, ContractSnapshot.id)
             ).all()
             if not rows:
                 return pd.DataFrame()
-            df = pd.DataFrame([self._contract_to_dict(r) for r in rows])
+            df = self._contract_frame(rows)
             if "ins_code" in df.columns:
                 df = df.drop_duplicates("ins_code", keep="last").reset_index(drop=True)
             return df
@@ -803,8 +879,17 @@ class Storage:
             .drop(columns=["_rec_date_key"], errors="ignore")
         )
 
+    @classmethod
+    def _contract_frame(cls, rows: list[Contract | ContractSnapshot]) -> pd.DataFrame:
+        records = [cls._contract_to_dict(row) for row in rows]
+        frame = pd.DataFrame(records)
+        # Nullable 17-digit IDs must never pass through float64 inference.
+        for key in ("ins_code", "underlying_ins_code"):
+            frame[key] = pd.Series([record[key] for record in records], dtype=object)
+        return frame
+
     @staticmethod
-    def _contract_to_dict(r: Contract) -> Dict[str, Any]:
+    def _contract_to_dict(r: Contract | ContractSnapshot) -> Dict[str, Any]:
         return {
             "ins_code": r.ins_code,
             "instrument_id": r.instrument_id,

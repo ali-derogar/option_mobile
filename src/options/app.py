@@ -24,6 +24,8 @@ USER_DATA_TABLES = (
     "client_type_stats",
     "money_flow",
     "app_state",
+    "underlying_catalog",
+    "watchlist",
 )
 
 

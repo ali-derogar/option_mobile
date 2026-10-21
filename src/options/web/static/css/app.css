@@ -4715,6 +4715,19 @@ html[data-theme="dark"] .filters select {
   }
 }
 
+.symbol-data-status { display: block; margin-top: .2rem; color: var(--text-muted); font-size: .75rem; }
+.header-actions a, #emptyEditSymbols { text-decoration: none; }
+.refresh-warning {
+  margin: 0 0 .85rem;
+  padding: .85rem;
+  color: var(--amber);
+  background: var(--amber-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .8rem;
+  line-height: 1.8;
+}
+
 .activation-overlay {
   position: fixed;
   inset: 0;

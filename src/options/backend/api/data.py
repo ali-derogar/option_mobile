@@ -49,8 +49,20 @@ def get_available_dates(storage: Storage) -> Dict[str, Any]:
     return {"items": dates, "latest": dates[0] if dates else None, "total": len(dates)}
 
 
-def get_merged_contracts(storage: Storage, snapshot_date: Optional[str] = None) -> pd.DataFrame:
+def filter_underlying_codes(df: pd.DataFrame, codes: Optional[set[int]]) -> pd.DataFrame:
+    if codes is None or df.empty:
+        return df
+    keyed = _attach_underlying_keys(df.copy())
+    return keyed[keyed["underlying_key"].isin({str(code) for code in codes})].copy()
+
+
+def get_merged_contracts(
+    storage: Storage,
+    snapshot_date: Optional[str] = None,
+    underlying_ins_codes: Optional[set[int]] = None,
+) -> pd.DataFrame:
     contracts = storage.get_contracts_df(snapshot_date=snapshot_date)
+    contracts = filter_underlying_codes(contracts, underlying_ins_codes)
     if contracts.empty:
         return contracts
     client_type = storage.get_latest_client_type_df(snapshot_date=snapshot_date)
@@ -243,8 +255,9 @@ def get_underlyings(
     storage: Storage,
     q: Optional[str] = None,
     snapshot_date: Optional[str] = None,
+    underlying_ins_codes: Optional[set[int]] = None,
 ) -> Dict[str, Any]:
-    merged = get_merged_contracts(storage, snapshot_date=snapshot_date)
+    merged = get_merged_contracts(storage, snapshot_date=snapshot_date, underlying_ins_codes=underlying_ins_codes)
     if merged.empty:
         return {"items": [], "total": 0}
 
@@ -363,9 +376,13 @@ def _translate_digits(value: str) -> str:
     return value.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
 
 
-def get_summary(storage: Storage, snapshot_date: Optional[str] = None) -> Dict[str, Any]:
-    merged = get_merged_contracts(storage, snapshot_date=snapshot_date)
-    contracts = storage.get_contracts_df(snapshot_date=snapshot_date)
+def get_summary(
+    storage: Storage,
+    snapshot_date: Optional[str] = None,
+    underlying_ins_codes: Optional[set[int]] = None,
+) -> Dict[str, Any]:
+    merged = get_merged_contracts(storage, snapshot_date=snapshot_date, underlying_ins_codes=underlying_ins_codes)
+    contracts = filter_underlying_codes(storage.get_contracts_df(snapshot_date=snapshot_date), underlying_ins_codes)
     last_update = None
     if not contracts.empty and "updated_at" in contracts.columns:
         last_update = contracts["updated_at"].max()
@@ -404,6 +421,35 @@ def get_summary(storage: Storage, snapshot_date: Optional[str] = None) -> Dict[s
         if "trade_value" in merged.columns:
             summary["total_trade_value"] = _sum_or_none(merged["trade_value"])
     return summary
+
+
+def get_watchlist_underlyings(
+    storage: Storage, q: Optional[str] = None, snapshot_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    codes = set(storage.get_watchlist_codes())
+    payload = get_underlyings(storage, snapshot_date=snapshot_date, underlying_ins_codes=codes)
+    items = {item["underlying_key"]: item for item in payload["items"]}
+    catalog = {row["ins_code"]: row for row in storage.get_underlying_catalog()}
+    for code in sorted(codes):
+        key = str(code)
+        meta = catalog.get(key, {})
+        item = items.setdefault(key, {
+            "underlying_key": key,
+            "underlying_ins_code": key,
+            "underlying_symbol": meta.get("symbol") or key,
+            "underlying_short_name": meta.get("name"),
+            "data_status": "needs_refresh",
+        })
+        item.setdefault("data_status", "ready")
+        item["available"] = meta.get("available", False)
+    rows = list(items.values())
+    if q:
+        needle = _normalize_text(q)
+        rows = [row for row in rows if any(needle in _normalize_text(row.get(k)) for k in (
+            "underlying_symbol", "underlying_short_name",
+        ))]
+    rows.sort(key=lambda row: str(row.get("underlying_symbol") or ""))
+    return {"items": rows, "total": len(rows), "watchlist_count": len(codes)}
 
 
 def get_sentiment(

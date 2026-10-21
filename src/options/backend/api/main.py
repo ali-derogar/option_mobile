@@ -37,7 +37,7 @@ from options.backend.api.data import (
     get_sentiment,
     get_underlying_contracts,
     get_underlying_trend,
-    get_underlyings,
+    get_watchlist_underlyings,
 )
 from options.backend.pipeline import run_pipeline
 from options.backend.services.historical_options import import_public_option_history
@@ -46,6 +46,7 @@ from options.backend.services.public_options import (
     fetch_public_client_type_current_many,
 )
 from options.backend.storage import MARKET_TZ, Storage
+from options.backend.services.watchlist import CatalogRefresh, save_watchlist
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +78,9 @@ DASHBOARD_CSP = (
 )
 
 storage = Storage()
+catalog_refresh_job = CatalogRefresh()
 
-_refresh_lock = threading.Lock()
+_refresh_lock = threading.RLock()
 _history_import_lock = threading.Lock()
 _refresh_status: Dict[str, Any] = {
     "running": False,
@@ -237,10 +239,10 @@ async def _read_json_payload(request: Request, max_bytes: int, invalid_detail: s
 
 def _path_ins_code(value: Any) -> int:
     text = _clean_numeric_text(_translate_digits(str(value or "")))
-    if not text.isdigit():
+    if not re.fullmatch(r"[0-9]+", text) or len(text) > 19:
         raise HTTPException(400, "invalid instrument code")
     ins_code = int(text)
-    if ins_code <= 0:
+    if ins_code <= 0 or ins_code > 2**63 - 1:
         raise HTTPException(400, "invalid instrument code")
     return ins_code
 
@@ -297,13 +299,14 @@ def _refresh_error_message(exc: Exception) -> str:
     return "خطا در به‌روزرسانی داده. کمی بعد دوباره تلاش کنید."
 
 
-def _run_refresh(limit: Optional[int] = None) -> None:
+def _run_refresh(limit: Optional[int] = None, underlying_ins_codes: Optional[set[int]] = None) -> None:
     try:
         result = run_pipeline(
             limit=limit,
             skip_client_type=False,
             delay_between_calls=0.15,
             progress_callback=lambda payload: _update_refresh_status(**payload),
+            underlying_ins_codes=underlying_ins_codes,
         )
         _update_refresh_status(
             last_result=result,
@@ -464,8 +467,12 @@ async def activate(request: Request) -> JSONResponse:
 
 async def summary(request: Request) -> JSONResponse:
     date = _query_value(request, "date")
-    await _ensure_snapshot_date_async(date)
-    payload = get_summary(storage, snapshot_date=date)
+    _parse_snapshot_date(date)
+    codes = set(storage.get_watchlist_codes())
+    if codes:
+        await _ensure_snapshot_date_async(date)
+    payload = get_summary(storage, snapshot_date=date, underlying_ins_codes=codes)
+    payload["underlying_count"] = len(codes)
     payload["date"] = date or storage.get_latest_snapshot_date()
     return _json(payload)
 
@@ -520,8 +527,11 @@ async def calendar_day_info(request: Request) -> JSONResponse:
 async def contracts(request: Request) -> JSONResponse:
     q = _query_value(request, "q")
     date = _query_value(request, "date")
-    await _ensure_snapshot_date_async(date)
-    merged = get_merged_contracts(storage, snapshot_date=date)
+    _parse_snapshot_date(date)
+    codes = set(storage.get_watchlist_codes())
+    if codes:
+        await _ensure_snapshot_date_async(date)
+    merged = get_merged_contracts(storage, snapshot_date=date, underlying_ins_codes=codes)
     if merged.empty:
         return _json({"items": [], "total": 0})
     if q:
@@ -532,8 +542,10 @@ async def contracts(request: Request) -> JSONResponse:
 async def underlyings(request: Request) -> JSONResponse:
     q = _query_value(request, "q")
     date = _query_value(request, "date")
-    await _ensure_snapshot_date_async(date)
-    payload = get_underlyings(storage, q=q, snapshot_date=date)
+    _parse_snapshot_date(date)
+    if storage.get_watchlist_codes():
+        await _ensure_snapshot_date_async(date)
+    payload = get_watchlist_underlyings(storage, q=q, snapshot_date=date)
     payload["date"] = date or storage.get_latest_snapshot_date()
     return _json(payload)
 
@@ -645,20 +657,60 @@ async def refresh_status(request: Request) -> JSONResponse:
     return _json(_public_refresh_status())
 
 
+async def watchlist(request: Request) -> JSONResponse:
+    if request.method == "PUT":
+        payload = await _read_json_payload(request, MAX_API_JSON_BODY_BYTES, "invalid watchlist payload")
+        raw_codes = payload.get("ins_codes")
+        if not isinstance(raw_codes, list):
+            raise HTTPException(400, "ins_codes must be a list")
+        codes = sorted({_path_ins_code(code) for code in raw_codes})
+        with _refresh_lock:
+            if _refresh_status["running"]:
+                raise HTTPException(409, "به‌روزرسانی داده در حال انجام است؛ پس از اتمام، فهرست را ذخیره کنید.")
+            try:
+                save_watchlist(storage, codes)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+    return _json({"ins_codes": [str(code) for code in storage.get_watchlist_codes()]})
+
+
+async def underlying_catalog(request: Request) -> JSONResponse:
+    items = storage.get_underlying_catalog()
+    return _json({
+        "items": items,
+        "total": len(items),
+        "fetched_at": max((item["fetched_at"] for item in items), default=None),
+        "refresh": catalog_refresh_job.status(),
+    })
+
+
+async def refresh_catalog(request: Request) -> JSONResponse:
+    if not catalog_refresh_job.begin():
+        return _json({"status": "already_running"})
+    tasks = BackgroundTasks()
+    tasks.add_task(catalog_refresh_job.run, storage)
+    return _json({"status": "started"}, status_code=202, background=tasks)
+
+
 async def refresh(request: Request) -> JSONResponse:
     limit = _query_int(request, "limit", min_value=1, max_value=5000)
-    status = _begin_refresh()
+    # Serialize selection reads and updates with the refresh reservation.
+    with _refresh_lock:
+        codes = set(storage.get_watchlist_codes())
+        if not codes:
+            return _json({"status": "no_symbols"})
+        status = _begin_refresh()
     if status != "started":
         return _json({"status": status})
     background_tasks = BackgroundTasks()
-    background_tasks.add_task(_run_refresh, limit)
+    background_tasks.add_task(_run_refresh, limit, codes)
     return _json({"status": "started"}, background=background_tasks)
 
 
-def _dashboard_response(request: Request) -> Response:
+def _dashboard_response(request: Request, filename: str = "index.html") -> Response:
     if not _has_dashboard_session(request):
         raise HTTPException(404, "dashboard session not found")
-    index_path = WEB_ROOT / "index.html"
+    index_path = WEB_ROOT / filename
     if not index_path.exists():
         raise HTTPException(404, "index.html not found")
     response = FileResponse(index_path)
@@ -682,6 +734,10 @@ async def underlying_page(request: Request) -> Response:
     return _dashboard_response(request)
 
 
+async def symbols_page(request: Request) -> Response:
+    return _dashboard_response(request, "symbols.html")
+
+
 async def dashboard_not_found(request: Request) -> Response:
     raise HTTPException(404, "dashboard session required")
 
@@ -699,6 +755,9 @@ routes = [
     Route("/api/client-type", client_type_current_many, methods=["POST"]),
     Route("/api/client-type/{ins_code}", client_type_current, methods=["GET"]),
     Route("/api/underlyings", underlyings, methods=["GET"]),
+    Route("/api/watchlist", watchlist, methods=["GET", "PUT"]),
+    Route("/api/underlyings/catalog", underlying_catalog, methods=["GET"]),
+    Route("/api/underlyings/catalog/refresh", refresh_catalog, methods=["POST"]),
     Route("/api/underlyings/{underlying_key}/contracts", underlying_contracts, methods=["GET"]),
     Route("/api/underlyings/{underlying_key}/trend", underlying_trend, methods=["GET"]),
     Route("/api/sentiment", sentiment, methods=["GET"]),
@@ -708,6 +767,7 @@ routes = [
     Route("/", dashboard_not_found, methods=["GET"]),
     Route("/dashboard/{dashboard_session}", index, methods=["GET"]),
     Route("/dashboard/{dashboard_session}/", index, methods=["GET"]),
+    Route("/dashboard/{dashboard_session}/symbols", symbols_page, methods=["GET"]),
     Route("/dashboard/{dashboard_session}/underlying/{underlying_key}", underlying_page, methods=["GET"]),
 ]
 if STATIC_DIR.exists():

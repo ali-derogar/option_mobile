@@ -65,6 +65,8 @@ def _store_public_option_fallback(
     storage: Storage,
     skip_client_type: bool = False,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    underlying_ins_codes: Optional[Set[int]] = None,
+    limit: Optional[int] = None,
 ) -> Dict[str, Any]:
     def progress(**payload: Any) -> None:
         if progress_callback:
@@ -74,6 +76,10 @@ def _store_public_option_fallback(
     progress(stage="public_options", message="در حال دریافت آپشن‌ها از CDN رسمی TSETMC")
     rows = fetch_public_option_market_watch()
     contracts = normalize_public_option_pairs(rows)
+    if underlying_ins_codes is not None:
+        contracts = [c for c in contracts if c.get("underlying_ins_code") in underlying_ins_codes]
+    if limit is not None:
+        contracts = contracts[:limit]
     if contracts:
         ins_codes = [c["ins_code"] for c in contracts if c.get("ins_code")]
         progress(
@@ -146,6 +152,7 @@ def run_pipeline(
     skip_client_type: bool = False,
     delay_between_calls: float = 0.1,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    underlying_ins_codes: Optional[Set[int]] = None,
 ) -> Dict[str, Any]:
     """
     Execute full pipeline:
@@ -156,6 +163,9 @@ def run_pipeline(
     """
     if limit is not None and limit < 1:
         raise ValueError("limit must be positive")
+
+    if underlying_ins_codes is not None and not underlying_ins_codes:
+        return {"options": 0, "client_type": 0, "client_type_stats": 0, "money_flow": 0, "open_interest": 0}
 
     storage = Storage()
 
@@ -175,6 +185,8 @@ def run_pipeline(
             storage,
             skip_client_type=skip_client_type,
             progress_callback=progress_callback,
+            underlying_ins_codes=underlying_ins_codes,
+            limit=limit,
         )
 
     client = TsetmcClient()
@@ -193,6 +205,8 @@ def run_pipeline(
             storage,
             skip_client_type=skip_client_type,
             progress_callback=progress_callback,
+            underlying_ins_codes=underlying_ins_codes,
+            limit=limit,
         )
 
     logger.info("Fetching all option contracts...")
@@ -217,8 +231,14 @@ def run_pipeline(
         if opt["ins_code"]:
             normalized_options.append(opt)
 
+    if underlying_ins_codes is not None:
+        normalized_options = [o for o in normalized_options if o.get("underlying_ins_code") in underlying_ins_codes]
+
     if limit is not None:
         normalized_options = normalized_options[:limit]
+
+    if not normalized_options:
+        return {"options": 0, "client_type": 0, "client_type_stats": 0, "money_flow": 0, "open_interest": 0}
 
     option_ins_codes: Set[int] = {o["ins_code"] for o in normalized_options}
 

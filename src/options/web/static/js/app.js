@@ -27,6 +27,7 @@ const state = {
   calendarTodayIso: "",
   calendarRequestId: 0,
   dateChangeRequestId: 0,
+  dataRequestId: 0,
   items: [],
   filtered: [],
   sortKey: null,
@@ -46,7 +47,7 @@ const state = {
   trendMetricGroup: "score",
   trendRequestId: 0,
   loading: false,
-  activated: false,
+  watchlistCount: 0,
   filters: {
     type: "all",
     expiry: "all",
@@ -535,89 +536,9 @@ function syncDateToUrl() {
   window.history.replaceState({}, "", `${url.pathname}${url.search}`);
 }
 
-async function api(path, options = {}) {
-  const headers = {
-    "Content-Type": "application/json",
-    ...(options.headers || {}),
-  };
-  const res = await fetch(path, {
-    credentials: "same-origin",
-    ...options,
-    headers,
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    let message = text || res.statusText;
-    try {
-      const parsed = text ? JSON.parse(text) : null;
-      message = parsed?.detail || parsed?.message || message;
-    } catch {
-      // Keep the raw response text when the server/proxy does not return JSON.
-    }
-    throw new Error(message);
-  }
-  if (!text) return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error("پاسخ نامعتبر از سرور");
-  }
-}
-
-function setActivationGate(locked, message = "") {
-  const overlay = document.getElementById("activationOverlay");
-  const input = document.getElementById("activationCode");
-  const error = document.getElementById("activationError");
-  overlay?.classList.toggle("hidden", !locked);
-  if (error) {
-    error.textContent = message || "کد پذیرفته نشد";
-    error.classList.toggle("hidden", !message);
-  }
-  if (locked) {
-    requestAnimationFrame(() => input?.focus());
-  }
-}
-
-async function ensureActivation() {
-  const status = await api("/api/activation/status");
-  state.activated = Boolean(status.activated);
-  setActivationGate(!state.activated);
-  return state.activated;
-}
-
-async function submitActivationCode(event) {
-  event.preventDefault();
-  const input = document.getElementById("activationCode");
-  const submit = document.getElementById("activationSubmit");
-  const code = input?.value.trim() || "";
-  if (!code) {
-    setActivationGate(true, "کد را وارد کنید");
-    return;
-  }
-  if (submit) submit.disabled = true;
-  try {
-    const result = await api("/api/activation", {
-      method: "POST",
-      body: JSON.stringify({ code }),
-    });
-    state.activated = Boolean(result.activated);
-    if (!state.activated) {
-      setActivationGate(true, "کد پذیرفته نشد");
-      return;
-    }
-    if (input) input.value = "";
-    setActivationGate(false);
-    showToast("دسترسی فعال شد");
-    await init();
-  } catch (e) {
-    setActivationGate(true, e.message || "کد پذیرفته نشد");
-  } finally {
-    if (submit) submit.disabled = false;
-  }
-}
-
 async function loadSummary() {
   const s = await api(`/api/summary${dateQuery()}`);
+  state.watchlistCount = s.underlying_count || 0;
   state.lastUpdate = s.last_update || "";
   setText("statContracts", fmtNum(s.underlying_count));
   setText("statBuyOi", fmtNum(s.contract_count));
@@ -827,6 +748,7 @@ async function changeSelectedDate(date) {
   }
   if (state.loading) return false;
   const requestId = ++state.dateChangeRequestId;
+  state.dataRequestId += 1;
   const previous = {
     selectedDate: state.selectedDate,
     selectedRowKey: state.selectedRowKey,
@@ -901,20 +823,35 @@ function currentSearch() {
 async function loadUnderlyings(search = "") {
   state.clientTypeBatchRequestId += 1;
   const q = appendQuery({ q: search });
-  const data = await api(`/api/underlyings${q}`);
+  const data = await fetchActiveData(`/api/underlyings${q}`);
+  if (!data) return;
+  state.watchlistCount = data.watchlist_count ?? data.total ?? 0;
   state.items = data.items || [];
   applyFilterAndSort();
 }
 
 async function loadUnderlyingContracts(search = "") {
   const q = appendQuery({ q: search });
-  const data = await api(`/api/underlyings/${encodeURIComponent(state.underlyingKey)}/contracts${q}`);
+  const data = await fetchActiveData(`/api/underlyings/${encodeURIComponent(state.underlyingKey)}/contracts${q}`);
+  if (!data) return;
   state.items = data.items || [];
   applyCachedClientTypes(state.items);
   state.underlying = data.underlying || null;
   populateOptionFilters();
   applyFilterAndSort();
   loadClientTypesForRows(state.items);
+}
+
+async function fetchActiveData(path) {
+  const requestId = ++state.dataRequestId;
+  try {
+    const data = await api(path);
+    return requestId === state.dataRequestId ? data : null;
+  } catch (error) {
+    // A previous search or date selection no longer owns the displayed data.
+    if (requestId !== state.dataRequestId) return null;
+    throw error;
+  }
 }
 
 async function reloadActiveData() {
@@ -1241,6 +1178,13 @@ function renderTable() {
   if (!head || !body || !empty || !wrap || !count || !title || !mobileList) return;
 
   updateViewChrome();
+  const noSymbols = state.watchlistCount === 0;
+  document.getElementById("btnRefresh").disabled = noSymbols || Boolean(refreshPollTimer);
+  document.getElementById("btnEmptyRefresh").classList.toggle("hidden", noSymbols);
+  document.getElementById("emptyEditSymbols").classList.toggle("hidden", !noSymbols);
+  for (const link of document.querySelectorAll("#editSymbols, #emptyEditSymbols")) {
+    link.href = `${dashboardBasePath}/symbols${dateQuery()}`;
+  }
   const underlyingName = state.underlying?.underlying_symbol || state.underlying?.underlying_short_name;
   title.textContent = state.view === "underlying" && underlyingName
     ? `${config.title} ${underlyingName}`
@@ -1260,8 +1204,8 @@ function renderTable() {
     wrap.classList.add("hidden");
     mobileList.innerHTML = "";
     setEmptyMessage(
-      state.items.length ? "نتیجه‌ای با این فیلترها پیدا نشد" : "داده‌ای موجود نیست",
-      state.items.length ? "فیلترها را پاک کنید یا عبارت جستجو را تغییر دهید" : "ابتدا pipeline را اجرا کنید یا دکمه به‌روزرسانی را بزنید"
+      noSymbols ? "هنوز نمادی انتخاب نکرده‌اید" : state.items.length ? "نتیجه‌ای با این فیلترها پیدا نشد" : "داده‌ای موجود نیست",
+      noSymbols ? "از ویرایش نمادها، سهم‌های موردنظر را انتخاب و ذخیره کنید" : state.items.length ? "فیلترها را پاک کنید یا عبارت جستجو را تغییر دهید" : "برای دریافت قراردادهای نمادهای انتخابی، به‌روزرسانی را بزنید"
     );
     empty.classList.remove("hidden");
     head.innerHTML = "";
@@ -1292,7 +1236,9 @@ function renderTable() {
           if (c.fmt === "optionType") {
             cls = `type-badge ${optionTypeClass(row.option_type)}`;
           }
-          return `<td><span class="${cls}">${escapeHtml(formatCell(c, val))}</span></td>`;
+          const status = state.view === "underlyings" && c.key === "underlying_symbol"
+            ? (row.available === false ? "در فهرست فعلی بازار موجود نیست" : row.data_status === "needs_refresh" ? "نیازمند به‌روزرسانی" : "") : "";
+          return `<td><span class="${cls}">${escapeHtml(formatCell(c, val))}</span>${status ? `<small class="symbol-data-status">${escapeHtml(status)}</small>` : ""}</td>`;
         })
         .join("");
       return `<tr data-index="${index}" class="${selected}" tabindex="0" role="button">${cells}</tr>`;
@@ -1402,7 +1348,7 @@ function renderMobileCards() {
         ? row.underlying_short_name || "سهم پایه"
         : `${optionTypeLabel(row.option_type)} · سررسید ${fmtDate(row.end_date)}`;
       const badge = isUnderlying
-        ? `${fmtNum(row.contract_count)} قرارداد`
+        ? row.available === false ? "در دسترس نیست" : row.data_status === "needs_refresh" ? "نیازمند به‌روزرسانی" : `${fmtNum(row.contract_count)} قرارداد`
         : row.moneyness || "—";
       const metrics = isUnderlying
         ? [
@@ -1417,7 +1363,9 @@ function renderMobileCards() {
             mobileMetric("حجم", row.trade_volume, "compact", "metric-volume"),
             mobileMetric("OI", openInterestValue(row), "compact"),
           ].join("");
-      const note = isUnderlying ? activityLabel(row) : optionSignalLabel(row);
+      const note = isUnderlying
+        ? row.data_status === "needs_refresh" ? "برای دریافت داده‌ها، به‌روزرسانی را بزنید" : activityLabel(row)
+        : optionSignalLabel(row);
       const action = isUnderlying
         ? `<button type="button" class="mobile-card-action" data-action="open-underlying" data-index="${index}">مشاهده قراردادها</button>`
         : "";
@@ -2873,10 +2821,28 @@ function renderAnalysis() {
 
 let refreshPollTimer = null;
 let refreshPollFailures = 0;
+let refreshPollGeneration = 0;
+
+function refreshResultWarning(result) {
+  const contracts = asFiniteNumber(result?.options);
+  const clientTypes = asFiniteNumber(result?.client_type_stats);
+  if (contracts === 0) return "داده تازه‌ای دریافت نشد؛ داده‌های ذخیره‌شده تغییری نکردند.";
+  if (contracts > 0 && clientTypes != null && clientTypes < contracts) {
+    return `اطلاعات حقیقی/حقوقی فقط برای ${fmtNum(clientTypes)} از ${fmtNum(contracts)} قرارداد دریافت شد؛ تحلیل‌ها ممکن است ناقص باشند.`;
+  }
+  return "";
+}
+
+function setRefreshWarning(message) {
+  const warning = document.getElementById("refreshWarning");
+  if (!warning) return;
+  warning.textContent = message || "";
+  warning.classList.toggle("hidden", !message);
+}
 
 function setRefreshControlsLoading(on) {
   document.getElementById("btnRefresh")?.classList.toggle("loading", on);
-  if (document.getElementById("btnRefresh")) document.getElementById("btnRefresh").disabled = on;
+  if (document.getElementById("btnRefresh")) document.getElementById("btnRefresh").disabled = on || state.watchlistCount === 0;
   if (document.getElementById("btnEmptyRefresh")) document.getElementById("btnEmptyRefresh").disabled = on;
 }
 
@@ -2885,6 +2851,11 @@ async function startRefresh() {
   setStatusText("به‌روزرسانی داده شروع شد...");
   try {
     const res = await api("/api/refresh", { method: "POST" });
+    if (res.status === "no_symbols") {
+      showToast("ابتدا نمادهای موردنظر را انتخاب کنید");
+      setRefreshControlsLoading(false);
+      return;
+    }
     if (res.status === "already_running") {
       showToast("به‌روزرسانی در حال انجام است...", "success");
     } else if (res.status === "cooldown") {
@@ -2894,6 +2865,7 @@ async function startRefresh() {
     } else {
       showToast("به‌روزرسانی شروع شد — ممکن است چند دقیقه طول بکشد");
     }
+    setRefreshWarning("");
     refreshPollFailures = 0;
     pollRefreshStatus();
   } catch (e) {
@@ -2903,39 +2875,62 @@ async function startRefresh() {
 }
 
 function pollRefreshStatus() {
-  clearInterval(refreshPollTimer);
-  refreshPollTimer = setInterval(async () => {
+  const generation = ++refreshPollGeneration;
+  clearTimeout(refreshPollTimer);
+
+  function schedule() {
+    refreshPollTimer = setTimeout(poll, 3000);
+  }
+
+  async function poll() {
+    let status;
     try {
-      const st = await api("/api/refresh/status");
-      refreshPollFailures = 0;
-      if (st.message) setStatusText(st.message);
-      if (st.running) {
+      status = await api("/api/refresh/status");
+    } catch (error) {
+      if (generation !== refreshPollGeneration) return;
+      refreshPollFailures += 1;
+      if (refreshPollFailures < 3) {
+        setStatusText("در حال تلاش دوباره برای دریافت وضعیت به‌روزرسانی...");
+        schedule();
         return;
       }
-      clearInterval(refreshPollTimer);
+      refreshPollTimer = null;
       setRefreshControlsLoading(false);
-      if (st.last_error) {
-        showToast(`خطا: ${st.last_error}`, "error");
+      setStatusText("دریافت وضعیت به‌روزرسانی متوقف شد؛ دوباره تلاش کنید.");
+      showToast(`ارتباط با وضعیت به‌روزرسانی قطع شد: ${error.message || "نامشخص"}`, "error");
+      return;
+    }
+
+    if (generation !== refreshPollGeneration) return;
+    refreshPollFailures = 0;
+    if (status.message) setStatusText(status.message);
+    if (status.running) {
+      schedule();
+      return;
+    }
+    refreshPollTimer = null;
+    setRefreshControlsLoading(false);
+    try {
+      if (status.last_error) {
+        setRefreshWarning(status.last_error);
+        showToast(`خطا: ${status.last_error}`, "error");
         await loadSummary();
         await reloadActiveData();
-      } else if (st.last_result) {
-        showToast(`انجام شد — ${st.last_result.options} قرارداد`);
+      } else if (status.last_result) {
         state.selectedDate = "";
         state.latestDate = "";
         syncDateToUrl();
         await init();
+        const warning = refreshResultWarning(status.last_result);
+        setRefreshWarning(warning);
+        showToast(warning || `انجام شد — ${fmtNum(status.last_result.options)} قرارداد`, warning ? "error" : "success");
       }
-    } catch (e) {
-      refreshPollFailures += 1;
-      if (refreshPollFailures < 3) {
-        setStatusText("در حال تلاش دوباره برای دریافت وضعیت به‌روزرسانی...");
-        return;
-      }
-      clearInterval(refreshPollTimer);
-      setRefreshControlsLoading(false);
-      showToast(`ارتباط با وضعیت به‌روزرسانی قطع شد: ${e.message || "نامشخص"}`, "error");
+    } catch (error) {
+      showToast(`خطا در نمایش داده‌های به‌روزشده: ${error.message || "نامشخص"}`, "error");
     }
-  }, 3000);
+  }
+
+  schedule();
 }
 
 function bindSearch() {
@@ -2944,8 +2939,30 @@ function bindSearch() {
   let debounce;
   input.addEventListener("input", () => {
     clearTimeout(debounce);
-    debounce = setTimeout(() => reloadActiveData(), 280);
+    state.dataRequestId += 1;
+    debounce = setTimeout(() => {
+      reloadActiveData().catch((error) => {
+        showToast(error.message || "خطا در دریافت نتیجه جستجو؛ دوباره تلاش کنید", "error");
+      });
+    }, 280);
   });
+}
+
+async function resumeRefresh() {
+  try {
+    const refreshStatus = await api("/api/refresh/status");
+    if (refreshStatus.running) {
+      setRefreshWarning("");
+      setRefreshControlsLoading(true);
+      if (refreshStatus.message) setStatusText(refreshStatus.message);
+      refreshPollFailures = 0;
+      pollRefreshStatus();
+    } else {
+      setRefreshWarning(refreshStatus.last_error || refreshResultWarning(refreshStatus.last_result));
+    }
+  } catch {
+    showToast("دریافت وضعیت به‌روزرسانی ناموفق بود؛ دوباره تلاش کنید", "error");
+  }
 }
 
 function bindFilters() {
@@ -3002,6 +3019,7 @@ async function init() {
     await loadDates();
     await loadSummary();
     await reloadActiveData();
+    await resumeRefresh();
   } catch (e) {
     showToast("خطا در بارگذاری داده", "error");
     state.items = [];
@@ -3014,15 +3032,20 @@ async function init() {
   }
 }
 
-function bindActivation() {
-  document.getElementById("activationForm")?.addEventListener("submit", submitActivationCode);
-}
-
 document.getElementById("btnRefresh")?.addEventListener("click", startRefresh);
 document.getElementById("btnEmptyRefresh")?.addEventListener("click", startRefresh);
 document.getElementById("btnBack")?.addEventListener("click", goBackToUnderlyings);
 document.getElementById("closeDetail")?.addEventListener("click", closeDetailSheet);
 document.getElementById("detailBackdrop")?.addEventListener("click", closeDetailSheet);
+window.addEventListener("pagehide", () => {
+  state.dataRequestId += 1;
+  refreshPollGeneration += 1;
+  clearTimeout(refreshPollTimer);
+  refreshPollTimer = null;
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) init();
+});
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (state.calendarVisible) {
@@ -3039,6 +3062,6 @@ window.addEventListener("resize", () => {
 
 bindSearch();
 bindFilters();
-bindActivation();
+bindActivation(init);
 bindThemeToggle();
 init();

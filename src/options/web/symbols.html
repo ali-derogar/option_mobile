@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#f7f8fb" id="themeColorMeta" />
+  <title>ویرایش نمادها | اختیار معامله</title>
+  <script src="/static/js/theme.js"></script>
+  <link rel="stylesheet" href="/static/css/app.css" />
+  <link rel="stylesheet" href="/static/css/symbols.css" />
+  <script src="/static/js/common.js" defer></script>
+  <script src="/static/js/symbols.js" defer></script>
+</head>
+<body data-view="symbols">
+  <div class="bg-gradient"></div>
+  <div class="app symbols-app">
+    <header class="header">
+      <div class="header-brand">
+        <div class="logo">O</div>
+        <div><h1>ویرایش نمادها</h1><p class="subtitle">انتخاب دارایی‌های پایه برای صفحه اصلی</p></div>
+        <button type="button" class="theme-toggle" id="themeToggle" aria-label="تغییر تم" aria-pressed="false"><span class="theme-toggle-icon" aria-hidden="true"></span></button>
+      </div>
+      <button type="button" class="btn btn-primary" id="fetchCatalog" disabled>دریافت همه نمادها</button>
+    </header>
+
+    <p class="symbols-help">نمادهای موردنظر را انتخاب کنید. پس از ذخیره، با دکمه به‌روزرسانی در صفحه اصلی اطلاعات قراردادهای آن‌ها دریافت می‌شود.</p>
+    <section class="toolbar symbols-toolbar" aria-label="جستجو و مرتب‌سازی">
+      <label class="search-wrap"><span class="sr-only">جستجوی نماد</span><input type="search" id="symbolSearch" placeholder="جستجوی نماد یا نام..." autocomplete="off" /></label>
+      <label class="symbols-sort">مرتب‌سازی
+        <select id="symbolSort">
+          <option value="options_trade_volume:desc">حجم قراردادها: بیشترین</option>
+          <option value="options_trade_volume:asc">حجم قراردادها: کمترین</option>
+          <option value="underlying_trade_volume:desc">حجم دارایی پایه: بیشترین</option>
+          <option value="underlying_trade_volume:asc">حجم دارایی پایه: کمترین</option>
+          <option value="symbol:asc">نام نماد</option>
+        </select>
+      </label>
+      <label class="symbols-only-selected"><input type="checkbox" id="onlySelected" /> فقط انتخاب‌شده‌ها</label>
+    </section>
+
+    <div class="symbols-feedback" id="catalogStatus" role="status" aria-live="polite"></div>
+    <section class="panel symbols-panel" aria-labelledby="symbolsTitle">
+      <div class="panel-header"><h2 id="symbolsTitle">دارایی‌های پایه</h2><span class="badge" id="symbolCount">۰ نماد</span></div>
+      <div class="symbol-columns" aria-hidden="true"><span>نماد / نام</span><span>حجم دارایی پایه</span><span>حجم قراردادهای اختیار</span></div>
+      <ul class="symbol-list" id="symbolList" aria-label="انتخاب نمادها"></ul>
+      <p class="symbols-empty" id="catalogEmpty">برای مشاهده نمادها و حجم معاملات، «دریافت همه نمادها» را بزنید.</p>
+    </section>
+
+    <footer class="symbols-footer">
+      <div><strong id="selectedCount" aria-live="polite">۰ نماد انتخاب‌شده</strong><p id="saveStatus" role="status" aria-live="polite"></p></div>
+      <div class="symbols-footer-actions"><a class="btn btn-ghost" id="cancelSymbols" href="#">انصراف و بازگشت</a><button type="button" class="btn btn-primary" id="saveSymbols" disabled>ذخیره و بازگشت</button></div>
+    </footer>
+
+    <div class="activation-overlay hidden" id="activationOverlay" role="dialog" aria-modal="true" aria-labelledby="activationTitle">
+      <form class="activation-dialog" id="activationForm">
+        <div class="logo activation-logo">O</div><h2 id="activationTitle">ورود کد دسترسی</h2><p>برای ادامه، کد دسترسی را وارد کنید.</p>
+        <input type="text" id="activationCode" autocomplete="one-time-code" aria-label="کد دسترسی" />
+        <button type="submit" class="btn btn-primary" id="activationSubmit">ورود</button><p class="activation-error hidden" id="activationError"></p>
+      </form>
+    </div>
+  </div>
+</body>
+</html>
