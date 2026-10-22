@@ -23,6 +23,7 @@ from sqlalchemy import (
     cast,
     create_engine,
     delete,
+    event,
     func,
     inspect,
     select,
@@ -44,6 +45,14 @@ HISTORY_RETENTION_DAYS = 20
 HISTORY_LOCK_TIMEOUT_SECONDS = 5
 _HISTORY_RETENTION_KEY = "history_retention"
 _HISTORY_MAINTENANCE_LOCK = threading.Lock()
+
+
+def _reset_sqlite_connection(dbapi_connection, _connection_record, reset_state) -> None:
+    # A busy COMMIT can leave SQLite's transaction open after SQLAlchemy has
+    # marked it inactive. Never return that pending write and its locks to the
+    # pool, where a later request could reuse or accidentally commit them.
+    if not reset_state.terminate_only and dbapi_connection.in_transaction:
+        dbapi_connection.rollback()
 
 
 class Base(DeclarativeBase):
@@ -235,6 +244,7 @@ class Storage:
         self.engine = create_engine(
             f"sqlite:///{self.db_path}", connect_args={"timeout": HISTORY_LOCK_TIMEOUT_SECONDS},
         )
+        event.listen(self.engine, "reset", _reset_sqlite_connection)
         Base.metadata.create_all(self.engine)
         self._ensure_schema()
         self.SessionLocal = sessionmaker(bind=self.engine)
