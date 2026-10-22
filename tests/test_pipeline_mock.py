@@ -1,5 +1,6 @@
 """Mock end-to-end pipeline test (no live API credentials required)."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
@@ -390,6 +391,7 @@ def test_pipeline_falls_back_to_public_cdn_when_login_fails() -> None:
 
     with TemporaryDirectory() as tmp:
         storage = Storage(db_path=Path(tmp) / "test_options.db")
+        storage.now = lambda: datetime(2025, 6, 14, 12, tzinfo=timezone.utc)
         with patch("options.backend.pipeline.validate_credentials"), patch(
             "options.backend.pipeline.TsetmcClient", return_value=client
         ), patch("options.backend.pipeline.Storage", return_value=storage), patch(

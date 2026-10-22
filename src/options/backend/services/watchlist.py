@@ -120,6 +120,8 @@ class CatalogRefresh:
         try:
             rows, failures = fetch_catalog()
             storage.replace_underlying_catalog(rows)
+            if rows:
+                storage.cleanup_old_history()
             with self._lock:
                 self._status.update(volume_failures=failures)
         except Exception:

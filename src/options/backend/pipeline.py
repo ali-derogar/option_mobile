@@ -132,7 +132,7 @@ def _store_public_option_fallback(
         client_type_stored = 0
         money_flow_stored = 0
 
-    return {
+    return _complete_pipeline(storage, {
         "options": options_stored,
         "client_type": client_type_stored,
         "client_type_stats": client_type_stored,
@@ -144,7 +144,7 @@ def _store_public_option_fallback(
             if skip_client_type or client_type_stored
             else "داده حقیقی/حقوقی عمومی برای قراردادها دریافت نشد."
         ),
-    }
+    })
 
 
 def run_pipeline(
@@ -364,13 +364,19 @@ def run_pipeline(
 
     logger.info("Pipeline complete.")
 
-    return {
+    return _complete_pipeline(storage, {
         "options": options_stored,
         "client_type": client_type_stored,
         "client_type_stats": client_type_stored,
         "money_flow": money_flow_stored,
         "open_interest": open_interest_stored,
-    }
+    })
+
+
+def _complete_pipeline(storage: Storage, result: Dict[str, Any]) -> Dict[str, Any]:
+    if result["options"] > 0:
+        storage.cleanup_old_history()
+    return result
 
 
 def _rows_with_money_flow(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

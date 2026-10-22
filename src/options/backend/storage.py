@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -25,6 +27,7 @@ from sqlalchemy import (
     inspect,
     select,
     text,
+    update,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -37,6 +40,10 @@ from options.backend.services.expiry_selection import (
 
 logger = logging.getLogger(__name__)
 MARKET_TZ = ZoneInfo("Asia/Tehran")
+HISTORY_RETENTION_DAYS = 20
+HISTORY_LOCK_TIMEOUT_SECONDS = 5
+_HISTORY_RETENTION_KEY = "history_retention"
+_HISTORY_MAINTENANCE_LOCK = threading.Lock()
 
 
 class Base(DeclarativeBase):
@@ -215,13 +222,19 @@ class ExpiryContract(Base):
     ask_price = Column(Float, nullable=True)
     ask_volume = Column(Float, nullable=True)
     underlying_last_price = Column(Float, nullable=True)
+    underlying_closing_price = Column(Float, nullable=True)
     trade_volume = Column(Float, nullable=True)
+    price_min = Column(Float, nullable=True)
+    price_max = Column(Float, nullable=True)
+    price_range_date = Column(Integer, nullable=True)
 
 
 class Storage:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = db_path or DATABASE_PATH
-        self.engine = create_engine(f"sqlite:///{self.db_path}")
+        self.engine = create_engine(
+            f"sqlite:///{self.db_path}", connect_args={"timeout": HISTORY_LOCK_TIMEOUT_SECONDS},
+        )
         Base.metadata.create_all(self.engine)
         self._ensure_schema()
         self.SessionLocal = sessionmaker(bind=self.engine)
@@ -232,6 +245,96 @@ class Storage:
 
     def now(self) -> datetime:
         return datetime.now(timezone.utc)
+
+    def cleanup_old_history(self) -> dict[str, int] | None:
+        """Prune after a successful refresh; maintenance must not fail that refresh.
+
+        The marker prevents legacy backfill from resurrecting deleted history.
+        Pending compaction survives failures and process restarts.
+        """
+        with _HISTORY_MAINTENANCE_LOCK:
+            try:
+                today = date.fromisoformat(self.snapshot_date_for(self.now()))
+                keep_from = today - timedelta(days=HISTORY_RETENTION_DAYS - 1)
+                counts, vacuum_token = self._prune_history(keep_from)
+            except Exception:
+                logger.exception("History cleanup failed; retrying after the next successful refresh")
+                return None
+            logger.info("History cleanup before %s: %s", keep_from, counts)
+            if vacuum_token:
+                try:
+                    self._vacuum_history()
+                    with self.session() as session:
+                        # Another process may have pruned more rows after our
+                        # VACUUM. Do not acknowledge that newer pending work.
+                        session.execute(update(AppState).where(
+                            AppState.key == _HISTORY_RETENTION_KEY,
+                            AppState.value == vacuum_token,
+                        ).values(value="clean", updated_at=self.now()))
+                        session.commit()
+                    logger.info("History database compaction completed")
+                except Exception:
+                    logger.exception("History compaction failed; retrying after the next successful refresh")
+            return counts
+
+    def _prune_history(self, keep_from: date) -> tuple[dict[str, int], str | None]:
+        cutoff_utc = (
+            datetime.combine(keep_from, time.min, tzinfo=MARKET_TZ)
+            .astimezone(timezone.utc).replace(tzinfo=None)
+        )
+        with self.session() as session:
+            counts = {
+                ContractSnapshot.__tablename__: session.execute(
+                    delete(ContractSnapshot).where(ContractSnapshot.snapshot_date < keep_from.isoformat())
+                ).rowcount,
+                OpenInterestSnapshot.__tablename__: session.execute(
+                    delete(OpenInterestSnapshot).where(OpenInterestSnapshot.fetched_at < cutoff_utc)
+                ).rowcount,
+            }
+            for model in (MoneyFlowSnapshot, ClientTypeStats):
+                counts[model.__tablename__] = self._prune_recorded_history(session, model, keep_from)
+            state = session.get(AppState, _HISTORY_RETENTION_KEY)
+            previous_value = (state.value or "") if state is not None else ""
+            vacuum_token = previous_value if previous_value.startswith("pending_vacuum:") else None
+            if any(counts.values()):
+                vacuum_token = f"pending_vacuum:{uuid4().hex}"
+            if state is None:
+                state = AppState(key=_HISTORY_RETENTION_KEY)
+                session.add(state)
+            state.value = vacuum_token or "clean"
+            state.updated_at = self.now()
+            session.commit()
+        return counts, vacuum_token
+
+    def _prune_recorded_history(
+        self, session: Session, model: type[MoneyFlowSnapshot] | type[ClientTypeStats], keep_from: date,
+    ) -> int:
+        # Read only dates and IDs in bounded batches. Validate Gregorian record
+        # dates in Python instead of treating malformed integers as old dates.
+        deleted = 0
+        last_id = 0
+        while rows := session.execute(
+            select(model.id, model.rec_date, model.fetched_at)
+            .where(model.id > last_id).order_by(model.id).limit(500)
+        ).all():
+            expired = []
+            for row in rows:
+                try:
+                    recorded_date = date.fromisoformat(str(self._coerce_rec_date(row.rec_date)))
+                except ValueError:
+                    recorded_date = date.fromisoformat(self.snapshot_date_for(row.fetched_at))
+                if recorded_date < keep_from:
+                    expired.append(row.id)
+            if expired:
+                deleted += session.execute(delete(model).where(model.id.in_(expired))).rowcount
+            last_id = rows[-1].id
+        return deleted
+
+    def _vacuum_history(self) -> None:
+        # SQLite cannot VACUUM inside a transaction. All pruning sessions have
+        # committed and closed before acquiring this autocommit connection.
+        with self.engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+            connection.exec_driver_sql("VACUUM")
 
     def replace_expiry_contracts(
         self, rows: list[dict[str, Any]], warning: str | None = None, *, market_received_at: str | None = None,
@@ -358,6 +461,8 @@ class Storage:
                 "expiry_contracts": {
                     "ask_price": "FLOAT", "ask_volume": "FLOAT",
                     "underlying_last_price": "FLOAT", "trade_volume": "FLOAT",
+                    "underlying_closing_price": "FLOAT",
+                    "price_min": "FLOAT", "price_max": "FLOAT", "price_range_date": "INTEGER",
                 },
             }
             for table_name, additions in migrations.items():
@@ -827,6 +932,11 @@ class Storage:
 
     def _backfill_current_contract_snapshot(self) -> None:
         with self.session() as session:
+            # Serialize the migration check with cleanup, including another
+            # Storage instance opening the same database during a refresh.
+            session.execute(text("BEGIN IMMEDIATE"))
+            if session.get(AppState, _HISTORY_RETENTION_KEY) is not None:
+                return
             snapshot_exists = session.scalar(select(func.count(ContractSnapshot.id))) or 0
             if snapshot_exists:
                 return

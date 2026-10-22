@@ -11,6 +11,7 @@
   const filterControls = [...document.querySelectorAll("[data-expiry-filter]")];
   const underlyingFilter = document.getElementById("expiryUnderlyingFilter");
   const clearFiltersButton = document.getElementById("btnExpiryClearFilters");
+  const expandedContracts = new Set();
   // Filters belong to this page visit; a reload starts without restrictions.
   filterControls.forEach((control) => { control.value = ""; });
   const REQUEST_TIMEOUT_MS = 15000;
@@ -141,12 +142,28 @@
   }
 
   function renderRows(calendarCurrent, pricingCurrent) {
+    const scrollTop = list.scrollTop;
+    // Read the native disclosure state before replacing rows. This also keeps
+    // clicks that have not dispatched a queued `toggle` event yet.
+    for (const details of list.querySelectorAll(".expiry-contract-details")) {
+      if (details.open) expandedContracts.add(details.dataset.insCode);
+      else expandedContracts.delete(details.dataset.insCode);
+    }
+    const focusedCode = list.contains(document.activeElement)
+      ? document.activeElement.closest(".expiry-contract-details")?.dataset.insCode : null;
+    let focusTarget = null;
     const fragment = document.createDocumentFragment();
     for (const row of snapshot?.items || []) {
       const card = document.createElement("li");
       card.className = "expiry-card";
-      const heading = document.createElement("div");
+      card.classList.toggle("expiry-arbitrage-candidate", pricingCurrent && row.is_arbitrage_candidate === true);
+      const details = document.createElement("details");
+      details.className = "expiry-contract-details";
+      details.dataset.insCode = String(row.ins_code);
+      details.open = expandedContracts.has(details.dataset.insCode);
+      const heading = document.createElement("summary");
       heading.className = "expiry-card-head";
+      if (details.dataset.insCode === focusedCode) focusTarget = heading;
       const symbol = document.createElement("strong");
       symbol.textContent = row.symbol;
       const remaining = document.createElement("span");
@@ -163,16 +180,31 @@
       addMetric(metrics, "سررسید", expiryFormat.format(date));
       addMetric(metrics, "بهترین عرضه", priceLabel(row.ask_price));
       addMetric(metrics, "حجم بهترین عرضه", priceLabel(row.ask_volume));
-      addMetric(metrics, "قیمت سهم پایه", priceLabel(row.underlying_last_price));
+      addMetric(metrics, "کمترین قیمت معامله‌شده امروز (ریال)", calendarCurrent ? priceLabel(row.price_min) : "نیازمند به‌روزرسانی");
+      addMetric(metrics, "بیشترین قیمت معامله‌شده امروز (ریال)", calendarCurrent ? priceLabel(row.price_max) : "نیازمند به‌روزرسانی");
+      addMetric(metrics, "آخرین قیمت سهم پایه", priceLabel(row.underlying_last_price));
+      addMetric(metrics, "قیمت پایانی سهم پایه", priceLabel(row.underlying_closing_price));
       addMetric(metrics, "ارزش ذاتی", priceLabel(row.intrinsic_value));
-      addMetric(metrics, "اختلاف با ارزش ذاتی (%)", !pricingCurrent ? "نیازمند به‌روزرسانی"
+      addMetric(metrics, "دریافتی نقدی برآوردی هر واحد (ریال)", !pricingCurrent ? "نیازمند به‌روزرسانی"
+        : priceLabel(row.estimated_cash_value_per_unit));
+      addMetric(metrics, "سود هر واحد (ریال)؛ برآورد ناخالص پیش از کارمزد", !pricingCurrent ? "نیازمند به‌روزرسانی"
+        : priceLabel(row.gross_profit_per_unit));
+      addMetric(metrics, "بازده ناخالص برآوردی (%)", !pricingCurrent ? "نیازمند به‌روزرسانی"
         : row.intrinsic_gap_percent == null ? "نامشخص" : `${scoreFormat.format(row.intrinsic_gap_percent)}٪`);
+      addMetric(metrics, "فرصت آربیتراژ", !pricingCurrent ? "نیازمند به‌روزرسانی"
+        : row.is_arbitrage_candidate === true ? "فرصت بالقوه"
+          : row.gross_profit_per_unit == null ? "خارج از دامنه یا داده ناکافی" : "فرصتی شناسایی نشد");
       addMetric(metrics, "حجم معاملات", priceLabel(row.trade_volume));
       addMetric(metrics, "وضعیت", row.moneyness === "unknown" ? "نامشخص" : row.moneyness);
-      card.append(heading, metrics);
+      details.append(heading, metrics);
+      card.append(details);
       fragment.append(card);
     }
     list.replaceChildren(fragment);
+    focusTarget?.focus({ preventScroll: true });
+    // Replacing the focused disclosure can move the scroll anchor. Restore
+    // the reader's position after layout and native focus reconciliation.
+    list.scrollTop = scrollTop;
   }
 
   function render() {
@@ -205,15 +237,21 @@
     document.getElementById("expiryCount").textContent = snapshot?.fetched_at || partial
       ? `${numberFormat.format(snapshot.items.length)} از ${numberFormat.format(snapshot.total)} قرارداد` : "";
     renderUnderlyingOptions();
-    clearFiltersButton.disabled = !filterControls.some((control) => control.value.trim());
+    const filterCount = filterControls.filter((control) => control.value.trim()).length;
+    clearFiltersButton.disabled = filterCount === 0;
+    const filterCountLabel = document.getElementById("expiryFilterCount");
+    filterCountLabel.textContent = filterCount ? `${numberFormat.format(filterCount)} فیلتر انتخاب‌شده` : "";
+    filterCountLabel.classList.toggle("hidden", filterCount === 0);
     const filterWarning = document.getElementById("expiryFilterError");
     filterWarning.textContent = filterError;
     filterWarning.classList.toggle("hidden", !filterError);
     const pricingNote = document.getElementById("expiryPricingNote");
     pricingNote.classList.toggle("hidden", !snapshot?.fetched_at && !partial);
-    pricingNote.textContent = pricingCurrent
-      ? `مبنای قیمت: ${updateFormat.format(new Date(snapshot.market_received_at))}؛ اختلاف درصدی پیش از کارمزد. سررسیدهای امروز بر اساس امتیاز مرتب می‌شوند.`
-      : "برای محاسبهٔ امتیاز، سررسیدها را امروز به‌روزرسانی کنید.";
+    pricingNote.textContent = (pricingCurrent
+      ? `مبنای برآورد: قیمت پایانی سهم پایه در دریافت ${updateFormat.format(new Date(snapshot.market_received_at))}؛ پیش از کارمزد.`
+      : "برای محاسبهٔ برآورد، سررسیدها را امروز به‌روزرسانی کنید.")
+      + " بررسی آربیتراژ فقط برای اختیار خرید با سررسید امروز است؛ تاریخ سررسید، امکان تسویه نقدی همان روز را تأیید نمی‌کند."
+      + " کمینه و بیشینه، قیمت معاملات انجام‌شده امروزند؛ مبنای خرید، بهترین عرضه فعلی است. بازه ناموجود با — نمایش داده می‌شود.";
     const refresh = !starting && snapshot?.refresh?.running ? snapshot.refresh : {};
     const total = refresh.total || 0;
     const processed = refresh.processed || 0;
@@ -232,8 +270,9 @@
         : partial ? "نتایج موقت؛ برای بررسی وضعیت دوباره تلاش کنید."
         : !snapshot?.fetched_at ? "ابتدا سررسیدها را به‌روزرسانی کنید"
         : snapshot.items.length ? "به ترتیب نزدیک‌ترین سررسید؛ روزهای تقویمی به وقت تهران"
-          : snapshot.total_upcoming && !pricingCurrent && filterControls.some((control) => control.dataset.expiryFilter === "min_score" && control.value.trim())
-            ? "فیلتر امتیاز نیازمند به‌روزرسانی اطلاعات امروز است."
+          : snapshot.total_upcoming && !pricingCurrent && filterControls.some((control) =>
+            ["min_score", "arbitrage_only"].includes(control.dataset.expiryFilter) && control.value.trim())
+            ? "فیلتر بازده و آربیتراژ نیازمند به‌روزرسانی اطلاعات امروز است."
             : snapshot.total_upcoming ? "نتیجه‌ای مطابق فیلترها نیست" : "سررسید پیش‌رو موجود نیست";
     const warning = document.getElementById("expiryWarning");
     const calendarWarning = calendarPending ? "روز تقویمی تغییر کرده؛ روزشمار تا خواندن اطلاعات روز جاری نیازمند بررسی است." : "";

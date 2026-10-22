@@ -41,12 +41,19 @@ def market_row(code=1001, end_date=20261022, **changes):
 def priced_contract(code=1001, end_date=20261021, **changes):
     return contract(code, end_date, **{
         "ask_price": 100, "ask_volume": 2, "underlying_last_price": 1120,
+        "underlying_closing_price": 1120,
         "trade_volume": 30, **changes,
     })
 
 
 def priced_snapshot(rows, received_at="2026-10-21T09:00:00+00:00"):
     return ExpirySnapshot(rows, market_received_at=received_at)
+
+
+@pytest.fixture(autouse=True)
+def isolate_daily_price_network(monkeypatch):
+    """Expiry tests only use explicitly supplied daily price fixtures."""
+    monkeypatch.setattr(expiries, "fetch_public_daily_price_ranges", lambda codes, today: {})
 
 
 @pytest.fixture
@@ -128,6 +135,55 @@ def test_invalid_dates_are_discarded_with_warning(monkeypatch):
     assert "نامعتبر" in warning
 
 
+def test_daily_ranges_are_requested_only_for_corrected_calls_expiring_today(storage, monkeypatch):
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 21, 12, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(expiries, "datetime", FrozenDatetime)
+    monkeypatch.setattr(expiries, "fetch_public_option_market_watch", lambda: [
+        market_row(1, 20261022, insCode_P="2", pMeOf_C=100, qTitMeOf_C=2, pClosing_UA=1120),
+        market_row(3, 20261023),
+    ])
+    monkeypatch.setattr(expiries, "fetch_public_instrument_info_many", lambda codes, **kwargs: {
+        1: {"lVal30": "اختیارخ خودرو-1000-1405/07/29"},
+    })
+    daily = MagicMock(return_value={1: {"price_min": 80, "price_max": 160, "price_range_date": 20261021}})
+    monkeypatch.setattr(expiries, "fetch_public_daily_price_ranges", daily)
+    snapshot = expiries.fetch_expiry_contracts()
+    daily.assert_called_once_with([1], date(2026, 10, 21))
+    storage.replace_expiry_contracts(snapshot.rows, market_received_at=snapshot.market_received_at)
+    row = storage.get_expiry_snapshot(date(2026, 10, 21))["items"][0]
+    assert row["price_min"] == 80
+    assert row["price_max"] == 160
+    assert row["price_range_date"] == 20261021
+    assert row["gross_profit_per_unit"] == 20
+    reopened = Storage(storage.db_path)
+    try:
+        assert reopened.get_expiry_snapshot(date(2026, 10, 21))["items"][0] == row
+    finally:
+        reopened.engine.dispose()
+
+
+def test_daily_ranges_do_not_mutate_previously_published_previews(monkeypatch):
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 21, 12, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(expiries, "datetime", FrozenDatetime)
+    monkeypatch.setattr(expiries, "fetch_public_option_market_watch", lambda: [market_row(1, 20261021)])
+    monkeypatch.setattr(expiries, "fetch_public_instrument_info_many", lambda codes, **kwargs: {})
+    monkeypatch.setattr(expiries, "fetch_public_daily_price_ranges", lambda codes, today: {
+        1: {"price_min": 80, "price_max": 160, "price_range_date": 20261021},
+    })
+    previews = []
+    snapshot = expiries.fetch_expiry_contracts(lambda value, processed, total: previews.append(value))
+    assert [preview.rows[0]["price_min"] for preview in previews] == [None, None, 80]
+    assert snapshot.rows[0]["price_min"] == 80
+
+
 def test_nearest_fifty_are_sorted_and_include_today(storage):
     storage.replace_expiry_contracts([
         *[contract(code) for code in range(61, 0, -1)],
@@ -166,6 +222,22 @@ def test_snapshot_and_warning_persist_after_restart(storage):
         assert previous["items"][0]["ins_code"] == "12345678901234567"
     finally:
         reopened.engine.dispose()
+
+
+def test_metadata_fallback_notice_is_hidden_for_saved_and_partial_snapshots(api_client, storage):
+    notice = "مشخصات تکمیلی 8 قرارداد دریافت نشد؛ از اطلاعات معتبر خوراک بازار استفاده شد."
+    other_warning = "1 قرارداد با تاریخ سررسید نامعتبر کنار گذاشته شد."
+    rows = [contract(end_date=20991022)]
+    storage.replace_expiry_contracts(rows, f"{notice} {other_warning}")
+    saved = api_client.get("/api/expiries").json()
+    assert saved["warning"] == other_warning
+    assert saved["total"] == 1
+    main.expiry_refresh_job.begin()
+    main.expiry_refresh_job._publish(ExpirySnapshot(rows, notice), 1, 1)
+    preview = api_client.get("/api/expiries").json()
+    assert preview["partial"] is True
+    assert preview["warning"] is None
+    assert preview["total"] == 1
 
 
 def test_failed_snapshot_transaction_preserves_rows_and_metadata(storage):
@@ -523,23 +595,94 @@ def test_new_refresh_clears_previous_progress_and_preview(storage, monkeypatch):
     assert view["refresh"]["finished_at"] is None
 
 
-@pytest.mark.parametrize("option_type, underlying, expected, moneyness", [
-    ("call", 1120, 20, "ITM"), ("put", 880, 20, "ITM"),
-    ("call", 1100, 0, "ITM"), ("put", 950, -50, "ITM"),
-    ("call", 1000, -100, "ATM"), ("put", 1100, -100, "OTM"),
+@pytest.mark.parametrize("underlying, cash, profit, expected", [
+    (1120, 120, 20, 20), (1100, 100, 0, 0),
+    (1050, 50, -50, -50), (1000, 0, -100, -100), (950, 0, -100, -100),
 ])
-def test_intrinsic_gap_uses_best_ask(option_type, underlying, expected, moneyness):
-    snapshot = priced_snapshot([priced_contract(option_type=option_type, underlying_last_price=underlying)])
+def test_arbitrage_uses_closing_price_and_best_ask(underlying, cash, profit, expected):
+    snapshot = priced_snapshot([priced_contract(underlying_closing_price=underlying)])
     row = select_expiries(snapshot, date(2026, 10, 21))["items"][0]
     assert row["intrinsic_gap_percent"] == pytest.approx(expected)
-    assert row["moneyness"] == moneyness
+    assert row["estimated_cash_value_per_unit"] == cash
+    assert row["gross_profit_per_unit"] == profit
+    assert row["is_arbitrage_candidate"] is (profit > 0)
+    # General analytics retain the last-trade basis, independently of settlement.
+    assert row["intrinsic_value"] == 120
+    assert row["moneyness"] == "ITM"
 
 
-@pytest.mark.parametrize("field", ["strike_price", "underlying_last_price", "ask_price", "ask_volume"])
-@pytest.mark.parametrize("value", [None, 0, -1, float("nan"), float("inf"), True])
+@pytest.mark.parametrize("field", ["strike_price", "underlying_closing_price", "ask_price", "ask_volume"])
+@pytest.mark.parametrize("value", [None, 0, -1, float("nan"), float("inf"), True, "bad"])
 def test_invalid_pricing_inputs_never_produce_score(field, value):
     row = select_expiries(priced_snapshot([priced_contract(**{field: value})]), date(2026, 10, 21))["items"][0]
     assert row["intrinsic_gap_percent"] is None
+    assert row["estimated_cash_value_per_unit"] is None
+    assert row["gross_profit_per_unit"] is None
+    assert row["is_arbitrage_candidate"] is False
+
+
+@pytest.mark.parametrize("changes", [
+    {"option_type": "put", "underlying_last_price": 880, "underlying_closing_price": 880},
+    {"option_type": None}, {"end_date": 20261022},
+])
+def test_non_calls_and_future_expiries_have_no_arbitrage_estimate(changes):
+    row = select_expiries(priced_snapshot([priced_contract(**changes)]), date(2026, 10, 21))["items"][0]
+    assert row["intrinsic_gap_percent"] is None
+    assert row["estimated_cash_value_per_unit"] is None
+    assert row["gross_profit_per_unit"] is None
+    assert row["is_arbitrage_candidate"] is False
+
+
+def test_last_price_is_not_required_or_used_as_a_closing_price_fallback():
+    snapshot = priced_snapshot([
+        priced_contract(1, underlying_last_price=None),
+        priced_contract(2, underlying_last_price=10000, underlying_closing_price=None),
+    ])
+    rows = select_expiries(snapshot, date(2026, 10, 21))["items"]
+    assert rows[0]["is_arbitrage_candidate"] is True
+    assert rows[0]["intrinsic_value"] is None
+    assert rows[1]["is_arbitrage_candidate"] is False
+    assert rows[1]["intrinsic_gap_percent"] is None
+
+
+def test_arbitrage_filter_excludes_nonpositive_profits_and_other_contracts():
+    snapshot = priced_snapshot([
+        priced_contract(1), priced_contract(2, ask_price=120), priced_contract(3, ask_price=121),
+        priced_contract(4, option_type="put", underlying_closing_price=800),
+        priced_contract(5, 20261022, ask_price=1), priced_contract(6, 20261020),
+        priced_contract(7, ask_volume=0), priced_contract(8, underlying_closing_price=None),
+    ])
+    result = select_expiries(snapshot, date(2026, 10, 21), ExpiryFilters(arbitrage_only=True, min_score=-100))
+    assert [row["ins_code"] for row in result["items"]] == ["1"]
+    assert result["total"] == 1
+    assert result["total_upcoming"] == 7
+    assert result["nearest_days"] == 0
+
+
+@pytest.mark.parametrize("range_date, low, high, expected", [
+    (20261021, 80, 160, (80, 160)), (20261021, 100, 100, (100, 100)),
+    (20261020, 80, 160, (None, None)), (None, 80, 160, (None, None)),
+    (20261021, 0, 160, (None, None)), (20261021, 180, 160, (None, None)),
+    (20261021, float("nan"), 160, (None, None)),
+])
+def test_day_ranges_are_validated_and_never_replace_the_current_ask(range_date, low, high, expected):
+    snapshot = priced_snapshot([priced_contract(
+        price_min=low, price_max=high, price_range_date=range_date,
+    )])
+    row = select_expiries(snapshot, date(2026, 10, 21))["items"][0]
+    assert (row["price_min"], row["price_max"]) == expected
+    assert row["gross_profit_per_unit"] == 20
+    assert row["intrinsic_gap_percent"] == 20
+
+
+def test_historical_cheap_trade_does_not_create_a_current_arbitrage_candidate():
+    snapshot = priced_snapshot([priced_contract(
+        ask_price=150, price_min=80, price_max=200, price_range_date=20261021,
+    )])
+    row = select_expiries(snapshot, date(2026, 10, 21))["items"][0]
+    assert row["price_min"] == 80
+    assert row["gross_profit_per_unit"] == -30
+    assert row["is_arbitrage_candidate"] is False
 
 
 def test_ranking_only_changes_today_and_uses_unrounded_scores():
@@ -558,7 +701,9 @@ def test_filtering_and_ranking_use_entire_market_before_limit():
     rows = [priced_contract(code, ask_price=1000) for code in range(1, 101)]
     rows += [priced_contract(code, ask_price=60, underlying_ins_code=2002, underlying_symbol="فملی") for code in range(101, 161)]
     snapshot = priced_snapshot(rows)
-    selected = select_expiries(snapshot, date(2026, 10, 21), ExpiryFilters(min_score=50, underlying_ins_code=2002))
+    selected = select_expiries(snapshot, date(2026, 10, 21), ExpiryFilters(
+        min_score=50, underlying_ins_code=2002, arbitrage_only=True,
+    ))
     assert selected["total"] == 60
     assert selected["total_upcoming"] == 160
     assert len(selected["items"]) == 50
@@ -575,6 +720,9 @@ def test_filtering_and_ranking_use_entire_market_before_limit():
     (ExpiryFilters(moneyness="ATM"), [3]),
     (ExpiryFilters(min_score=0), [1]),
     (ExpiryFilters(min_volume=20), [1, 2]),
+    (ExpiryFilters(arbitrage_only=True), [1]),
+    (ExpiryFilters(arbitrage_only=True, option_type="put"), []),
+    (ExpiryFilters(arbitrage_only=True, min_days=1), []),
     (ExpiryFilters(option_type="put", min_days=1, max_days=1, min_volume=20), [2]),
 ])
 def test_individual_and_combined_filters(filters, expected):
@@ -597,12 +745,14 @@ def test_price_freshness_uses_tehran_day(received_at, current):
     result = select_expiries(priced_snapshot([priced_contract(end_date=20261022)], received_at), date(2026, 10, 22))
     assert result["pricing_current"] is current
     assert (result["items"][0]["intrinsic_gap_percent"] is not None) is current
+    assert result["items"][0]["is_arbitrage_candidate"] is current
     assert result["nearest_days"] == 0
 
 
-def test_stale_prices_disable_score_filter_without_losing_global_badge():
+@pytest.mark.parametrize("filters", [ExpiryFilters(min_score=0), ExpiryFilters(arbitrage_only=True)])
+def test_stale_prices_disable_pricing_filters_without_losing_global_badge(filters):
     snapshot = priced_snapshot([priced_contract()], "2026-10-20T09:00:00Z")
-    result = select_expiries(snapshot, date(2026, 10, 21), ExpiryFilters(min_score=0))
+    result = select_expiries(snapshot, date(2026, 10, 21), filters)
     assert result["items"] == []
     assert result["total_upcoming"] == 1
     assert result["nearest_days"] == 0
@@ -644,9 +794,39 @@ def test_legacy_expiry_table_is_migrated_without_erasing_rows(tmp_path):
         result = migrated.get_expiry_snapshot(date(2026, 10, 21))
         assert result["items"][0]["symbol"] == "ضخود"
         assert result["items"][0]["ask_price"] is None
+        assert result["items"][0]["underlying_closing_price"] is None
+        assert result["items"][0]["price_min"] is None
+        assert result["items"][0]["price_max"] is None
         assert result["items"][0]["intrinsic_gap_percent"] is None
+        assert result["items"][0]["is_arbitrage_candidate"] is False
         migrated.replace_expiry_contracts([priced_contract()], market_received_at="2026-10-21T09:00:00Z")
         assert migrated.get_expiry_snapshot(date(2026, 10, 21))["items"][0]["intrinsic_gap_percent"] == pytest.approx(20)
+    finally:
+        migrated.engine.dispose()
+
+
+def test_previous_priced_schema_requires_new_closing_price_after_migration(storage):
+    import sqlite3
+
+    storage.replace_expiry_contracts([priced_contract()], "previous warning", market_received_at="2026-10-21T09:00:00Z")
+    previous = storage.get_expiry_snapshot(date(2026, 10, 21))
+    storage.engine.dispose()
+    with sqlite3.connect(storage.db_path) as db:
+        db.execute("ALTER TABLE expiry_contracts DROP COLUMN underlying_closing_price")
+    migrated = Storage(storage.db_path)
+    try:
+        result = migrated.get_expiry_snapshot(date(2026, 10, 21))
+        row = result["items"][0]
+        assert row["ask_price"] == 100
+        assert row["underlying_last_price"] == 1120
+        assert row["underlying_closing_price"] is None
+        assert row["gross_profit_per_unit"] is None
+        assert row["is_arbitrage_candidate"] is False
+        assert result["fetched_at"] == previous["fetched_at"]
+        assert result["market_received_at"] == previous["market_received_at"]
+        assert result["warning"] == "previous warning"
+        migrated.replace_expiry_contracts([priced_contract()], market_received_at="2026-10-21T09:00:00Z")
+        assert migrated.get_expiry_snapshot(date(2026, 10, 21))["items"][0]["is_arbitrage_candidate"] is True
     finally:
         migrated.engine.dispose()
 
@@ -656,6 +836,8 @@ def test_legacy_expiry_table_is_migrated_without_erasing_rows(tmp_path):
     "min_days=3&max_days=2", "min_score=NaN", "min_score=inf", "min_score=bad", "min_score=1e999",
     "underlying_ins_code=0", "underlying_ins_code=x", "min_days=1.5", "min_volume=nan",
     "underlying_ins_code=9223372036854775808",
+    "arbitrage_only=1", "arbitrage_only=yes", "arbitrage_only=TRUE", "arbitrage_only=bad",
+    "arbitrage_only=",
 ])
 def test_invalid_api_filters_return_400(api_client, query):
     assert api_client.get(f"/api/expiries?{query}").status_code == 400
@@ -681,6 +863,36 @@ def test_api_filters_accept_persian_and_arabic_digits(api_client, storage, monke
     assert payload["nearest_days"] == 0
 
 
+@pytest.mark.parametrize("query, expected", [
+    ("", [1, 2, 3, 4]), ("arbitrage_only=false", [1, 2, 3, 4]),
+    ("arbitrage_only=true", [1]), ("arbitrage_only=true&option_type=put", []),
+    ("arbitrage_only=true&min_days=1", []), ("arbitrage_only=true&min_volume=31", []),
+    ("arbitrage_only=true&min_score=21", []), ("arbitrage_only=true&underlying_ins_code=2002", []),
+])
+def test_api_arbitrage_filter_composes_with_other_filters(api_client, storage, monkeypatch, query, expected):
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 21, 12, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(main, "datetime", FrozenDatetime)
+    storage.replace_expiry_contracts([
+        priced_contract(1), priced_contract(2, ask_price=120),
+        priced_contract(3, option_type="put", underlying_closing_price=800),
+        priced_contract(4, 20261022, ask_price=1),
+    ], market_received_at="2026-10-21T09:00:00Z")
+    response = api_client.get(f"/api/expiries?{query}")
+    assert response.status_code == 200
+    payload = response.json()
+    assert [row["ins_code"] for row in payload["items"]] == list(map(str, expected))
+    assert payload["total_upcoming"] == 4
+    assert payload["nearest_days"] == 0
+    if payload["items"]:
+        assert payload["items"][0]["estimated_cash_value_per_unit"] == 120
+        assert payload["items"][0]["gross_profit_per_unit"] == 20
+        assert payload["items"][0]["is_arbitrage_candidate"] is True
+
+
 def test_progress_and_persisted_snapshot_share_filters_and_feed_timestamp(storage, monkeypatch):
     clock = [datetime(2026, 10, 21, 20, 29, tzinfo=timezone.utc)]
 
@@ -691,7 +903,7 @@ def test_progress_and_persisted_snapshot_share_filters_and_feed_timestamp(storag
 
     monkeypatch.setattr(expiries, "datetime", FrozenDatetime)
     monkeypatch.setattr(expiries, "fetch_public_option_market_watch", lambda: [market_row(
-        1, 20261022, pMeOf_C=100, qTitMeOf_C=2, pDrCotVal_UA=1120, qTotTran5J_C=30,
+        1, 20261022, pMeOf_C=100, qTitMeOf_C=2, pDrCotVal_UA=1200, pClosing_UA=1120, qTotTran5J_C=30,
     )])
 
     def fetch_metadata(codes, *, on_result):
@@ -707,12 +919,14 @@ def test_progress_and_persisted_snapshot_share_filters_and_feed_timestamp(storag
     assert all(value.market_received_at == snapshot.market_received_at for value in previews)
     assert snapshot.rows[0]["strike_price"] == 1050
     assert snapshot.rows[0]["end_date"] == 20261022
+    assert snapshot.rows[0]["underlying_closing_price"] == 1120
     storage.replace_expiry_contracts(snapshot.rows, snapshot.warning, market_received_at=snapshot.market_received_at)
     job = expiries.ExpiryRefresh()
     job.begin()
     job._publish(snapshot, 1, 1)
     for today in [date(2026, 10, 21), date(2026, 10, 22)]:
-        for filters in [ExpiryFilters(), ExpiryFilters(min_score=0), ExpiryFilters(option_type="put")]:
+        for filters in [ExpiryFilters(), ExpiryFilters(min_score=0), ExpiryFilters(option_type="put"),
+                        ExpiryFilters(arbitrage_only=True)]:
             preview = job.view(today, filters)
             complete = storage.get_expiry_snapshot(today, filters=filters)
             assert {key: preview[key] for key in complete if key != "fetched_at"} == {
@@ -731,7 +945,7 @@ def test_metadata_correction_updates_rank_and_filter_before_final_commit(api_cli
     monkeypatch.setattr(expiries, "datetime", FrozenDatetime)
     storage.replace_expiry_contracts([priced_contract(99, 20261023)], market_received_at="2026-10-21T09:00:00Z")
     previous = storage.get_expiry_snapshot(date(2026, 10, 21))
-    feed = [market_row(code, 20261021, pMeOf_C=100, qTitMeOf_C=1, pDrCotVal_UA=1120)
+    feed = [market_row(code, 20261021, pMeOf_C=100, qTitMeOf_C=1, pDrCotVal_UA=1200, pClosing_UA=1120)
             for code in range(1, 62)]
     monkeypatch.setattr(expiries, "fetch_public_option_market_watch", lambda: feed)
     feed_ready, correct_metadata, correction_ready, finish = (Event() for _ in range(4))
@@ -769,6 +983,10 @@ def test_metadata_correction_updates_rank_and_filter_before_final_commit(api_cli
             assert corrected["items"][0]["ins_code"] == "61"
             assert corrected["items"][0]["strike_price"] == 900
             assert corrected["items"][0]["intrinsic_gap_percent"] == pytest.approx(120)
+            assert corrected["items"][0]["underlying_closing_price"] == 1120
+            assert corrected["items"][0]["gross_profit_per_unit"] == 120
+            assert corrected["items"][0]["is_arbitrage_candidate"] is True
+            assert api_client.get("/api/expiries?arbitrage_only=true&min_score=50").json()["items"] == corrected["items"]
             assert api_client.get("/api/expiries").json()["items"][0]["ins_code"] == "61"
             assert storage.get_expiry_snapshot(date(2026, 10, 21)) == previous
         finally:

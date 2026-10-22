@@ -41,6 +41,9 @@ function analyticalSnapshot(changes = {}) {
       ins_code: "12345678901234567", symbol: "ضخود۸۰۱", underlying_ins_code: "2001", underlying_symbol: "خودرو",
       option_type: "call", strike_price: 1000, end_date: 20261021, days_remaining: 0,
       ask_price: 100, ask_volume: 20, underlying_last_price: 1120, intrinsic_value: 120,
+      underlying_closing_price: 1120, estimated_cash_value_per_unit: 120,
+      gross_profit_per_unit: 20, is_arbitrage_candidate: true,
+      price_min: 80, price_max: 160, price_range_date: 20261021,
       intrinsic_gap_percent: 20, trade_volume: 100, moneyness: "ITM",
     }],
     total_upcoming: 2, market_received_at: "2026-10-21T09:00:00Z", pricing_current: true,
@@ -108,6 +111,60 @@ test("opening the initial panel never fetches the market and leaves the badge hi
   await expect(page.locator("#btnExpiries")).toHaveAttribute("aria-expanded", "true");
   await page.locator("#btnExpiries").click();
   await expect(page.locator("#expiryPanel")).toBeHidden();
+  assert.equal(state.postCalls, 0);
+});
+
+test("filters start collapsed and toggle by click and keyboard without fetching the market", async (t) => {
+  const { page, state } = await fixture(t, { initial: analyticalSnapshot() });
+  await state.open();
+  await page.locator("#btnExpiries").click();
+  const heading = page.locator("#expiryFilterToggle");
+  const filters = page.locator("#expiryFilters");
+  await expect(heading).toBeVisible();
+  await expect(filters).toBeHidden();
+  const calls = state.getCalls;
+  await heading.click();
+  await expect(filters).toBeVisible();
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((value) => document.documentElement.dataset.theme = value, theme);
+    assert(await page.locator("#expirySection").evaluate((element) => element.scrollWidth <= element.clientWidth));
+  }
+  await heading.press("Enter");
+  await expect(filters).toBeHidden();
+  await heading.press("Space");
+  await expect(filters).toBeVisible();
+  assert.equal(state.getCalls, calls);
+  assert.equal(state.postCalls, 0);
+});
+
+test("collapsed filters retain selections and their count through updates and can be cleared", async (t) => {
+  const { page, state } = await fixture(t, { initial: analyticalSnapshot() });
+  await state.open();
+  await page.locator("#btnExpiries").click();
+  const heading = page.locator("#expiryFilterToggle");
+  const filters = page.locator("#expiryFilters");
+  const count = page.locator("#expiryFilterCount");
+  await expect(count).toBeHidden();
+  await heading.click();
+  await page.locator('[data-expiry-filter="option_type"]').selectOption("call");
+  await expect(count).toHaveText("۱ فیلتر انتخاب‌شده");
+  await heading.click();
+  const calls = state.getCalls;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect.poll(() => state.getCalls).toBeGreaterThan(calls);
+  await expect(filters).toBeHidden();
+  await expect(count).toBeVisible();
+  await expect(page.locator('[data-expiry-filter="option_type"]')).toHaveValue("call");
+  await heading.click();
+  await page.locator('[data-expiry-filter="min_days"]').fill("x");
+  await heading.click();
+  await expect(page.locator("#expiryFilterError")).toBeVisible();
+  await expect(count).toHaveText("۲ فیلتر انتخاب‌شده");
+  await heading.click();
+  await page.locator("#btnExpiryClearFilters").click();
+  await expect(count).toBeHidden();
+  await expect(page.locator("#expiryFilterError")).toBeHidden();
+  await expect(filters).toBeVisible();
   assert.equal(state.postCalls, 0);
 });
 
@@ -519,11 +576,21 @@ test("analytical cards show prices, intrinsic value, score and volume in the mob
   const { page, state } = await fixture(t, { initial: analyticalSnapshot() });
   await state.open();
   await page.locator("#btnExpiries").click();
+  await page.locator("#expiryList summary").click();
+  await expect(page.locator("#expiryList .expiry-metrics")).toBeVisible();
   const metrics = page.locator("#expiryList");
-  for (const text of ["بهترین عرضه", "قیمت سهم پایه", "ارزش ذاتی", "اختلاف با ارزش ذاتی (%)", "۲۰٪", "حجم معاملات", "ITM"]) {
+  for (const text of ["بهترین عرضه", "قیمت سهم پایه", "قیمت پایانی سهم پایه", "ارزش ذاتی",
+    "کمترین قیمت معامله‌شده امروز (ریال)", "بیشترین قیمت معامله‌شده امروز (ریال)",
+    "دریافتی نقدی برآوردی هر واحد (ریال)", "برآورد ناخالص پیش از کارمزد", "بازده ناخالص برآوردی (%)",
+    "۲۰٪", "فرصت بالقوه", "حجم معاملات", "ITM"]) {
     await expect(metrics).toContainText(text);
   }
+  await expect(page.locator(".expiry-arbitrage-candidate")).toHaveCount(1);
   await expect(page.locator("#expiryPricingNote")).toContainText("پیش از کارمزد");
+  await expect(page.locator("#expiryPricingNote")).toContainText("امکان تسویه نقدی همان روز را تأیید نمی‌کند");
+  await expect(page.locator("#expiryPricingNote")).toContainText("مبنای خرید، بهترین عرضه فعلی است");
+  await expect(page.getByText("کمترین قیمت معامله‌شده امروز (ریال)", { exact: true }).locator("..").locator("dd")).toHaveText("۸۰");
+  await expect(page.getByText("بیشترین قیمت معامله‌شده امروز (ریال)", { exact: true }).locator("..").locator("dd")).toHaveText("۱۶۰");
   for (const theme of ["light", "dark"]) {
     await page.evaluate((value) => document.documentElement.dataset.theme = value, theme);
     assert(await page.locator("#expirySection").evaluate((element) => element.scrollWidth <= element.clientWidth));
@@ -531,11 +598,182 @@ test("analytical cards show prices, intrinsic value, score and volume in the mob
   assert.equal(state.postCalls, 0);
 });
 
+test("contract details start collapsed and toggle by click, Enter and Space", async (t) => {
+  const { page, state } = await fixture(t, { initial: analyticalSnapshot() });
+  await state.open();
+  await page.locator("#btnExpiries").click();
+  const heading = page.locator("#expiryList summary");
+  const metrics = page.locator("#expiryList .expiry-metrics");
+  await expect(heading).toBeVisible();
+  await expect(metrics).toBeHidden();
+  await heading.click();
+  await expect(metrics).toBeVisible();
+  await heading.press("Enter");
+  await expect(metrics).toBeHidden();
+  await heading.press("Space");
+  await expect(metrics).toBeVisible();
+  assert.equal(state.postCalls, 0);
+});
+
+test("contract expansion and keyboard focus survive updated snapshots", async (t) => {
+  const { page, state } = await fixture(t, { initial: analyticalSnapshot() });
+  await state.open();
+  await page.locator("#btnExpiries").click();
+  const heading = page.locator("#expiryList summary");
+  const metrics = page.locator("#expiryList .expiry-metrics");
+  await heading.click();
+  const update = analyticalSnapshot();
+  update.items[0].ask_price = 80;
+  state.payload = update;
+  const calls = state.getCalls;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect.poll(() => state.getCalls).toBeGreaterThan(calls);
+  await expect(metrics).toBeVisible();
+  await expect(heading).toBeFocused();
+  await expect(page.getByText("بهترین عرضه", { exact: true }).locator("..").locator("dd")).toHaveText("۸۰");
+  await heading.click();
+  await expect(metrics).toBeHidden();
+  const closedCalls = state.getCalls;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect.poll(() => state.getCalls).toBeGreaterThan(closedCalls);
+  await expect(metrics).toBeHidden();
+  assert.equal(state.postCalls, 0);
+});
+
+test("updating a long contract list preserves its scroll position and expanded cards", async (t) => {
+  const data = analyticalSnapshot();
+  data.items = Array.from({ length: 50 }, (_, index) => ({
+    ...data.items[0], ins_code: String(index + 1), symbol: `قرارداد ${index + 1}`,
+  }));
+  data.total = data.total_upcoming = data.items.length;
+  const { page, state } = await fixture(t, { initial: data });
+  await state.open();
+  await page.locator("#btnExpiries").click();
+  const first = page.locator('[data-ins-code="11"]');
+  const second = page.locator('[data-ins-code="12"]');
+  await first.locator("summary").click();
+  await second.locator("summary").click();
+  const position = await page.locator("#expiryList").evaluate((element) => {
+    element.scrollTop = 1700;
+    return element.scrollTop;
+  });
+  assert(position > 0);
+  state.payload = { ...data, items: data.items.map((row) => ({ ...row, ask_price: 80 })) };
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(second.getByText("بهترین عرضه", { exact: true }).locator("..").locator("dd")).toHaveText("۸۰");
+  await expect(first).toHaveAttribute("open", "");
+  await expect(second).toHaveAttribute("open", "");
+  await expect(second.locator("summary")).toBeFocused();
+  assert.equal(await page.locator("#expiryList").evaluate((element) => element.scrollTop), position);
+  assert.equal(state.postCalls, 0);
+});
+
+test("contract expansion follows its instrument through filtering and reordered results", async (t) => {
+  const data = analyticalSnapshot();
+  data.items.push({ ...data.items[0], ins_code: "2", symbol: "قرارداد فروش", option_type: "put" });
+  data.total = data.total_upcoming = data.items.length;
+  const { page, state } = await fixture(t, { initial: data });
+  state.getHandler = (_, params) => {
+    const items = state.payload.items.filter((row) => !params.has("option_type") || row.option_type === params.get("option_type"));
+    return { ...state.payload, items, total: items.length };
+  };
+  await state.open();
+  await page.locator("#btnExpiries").click();
+  await page.locator("#expiryFilterToggle").click();
+  const call = page.locator('[data-ins-code="12345678901234567"]');
+  const put = page.locator('[data-ins-code="2"]');
+  await call.locator("summary").click();
+  await page.locator('[data-expiry-filter="option_type"]').selectOption("put");
+  await expect(call).toHaveCount(0);
+  await expect(put).not.toHaveAttribute("open", "");
+  await put.locator("summary").click();
+  state.payload = { ...data, items: [...data.items].reverse() };
+  await page.locator("#btnExpiryClearFilters").click();
+  await expect(call).toHaveAttribute("open", "");
+  await expect(put).toHaveAttribute("open", "");
+  assert.equal(state.postCalls, 0);
+});
+
+test("a past cheap trade only becomes a candidate when manual refresh returns a cheaper current ask", async (t) => {
+  const data = analyticalSnapshot();
+  data.items[0] = { ...data.items[0], ask_price: 150, price_max: 200,
+    gross_profit_per_unit: -30, intrinsic_gap_percent: -20, is_arbitrage_candidate: false };
+  const { page, state } = await fixture(t, { initial: data });
+  await state.open();
+  await page.locator("#btnExpiries").click();
+  await expect(page.getByText("کمترین قیمت معامله‌شده امروز (ریال)", { exact: true }).locator("..").locator("dd")).toHaveText("۸۰");
+  await expect(page.locator(".expiry-arbitrage-candidate")).toHaveCount(0);
+  await page.clock.fastForward(10000);
+  assert.equal(state.postCalls, 0);
+  await page.locator("#btnExpiryRefresh").click();
+  state.payload = analyticalSnapshot();
+  await page.clock.fastForward(3100);
+  await expect(page.locator(".expiry-arbitrage-candidate")).toHaveCount(1);
+  await expect(page.locator("#expiryList")).toContainText("فرصت بالقوه");
+  assert.equal(state.postCalls, 1);
+});
+
+test("the arbitrage filter combines with contract type and clearing restores all contracts", async (t) => {
+  const data = analyticalSnapshot();
+  const call = data.items[0];
+  const unpriced = { ...call, estimated_cash_value_per_unit: null, gross_profit_per_unit: null,
+    intrinsic_gap_percent: null, is_arbitrage_candidate: false };
+  data.items.push(
+    { ...unpriced, ins_code: "2", symbol: "قرارداد فروش", option_type: "put" },
+    { ...unpriced, ins_code: "3", symbol: "قرارداد فردا", end_date: 20261022, days_remaining: 1 },
+  );
+  data.total = data.total_upcoming = 3;
+  const { page, state } = await fixture(t, { initial: data });
+  const queries = [];
+  state.getHandler = (call, params) => {
+    queries.push(Object.fromEntries(params));
+    let items = data.items;
+    if (params.get("arbitrage_only") === "true") items = items.filter((row) => row.is_arbitrage_candidate);
+    if (params.has("option_type")) items = items.filter((row) => row.option_type === params.get("option_type"));
+    return { ...data, items, total: items.length };
+  };
+  await state.open();
+  await page.locator("#btnExpiries").click();
+  await page.locator("#expiryFilterToggle").click();
+  await expect(page.locator("#expiryList li")).toHaveCount(3);
+  await expect(page.locator(".expiry-arbitrage-candidate")).toHaveCount(1);
+  await page.locator('[data-expiry-filter="arbitrage_only"]').selectOption("true");
+  await expect(page.locator("#expiryList li")).toHaveCount(1);
+  await expect.poll(() => queries.at(-1)).toEqual({ arbitrage_only: "true" });
+  await page.locator('[data-expiry-filter="option_type"]').selectOption("put");
+  await expect(page.locator("#expiryList li")).toHaveCount(0);
+  await expect.poll(() => queries.at(-1)).toEqual({ option_type: "put", arbitrage_only: "true" });
+  await expect(page.locator("#expiryStatus")).toHaveText("نتیجه‌ای مطابق فیلترها نیست");
+  await expect(page.locator("#expiryBadge")).toHaveText("امروز");
+  await page.locator("#btnExpiryClearFilters").click();
+  await expect(page.locator("#expiryList li")).toHaveCount(3);
+  await expect(page.locator('[data-expiry-filter="arbitrage_only"]')).toHaveValue("");
+  await expect.poll(() => queries.at(-1)).toEqual({});
+  assert.equal(state.postCalls, 0);
+});
+
+test("zero and negative returns are displayed without being marked as opportunities", async (t) => {
+  const data = analyticalSnapshot();
+  data.items = [
+    { ...data.items[0], gross_profit_per_unit: 0, intrinsic_gap_percent: 0, is_arbitrage_candidate: false },
+    { ...data.items[0], ins_code: "2", gross_profit_per_unit: -10, intrinsic_gap_percent: -10, is_arbitrage_candidate: false },
+  ];
+  data.total = data.total_upcoming = 2;
+  const { page, state } = await fixture(t, { initial: data });
+  await state.open();
+  await page.locator("#btnExpiries").click();
+  await expect(page.locator(".expiry-arbitrage-candidate")).toHaveCount(0);
+  await expect(page.locator("#expiryList")).toContainText("۰٪");
+  await expect(page.locator("#expiryList")).toContainText("۱۰٪");
+  await expect(page.getByText("فرصتی شناسایی نشد", { exact: true })).toHaveCount(2);
+});
+
 test("numeric filters debounce for 300 ms and normalize Persian and Arabic digits", async (t) => {
   const { page, state } = await fixture(t, { initial: analyticalSnapshot() });
   await page.clock.pauseAt(new Date("2026-10-21T12:00:01Z"));
   await state.open();
   await page.locator("#btnExpiries").click();
+  await page.locator("#expiryFilterToggle").click();
   const queries = [];
   state.getHandler = (call, params) => { queries.push(Object.fromEntries(params)); return analyticalSnapshot(); };
   const calls = state.getCalls;
@@ -560,11 +798,14 @@ test("a slower filter response cannot replace a newer selection", async (t) => {
   const { page, state } = await fixture(t, { initial: analyticalSnapshot() });
   await state.open();
   await page.locator("#btnExpiries").click();
+  await page.locator("#expiryFilterToggle").click();
   let release;
   const pending = new Promise((resolve) => { release = resolve; });
   t.after(() => release(analyticalSnapshot()));
   state.getHandler = (call, params) => params.get("option_type") === "call" ? pending
-    : analyticalSnapshot({ items: [{ ...analyticalSnapshot().items[0], symbol: "نتیجه فروش", option_type: "put" }] });
+    : analyticalSnapshot({ items: [{ ...analyticalSnapshot().items[0], symbol: "نتیجه فروش", option_type: "put",
+      estimated_cash_value_per_unit: null, gross_profit_per_unit: null,
+      intrinsic_gap_percent: null, is_arbitrage_candidate: false }] });
   const calls = state.getCalls;
   await page.locator('[data-expiry-filter="option_type"]').selectOption("call");
   await expect.poll(() => state.getCalls).toBe(calls + 1);
@@ -583,6 +824,7 @@ test("changing a numeric filter invalidates pending responses before its debounc
   await page.clock.pauseAt(new Date("2026-10-21T12:00:01Z"));
   await state.open();
   await page.locator("#btnExpiries").click();
+  await page.locator("#expiryFilterToggle").click();
   let release;
   const pending = new Promise((resolve) => { release = resolve; });
   t.after(() => release(analyticalSnapshot()));
@@ -606,6 +848,7 @@ test("filters survive progressive refresh and page restoration while the global 
   const { page, state } = await fixture(t, { initial: analyticalSnapshot() });
   await state.open();
   await page.locator("#btnExpiries").click();
+  await page.locator("#expiryFilterToggle").click();
   const queries = [];
   state.getHandler = (call, params) => { queries.push(params.toString()); return state.payload; };
   await page.locator("#expiryUnderlyingFilter").selectOption("2002");
@@ -638,6 +881,7 @@ test("invalid ranges keep results visible and do not stop refresh status polling
   await page.clock.pauseAt(new Date("2026-10-21T12:00:01Z"));
   await state.open();
   await page.locator("#btnExpiries").click();
+  await page.locator("#expiryFilterToggle").click();
   state.postHandler = () => {
     state.payload = analyticalSnapshot({
       partial: true, refresh: { running: true, stage: "metadata", processed: 0, total: 100 },
@@ -663,34 +907,41 @@ test("invalid ranges keep results visible and do not stop refresh status polling
   await expect(page.locator("#expiryFilterError")).toBeHidden();
 });
 
-test("stale prices and empty score filters explicitly request today's update", async (t) => {
-  const { page, state } = await fixture(t, { initial: analyticalSnapshot({ pricing_current: false, market_received_at: "2026-10-20T09:00:00Z" }) });
-  await state.open();
-  await page.locator("#btnExpiries").click();
-  await expect(page.locator("#expiryList")).toContainText("نیازمند به‌روزرسانی");
-  await expect(page.locator("#expiryPricingNote")).toContainText("امروز");
-  state.payload = analyticalSnapshot({ items: [], total: 0, pricing_current: false });
-  await page.locator('[data-expiry-filter="min_score"]').fill("0");
-  await page.clock.fastForward(310);
-  await expect(page.locator("#expiryStatus")).toContainText("فیلتر امتیاز نیازمند");
-  await expect(page.locator("#expiryBadge")).toHaveText("امروز");
-  state.payload = analyticalSnapshot({ pricing_current: true });
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect(page.locator("#expiryList")).toContainText("۲۰٪");
-  assert.equal(state.postCalls, 0);
-});
+for (const [filter, value] of [["min_score", "0"], ["arbitrage_only", "true"]]) {
+  test(`stale prices and empty ${filter} filters explicitly request today's update`, async (t) => {
+    const { page, state } = await fixture(t, { initial: analyticalSnapshot({ pricing_current: false, market_received_at: "2026-10-20T09:00:00Z" }) });
+    await state.open();
+    await page.locator("#btnExpiries").click();
+    await page.locator("#expiryFilterToggle").click();
+    await expect(page.locator("#expiryList")).toContainText("نیازمند به‌روزرسانی");
+    await expect(page.locator("#expiryList")).not.toContainText("فرصت بالقوه");
+    await expect(page.locator(".expiry-arbitrage-candidate")).toHaveCount(0);
+    await expect(page.locator("#expiryPricingNote")).toContainText("امروز");
+    state.payload = analyticalSnapshot({ items: [], total: 0, pricing_current: false });
+    const control = page.locator(`[data-expiry-filter="${filter}"]`);
+    if (filter === "min_score") await control.fill(value);
+    else await control.selectOption(value);
+    await page.clock.fastForward(310);
+    await expect(page.locator("#expiryStatus")).toContainText("فیلتر بازده و آربیتراژ نیازمند");
+    await expect(page.locator("#expiryBadge")).toHaveText("امروز");
+    state.payload = analyticalSnapshot({ pricing_current: true });
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(page.locator("#expiryList")).toContainText("۲۰٪");
+    assert.equal(state.postCalls, 0);
+  });
+}
 
 test("Tehran midnight disables yesterday's score without fetching the market", async (t) => {
   const data = analyticalSnapshot();
-  data.items[0] = { ...data.items[0], end_date: 20261022, days_remaining: 1 };
-  data.nearest_days = 1;
   const { page, state } = await fixture(t, { now: "2026-10-21T20:29:00Z", initial: data });
   await state.open();
   await page.locator("#btnExpiries").click();
   await expect(page.locator("#expiryList")).toContainText("۲۰٪");
   state.payload = {
     ...data, as_of_date: "2026-10-22", nearest_days: 0, pricing_current: false,
-    items: [{ ...data.items[0], days_remaining: 0, intrinsic_gap_percent: null }],
+    items: [{ ...data.items[0], end_date: 20261022, days_remaining: 0, intrinsic_gap_percent: null,
+      estimated_cash_value_per_unit: null, gross_profit_per_unit: null, is_arbitrage_candidate: false,
+      price_min: null, price_max: null }],
   };
   await page.clock.fastForward(61000);
   await expect(page.locator("#expiryBadge")).toHaveText("امروز");
@@ -703,6 +954,7 @@ test("an invalid filter cannot cancel reconciliation after a lost refresh respon
   await page.clock.pauseAt(new Date("2026-10-21T12:00:01Z"));
   await state.open();
   await page.locator("#btnExpiries").click();
+  await page.locator("#expiryFilterToggle").click();
   // The server started refreshing, but the POST response did not arrive.
   state.payload = analyticalSnapshot({
     partial: true,
@@ -737,6 +989,7 @@ test("an invalid filter during the initial read still loads the cached global wa
   };
   await state.open();
   await page.locator("#btnExpiries").click();
+  await page.locator("#expiryFilterToggle").click();
   await page.locator('[data-expiry-filter="max_days"]').fill("x");
   await page.clock.fastForward(310);
   await expect(page.locator("#expiryBadge")).toHaveText("امروز");
@@ -753,17 +1006,17 @@ test("an invalid filter during the initial read still loads the cached global wa
 for (const mode of ["failed", "pending"]) {
   test(`Tehran midnight invalidates cached scores and day counts while a read is ${mode}`, async (t) => {
     const data = analyticalSnapshot();
-    data.items[0] = { ...data.items[0], end_date: 20261022, days_remaining: 1 };
-    data.nearest_days = 1;
     const { page, state } = await fixture(t, { now: "2026-10-21T20:29:00Z", initial: data });
     await page.clock.pauseAt(new Date("2026-10-21T20:29:01Z"));
     await state.open();
     await page.locator("#btnExpiries").click();
     await expect(page.locator("#expiryList")).toContainText("۲۰٪");
-    await expect(page.locator("#expiryBadge")).toHaveText("۱ روز");
+    await expect(page.locator("#expiryBadge")).toHaveText("امروز");
     const nextDay = {
       ...data, as_of_date: "2026-10-22", nearest_days: 0, pricing_current: false,
-      items: [{ ...data.items[0], days_remaining: 0, intrinsic_gap_percent: null }],
+      items: [{ ...data.items[0], end_date: 20261022, days_remaining: 0, intrinsic_gap_percent: null,
+        estimated_cash_value_per_unit: null, gross_profit_per_unit: null, is_arbitrage_candidate: false,
+        price_min: null, price_max: null }],
     };
     let release;
     const pending = new Promise((resolve) => { release = resolve; });
@@ -775,6 +1028,9 @@ for (const mode of ["failed", "pending"]) {
     await expect.poll(() => state.getCalls).toBeGreaterThan(calls);
     await expect(page.locator("#expiryList")).toContainText("نیازمند به‌روزرسانی");
     await expect(page.locator("#expiryList")).not.toContainText("۲۰٪");
+    await expect(page.locator("#expiryList")).not.toContainText("فرصت بالقوه");
+    await expect(page.getByText("کمترین قیمت معامله‌شده امروز (ریال)", { exact: true }).locator("..").locator("dd")).toHaveText("نیازمند به‌روزرسانی");
+    await expect(page.locator(".expiry-arbitrage-candidate")).toHaveCount(0);
     await expect(page.locator("#expiryList li")).toHaveCount(1);
     await expect(page.locator("#expiryBadge")).toHaveText("نیازمند بررسی");
     await expect(page.locator("#expiryList .expiry-badge")).toHaveText("نیازمند بررسی");
@@ -792,8 +1048,6 @@ for (const mode of ["failed", "pending"]) {
 
 test("restoring after Tehran midnight invalidates the old view before a pending read returns", async (t) => {
   const data = analyticalSnapshot();
-  data.items[0] = { ...data.items[0], end_date: 20261022, days_remaining: 1 };
-  data.nearest_days = 1;
   const { page, state } = await fixture(t, { now: "2026-10-21T20:29:00Z", initial: data });
   await page.clock.pauseAt(new Date("2026-10-21T20:29:01Z"));
   await state.open();
@@ -803,7 +1057,9 @@ test("restoring after Tehran midnight invalidates the old view before a pending 
   await page.clock.fastForward(61000);
   const nextDay = {
     ...data, as_of_date: "2026-10-22", nearest_days: 0, pricing_current: false,
-    items: [{ ...data.items[0], days_remaining: 0, intrinsic_gap_percent: null }],
+    items: [{ ...data.items[0], end_date: 20261022, days_remaining: 0, intrinsic_gap_percent: null,
+      estimated_cash_value_per_unit: null, gross_profit_per_unit: null, is_arbitrage_candidate: false,
+      price_min: null, price_max: null }],
   };
   let release;
   const pending = new Promise((resolve) => { release = resolve; });

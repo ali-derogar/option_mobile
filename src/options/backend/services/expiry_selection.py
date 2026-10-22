@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from math import isfinite
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from options.backend.analysis.arbitrage import estimate_call_cash_arbitrage
 from options.backend.analysis.sentiment import (
     compute_intrinsic_value,
     compute_moneyness,
@@ -25,6 +27,7 @@ class ExpiryFilters:
     moneyness: str | None = None
     min_score: float | None = None
     min_volume: int | None = None
+    arbitrage_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -67,10 +70,19 @@ def _pricing_current(received_at: str | None, today: date) -> bool:
         return False
 
 
+def _public_warning(warning: str | None) -> str | None:
+    """Hide the metadata fallback notice, including in previously saved snapshots."""
+    return re.sub(
+        r"مشخصات تکمیلی \d+ قرارداد دریافت نشد؛ از اطلاعات معتبر خوراک بازار استفاده شد\.\s*",
+        "", warning or "",
+    ).strip() or None
+
+
 def _matches(row: dict[str, Any], filters: ExpiryFilters) -> bool:
     return (
         (filters.underlying_ins_code is None or row["underlying_ins_code"] == str(filters.underlying_ins_code))
         and (filters.option_type is None or row["option_type"] == filters.option_type)
+        and (not filters.arbitrage_only or row["is_arbitrage_candidate"])
         and row["days_remaining"] >= filters.min_days
         and (filters.max_days is None or row["days_remaining"] <= filters.max_days)
         and (filters.moneyness is None or row["moneyness"] == filters.moneyness)
@@ -102,14 +114,21 @@ def select_expiries(
     for row in by_code.values():
         strike = _number(row.get("strike_price"), positive=True)
         underlying_price = _number(row.get("underlying_last_price"), positive=True)
+        underlying_closing_price = _number(row.get("underlying_closing_price"), positive=True)
         ask = _number(row.get("ask_price"), positive=True)
         ask_volume = _number(row.get("ask_volume"))
         intrinsic = compute_intrinsic_value(row["option_type"], strike, underlying_price)
-        score = None
-        if pricing_current and intrinsic is not None and ask is not None and ask_volume is not None and ask_volume > 0:
-            score = (intrinsic - ask) / ask * 100
-            if not isfinite(score):
-                score = None
+        price_min = _number(row.get("price_min"), positive=True)
+        price_max = _number(row.get("price_max"), positive=True)
+        range_current = str(row.get("price_range_date")) == str(cutoff)
+        if not range_current or price_min is None or price_max is None or price_min > price_max:
+            price_min = price_max = None
+        days_remaining = (date.fromisoformat(str(row["end_date"])) - today).days
+        estimate = estimate_call_cash_arbitrage(
+            option_type=row["option_type"], days_remaining=days_remaining,
+            pricing_current=pricing_current, strike_price=strike,
+            underlying_closing_price=underlying_closing_price, ask_price=ask, ask_volume=ask_volume,
+        )
         underlying_code = str(row["underlying_ins_code"]) if row.get("underlying_ins_code") else None
         if underlying_code:
             underlyings[underlying_code] = row.get("underlying_symbol") or underlying_code
@@ -119,14 +138,21 @@ def select_expiries(
             "underlying_ins_code": underlying_code,
             "end_date": int(row["end_date"]),
             "strike_price": strike,
-            "days_remaining": (date.fromisoformat(str(row["end_date"])) - today).days,
+            "days_remaining": days_remaining,
             "ask_price": ask,
             "ask_volume": ask_volume,
             "underlying_last_price": underlying_price,
+            "underlying_closing_price": underlying_closing_price,
             "trade_volume": _number(row.get("trade_volume")),
+            "price_min": price_min,
+            "price_max": price_max,
             "intrinsic_value": intrinsic,
             "moneyness": compute_moneyness(row["option_type"], strike, underlying_price),
-            "intrinsic_gap_percent": score,
+            # Keep the public score/filter name for existing API consumers.
+            "intrinsic_gap_percent": estimate.return_percent,
+            "estimated_cash_value_per_unit": estimate.estimated_cash_value_per_unit,
+            "gross_profit_per_unit": estimate.gross_profit_per_unit,
+            "is_arbitrage_candidate": estimate.is_arbitrage_candidate,
         })
 
     def sort_key(row: dict[str, Any]) -> tuple[int, bool, float, int]:
@@ -146,5 +172,5 @@ def select_expiries(
             {"ins_code": code, "symbol": symbol}
             for code, symbol in sorted(underlyings.items(), key=lambda item: (item[1], int(item[0])))
         ],
-        "warning": snapshot.warning,
+        "warning": _public_warning(snapshot.warning),
     }

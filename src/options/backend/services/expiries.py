@@ -11,9 +11,11 @@ from typing import Any
 
 import requests
 
+from options.backend.services.daily_prices import fetch_public_daily_price_ranges
 from options.backend.services.expiry_selection import (
     ExpiryFilters,
     ExpirySnapshot,
+    MARKET_TZ,
     select_expiries,
     valid_expiry,
 )
@@ -45,7 +47,11 @@ def _expiry_row(contract: dict[str, Any]) -> dict[str, Any] | None:
         "ask_price": contract.get("ask_price"),
         "ask_volume": contract.get("ask_volume"),
         "underlying_last_price": contract.get("underlying_last_price"),
+        "underlying_closing_price": contract.get("underlying_closing_price"),
         "trade_volume": contract.get("trade_volume"),
+        "price_min": contract.get("price_min"),
+        "price_max": contract.get("price_max"),
+        "price_range_date": contract.get("price_range_date"),
     }
 
 
@@ -123,6 +129,24 @@ def fetch_expiry_contracts(
                 consume(code, info.get(code))
     if not rows_by_code:
         raise ValueError("no valid expiry dates returned")
+    # Metadata may correct the expiry date. Resolve it before selecting calls
+    # for the extra quote requests, and keep the original feed's Tehran day.
+    market_date = datetime.fromisoformat(received_at).astimezone(MARKET_TZ).date()
+    range_codes = [
+        code for code, row in rows_by_code.items()
+        if row["option_type"] == "call" and row["end_date"] == int(market_date.strftime("%Y%m%d"))
+    ]
+    if range_codes:
+        ranges = fetch_public_daily_price_ranges(range_codes, market_date)
+        for code in range_codes:
+            if code in ranges:
+                # Earlier snapshots may still be read outside the refresh lock.
+                # Replace the row, as metadata updates do, rather than mutate it.
+                rows_by_code[code] = {**rows_by_code[code], **ranges[code]}
+        if ranges:
+            publish()
+    if missing:
+        logger.info("Supplementary metadata unavailable for %d expiry contracts; using market-watch data.", len(missing))
     return snapshot()
 
 
@@ -181,6 +205,8 @@ class ExpiryRefresh:
             storage.replace_expiry_contracts(
                 snapshot.rows, snapshot.warning, market_received_at=snapshot.market_received_at,
             )
+            if snapshot.rows:
+                storage.cleanup_old_history()
         except Exception:
             logger.exception("Expiry refresh failed")
             with self._lock:

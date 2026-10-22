@@ -4837,12 +4837,39 @@ html[data-theme="dark"] .filters select {
   font-size: 0.78rem;
 }
 
+.expiry-filter-details {
+  margin: 0 0.85rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.expiry-filter-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.expiry-filter-toggle strong {
+  flex: 1;
+}
+
+.expiry-filter-count {
+  color: var(--accent);
+  font-size: 0.72rem;
+}
+
 .expiry-filters {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
   align-items: end;
   gap: 0.7rem;
-  padding: 0 0.85rem 0.85rem;
+  padding: 0.7rem 0.75rem 0.85rem;
 }
 
 .expiry-filters label {
@@ -4895,8 +4922,12 @@ html[data-theme="dark"] .filters select {
 }
 
 .expiry-card {
-  padding: 0.85rem 0;
+  padding: 0.45rem 0;
   border-top: 1px solid var(--border);
+}
+
+.expiry-arbitrage-candidate {
+  border-top-color: var(--green);
 }
 
 .expiry-card-head {
@@ -4904,9 +4935,47 @@ html[data-theme="dark"] .filters select {
   justify-content: space-between;
   align-items: center;
   gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.4rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  list-style: none;
+}
+
+.expiry-card-head::-webkit-details-marker,
+.expiry-filter-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.expiry-card-head::after,
+.expiry-filter-toggle::after {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  flex-shrink: 0;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  transform: rotate(45deg);
+}
+
+.expiry-contract-details[open] > .expiry-card-head::after,
+.expiry-filter-details[open] > .expiry-filter-toggle::after {
+  transform: rotate(225deg);
+}
+
+.expiry-card-head:hover,
+.expiry-filter-toggle:hover {
+  background: var(--surface-hover);
+}
+
+.expiry-card-head:focus-visible,
+.expiry-filter-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .expiry-card-head strong {
+  flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
 }

@@ -696,6 +696,11 @@ async def refresh_catalog(request: Request) -> JSONResponse:
 def _expiry_filters(request: Request) -> ExpiryFilters:
     option_type = _query_value(request, "option_type")
     moneyness = _query_value(request, "moneyness")
+    arbitrage_only = request.query_params.get("arbitrage_only")
+    if arbitrage_only is not None:
+        arbitrage_only = arbitrage_only.strip()
+    if arbitrage_only is not None and arbitrage_only not in {"true", "false"}:
+        raise HTTPException(400, "invalid arbitrage_only")
     if option_type is not None and option_type not in {"call", "put"}:
         raise HTTPException(400, "invalid option_type")
     if moneyness is not None and moneyness not in {"ITM", "ATM", "OTM"}:
@@ -717,6 +722,7 @@ def _expiry_filters(request: Request) -> ExpiryFilters:
         underlying_ins_code=_query_int(request, "underlying_ins_code", min_value=1, max_value=2**63 - 1),
         option_type=option_type, min_days=min_days, max_days=max_days, moneyness=moneyness,
         min_score=min_score, min_volume=_query_int(request, "min_volume", min_value=0),
+        arbitrage_only=arbitrage_only == "true",
     )
 
 
