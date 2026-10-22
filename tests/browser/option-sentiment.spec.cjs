@@ -192,6 +192,49 @@ test("restoring the page keeps cached charts and position controls usable when d
   await expect(page.locator("#sentimentRefresh")).toBeEnabled();
 });
 
+test("restoring the page ignores a pending response from the previous visit and preserves selected modes", async (t) => {
+  const { page, state, open } = await fixture(t);
+  await open();
+  await page.getByRole("checkbox", { name: "خرید Put", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "فروش Call", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "فروش Put", exact: true }).uncheck();
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  state.handler = (params) => params.get("expiry") === "20261209" ? pending : payload(params);
+  await page.locator("#sentimentExpiry").selectOption("20261209");
+  await expect.poll(() => state.requests.at(-1).get("expiry")).toBe("20261209");
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  await expect(page.locator("#loadingOverlay")).toHaveClass(/hidden/);
+  await expect(page.locator("#sentimentStatus")).toHaveText("تحلیل آماده است.");
+  release(payload(new URLSearchParams({ expiry: "20261209" })));
+  await page.waitForTimeout(100);
+  await expect(page.locator("#sentimentExpiry")).toHaveValue("all");
+  await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toContainText("۱۰ میلیون");
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["خرید Call"]);
+  assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 2);
+  assert.equal(state.posts.length, 2);
+});
+
+test("restoring a different analysis tab does not restart the hidden sentiment module", async (t) => {
+  const { page, state, open } = await fixture(t);
+  await open();
+  await page.getByRole("tab", { name: "حقیقی", exact: true }).click();
+  const reads = state.requests.length;
+  const posts = state.posts.length;
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  await expect(page.locator("#loadingOverlay")).toHaveClass(/hidden/);
+  await page.clock.fastForward(10000);
+  assert.equal(state.requests.length, reads);
+  assert.equal(state.posts.length, posts);
+  assert.equal(await page.evaluate(() => Chart.getChart("sentimentOiChart") == null), true);
+});
+
 test("combining both positions of one option does not double coverage or turn missing OI into zero", async (t) => {
   const { page, state, open } = await fixture(t);
   state.handler = (params) => {
