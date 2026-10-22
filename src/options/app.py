@@ -27,6 +27,7 @@ USER_DATA_TABLES = (
     "underlying_catalog",
     "watchlist",
     "expiry_contracts",
+    "option_sentiment_snapshots",
 )
 
 

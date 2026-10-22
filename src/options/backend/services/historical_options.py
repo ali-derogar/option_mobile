@@ -32,11 +32,28 @@ def import_public_option_history(
     interest. Open interest fields are therefore left empty unless a local
     snapshot already exists.
     """
-    api_date = _api_date(snapshot_date)
-    rows = fetch_instruments_history_in_day(api_date)
+    contracts = fetch_public_option_history_contracts(snapshot_date, metadata_by_ins_code)
+    client_type_rows = fetch_public_client_type_for_date_many(
+        [c["ins_code"] for c in contracts],
+        _api_date(snapshot_date),
+    )
+    return contracts, client_type_rows
+
+
+def fetch_public_option_history_contracts(
+    snapshot_date: str,
+    metadata_by_ins_code: Optional[Dict[int, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Historical price/turnover only: no per-contract client-type requests."""
+    rows = fetch_instruments_history_in_day(_api_date(snapshot_date))
+    # This endpoint commonly omits the date (dEven=0); its URL identifies the
+    # requested session. An explicit conflicting session must never be stored.
+    expected_date = int(_api_date(snapshot_date))
+    if any(_to_int(row.get("dEven")) not in (None, 0, expected_date) for row in rows):
+        raise ValueError("historical response date does not match request")
     metadata_by_ins_code = metadata_by_ins_code or {}
     lookup = _build_underlying_lookup(rows)
-    contracts = [
+    return [
         contract
         for contract in (
             _normalize_historical_option(row, lookup, metadata_by_ins_code)
@@ -44,11 +61,6 @@ def import_public_option_history(
         )
         if contract
     ]
-    client_type_rows = fetch_public_client_type_for_date_many(
-        [c["ins_code"] for c in contracts],
-        api_date,
-    )
-    return contracts, client_type_rows
 
 
 def fetch_instruments_history_in_day(api_date: str) -> List[Dict[str, Any]]:

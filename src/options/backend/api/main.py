@@ -44,6 +44,7 @@ from options.backend.pipeline import run_pipeline
 from options.backend.services.expiries import ExpiryRefresh
 from options.backend.services.expiry_selection import ExpiryFilters
 from options.backend.services.historical_options import import_public_option_history
+from options.backend.services.option_sentiment import OptionSentimentRefresh, get_payload as get_option_sentiment_payload
 from options.backend.services.public_options import (
     fetch_public_client_type_current,
     fetch_public_client_type_current_many,
@@ -83,6 +84,7 @@ DASHBOARD_CSP = (
 storage = Storage()
 catalog_refresh_job = CatalogRefresh()
 expiry_refresh_job = ExpiryRefresh()
+option_sentiment_refresh_job = OptionSentimentRefresh()
 
 _refresh_lock = threading.RLock()
 _history_import_lock = threading.Lock()
@@ -631,6 +633,40 @@ def underlying_trend(request: Request) -> JSONResponse:
     return _json(payload)
 
 
+def option_sentiment(request: Request) -> JSONResponse:
+    data_date = _query_value(request, "date")
+    _parse_snapshot_date(data_date)
+    expiry = _translate_digits(_query_value(request, "expiry") or "all")
+    if expiry != "all":
+        try:
+            datetime.strptime(expiry, "%Y%m%d")
+        except ValueError as exc:
+            raise HTTPException(400, "invalid expiry") from exc
+        if not re.fullmatch(r"[0-9]{8}", expiry):
+            raise HTTPException(400, "invalid expiry")
+    progress = option_sentiment_refresh_job.status()
+    payload = get_option_sentiment_payload(storage, _query_value(request, "underlying_key"), expiry, data_date)
+    payload["refresh"] = progress
+    return _json(payload)
+
+
+async def refresh_option_sentiment(request: Request) -> JSONResponse:
+    body = await _read_json_payload(request, MAX_API_JSON_BODY_BYTES, "invalid refresh body")
+    raw_date = body.get("date")
+    if raw_date is not None and not isinstance(raw_date, str):
+        raise HTTPException(400, "invalid date")
+    data_date = _translate_digits(raw_date.strip()) if raw_date else None
+    _parse_snapshot_date(data_date)
+    if data_date and await run_in_threadpool(storage.get_option_sentiment_snapshot, data_date):
+        return _json({"status": "cached"})
+    status = option_sentiment_refresh_job.begin(data_date)
+    if status["status"] != "started":
+        return _json(status)
+    tasks = BackgroundTasks()
+    tasks.add_task(option_sentiment_refresh_job.run, storage, data_date)
+    return _json(status, status_code=202, background=tasks)
+
+
 def sentiment(request: Request) -> JSONResponse:
     q = _query_value(request, "q")
     date = _query_value(request, "date")
@@ -815,6 +851,8 @@ routes = [
     Route("/api/underlyings/{underlying_key}/contracts", underlying_contracts, methods=["GET"]),
     Route("/api/underlyings/{underlying_key}/trend", underlying_trend, methods=["GET"]),
     Route("/api/sentiment", sentiment, methods=["GET"]),
+    Route("/api/option-sentiment", option_sentiment, methods=["GET"]),
+    Route("/api/option-sentiment/refresh", refresh_option_sentiment, methods=["POST"]),
     Route("/api/open-interest/{ins_code}", open_interest_history, methods=["GET"]),
     Route("/api/refresh/status", refresh_status, methods=["GET"]),
     Route("/api/refresh", refresh, methods=["POST"]),

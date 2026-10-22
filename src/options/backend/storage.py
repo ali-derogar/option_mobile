@@ -218,6 +218,16 @@ class WatchlistEntry(Base):
     created_at = Column(DateTime, nullable=False)
 
 
+class OptionSentimentSnapshot(Base):
+    __tablename__ = "option_sentiment_snapshots"
+
+    data_date = Column(String(10), primary_key=True)
+    received_at = Column(String(40), nullable=False)
+    source = Column(String(32), nullable=False)
+    data_json = Column(Text, nullable=False)
+    warning = Column(Text, nullable=True)
+
+
 class ExpiryContract(Base):
     __tablename__ = "expiry_contracts"
 
@@ -293,6 +303,9 @@ class Storage:
             .astimezone(timezone.utc).replace(tzinfo=None)
         )
         with self.session() as session:
+            sentiment_deleted = session.execute(
+                delete(OptionSentimentSnapshot).where(OptionSentimentSnapshot.data_date < keep_from.isoformat())
+            ).rowcount
             counts = {
                 ContractSnapshot.__tablename__: session.execute(
                     delete(ContractSnapshot).where(ContractSnapshot.snapshot_date < keep_from.isoformat())
@@ -301,6 +314,8 @@ class Storage:
                     delete(OpenInterestSnapshot).where(OpenInterestSnapshot.fetched_at < cutoff_utc)
                 ).rowcount,
             }
+            if sentiment_deleted:
+                counts[OptionSentimentSnapshot.__tablename__] = sentiment_deleted
             for model in (MoneyFlowSnapshot, ClientTypeStats):
                 counts[model.__tablename__] = self._prune_recorded_history(session, model, keep_from)
             state = session.get(AppState, _HISTORY_RETENTION_KEY)
@@ -345,6 +360,45 @@ class Storage:
         # committed and closed before acquiring this autocommit connection.
         with self.engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
             connection.exec_driver_sql("VACUUM")
+
+    def replace_option_sentiment_snapshot(self, data_date: str, rows: list[dict], received_at: str, source: str, warning: str | None = None, *, market_complete: bool = True) -> None:
+        """Publish a whole-market version in one transaction; never erase good data on failure."""
+        if not rows:
+            raise ValueError("empty sentiment snapshot")
+        date.fromisoformat(data_date)
+        payload = json.dumps({"contracts": rows, "market_complete": market_complete}, ensure_ascii=False, allow_nan=False)
+        with self.session() as session:
+            snapshot = session.get(OptionSentimentSnapshot, data_date)
+            # A reconstructed history response must never replace archived real OI.
+            if snapshot is not None and snapshot.source == "public_cdn" and source == "public_history":
+                return
+            if snapshot is None:
+                snapshot = OptionSentimentSnapshot(data_date=data_date)
+                session.add(snapshot)
+            snapshot.data_json = payload
+            snapshot.received_at = received_at
+            snapshot.source = source
+            snapshot.warning = warning
+            session.commit()
+
+    def get_option_sentiment_snapshot(self, data_date: str | None = None) -> dict | None:
+        with self.session() as session:
+            query = select(OptionSentimentSnapshot)
+            if data_date:
+                query = query.where(OptionSentimentSnapshot.data_date == data_date)
+            # "Latest" means the latest actual market feed, not a history import.
+            else:
+                query = query.where(OptionSentimentSnapshot.source == "public_cdn")
+            row = session.scalars(query.order_by(OptionSentimentSnapshot.data_date.desc())).first()
+            if row is None:
+                return None
+            payload = json.loads(row.data_json)
+            return {"data_date": row.data_date, "received_at": row.received_at, "source": row.source,
+                    "warning": row.warning, **(payload if isinstance(payload, dict) else {"contracts": payload, "market_complete": True})}
+
+    def get_option_sentiment_dates(self) -> list[str]:
+        with self.session() as session:
+            return list(session.scalars(select(OptionSentimentSnapshot.data_date).order_by(OptionSentimentSnapshot.data_date.desc())))
 
     def replace_expiry_contracts(
         self, rows: list[dict[str, Any]], warning: str | None = None, *, market_received_at: str | None = None,

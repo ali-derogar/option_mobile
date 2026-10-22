@@ -107,6 +107,7 @@ function applyTheme(theme) {
       if (state.trendChart && state.analysisVisible) renderAnalysis();
     });
   }
+  window.OptionSentiment?.redraw();
 }
 
 function bindThemeToggle() {
@@ -887,6 +888,7 @@ function isUnderlyingAnalysisMode() {
 
 function analysisAudienceItems() {
   return [
+    { key: "optionSentiment", label: "سنتیمنت آپشن", title: "سنتیمنت آپشن", prefixes: [], trendOnly: false },
     { key: "both", label: "هردو", title: "حقیقی / حقوقی", prefixes: ["natural", "legal"], trendOnly: false },
     { key: "natural", label: "حقیقی", title: "حقیقی", prefixes: ["natural"], trendOnly: false },
     { key: "legal", label: "حقوقی", title: "حقوقی", prefixes: ["legal"], trendOnly: false },
@@ -2804,10 +2806,27 @@ function renderAnalysis() {
   const panel = document.getElementById("analysisPanel");
   const content = document.getElementById("analysisContent");
   if (!panel || !content) return;
+  const sentimentActive = state.view === "underlying" && state.analysisVisible && state.analysisAudience === "optionSentiment";
+  document.body.classList.toggle("option-sentiment-active", sentimentActive);
+  if (!sentimentActive) window.OptionSentiment?.unmount();
   if (state.view !== "underlying" || !state.analysisVisible) {
     state.trendRequestId += 1;
     destroyTrendChart();
     panel.classList.add("hidden");
+    return;
+  }
+
+  if (sentimentActive) {
+    state.trendRequestId += 1;
+    destroyTrendChart();
+    setText("analysisTitle", "سنتیمنت آپشن");
+    setText("analysisScope", "توزیع موقعیت‌ها و ارزش معاملات");
+    if (!document.getElementById("optionSentimentRoot")) {
+      content.innerHTML = renderAnalysisAudienceTabs() + '<div id="optionSentimentRoot" class="sentiment-module"></div>';
+      bindAnalysisAudienceTabs();
+    }
+    panel.classList.remove("hidden");
+    window.OptionSentiment?.mount(document.getElementById("optionSentimentRoot"), state.underlyingKey, state.selectedDate);
     return;
   }
 
@@ -2860,6 +2879,7 @@ function setRefreshControlsLoading(on) {
 }
 
 async function startRefresh() {
+  if (state.analysisVisible && state.analysisAudience === "optionSentiment") return window.OptionSentiment?.refresh();
   setRefreshControlsLoading(true);
   setStatusText("به‌روزرسانی داده شروع شد...");
   try {

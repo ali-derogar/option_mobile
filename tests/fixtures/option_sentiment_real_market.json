@@ -1,0 +1,131 @@
+{
+  "source_url": "https://cdn.tsetmc.com/api/Instrument/GetInstrumentOptionMarketWatch/0",
+  "received_at": "2026-10-22T14:23:05.341234+00:00",
+  "market_date": "2026-10-21",
+  "rows": [
+    {
+      "uaInsCode": "65883838195688438",
+      "lval30_UA": "خودرو",
+      "strikePrice": 700,
+      "endDate": "20261230",
+      "contractSize": 1000,
+      "pDrCotVal_UA": 679,
+      "pClosing_UA": 679,
+      "insCode_C": "56297915760055237",
+      "lVal18AFC_C": "ضخود1320",
+      "lVal30_C": "اختيارخ خودرو-700-1405/10/09",
+      "oP_C": 28927,
+      "yesterdayOP_C": 28927,
+      "qTotCap_C": 1252132000.0,
+      "qTotTran5J_C": 11868,
+      "insCode_P": "60338819916476186",
+      "lVal18AFC_P": "طخود1320",
+      "lVal30_P": "اختيارف خودرو-700-1405/10/09",
+      "oP_P": 0,
+      "yesterdayOP_P": 0,
+      "qTotCap_P": 0.0,
+      "qTotTran5J_P": 0
+    },
+    {
+      "uaInsCode": "65883838195688438",
+      "lval30_UA": "خودرو",
+      "strikePrice": 700,
+      "endDate": "20261028",
+      "contractSize": 1000,
+      "pDrCotVal_UA": 679,
+      "pClosing_UA": 679,
+      "insCode_C": "44868747354952121",
+      "lVal18AFC_C": "ضخود8061",
+      "lVal30_C": "اختيارخ خودرو-700-1405/08/06",
+      "oP_C": 19399674,
+      "yesterdayOP_C": 19399674,
+      "qTotCap_C": 110598428000.0,
+      "qTotTran5J_C": 6030595,
+      "insCode_P": "63488755143055250",
+      "lVal18AFC_P": "طخود8061",
+      "lVal30_P": "اختيارف خودرو-700-1405/08/06",
+      "oP_P": 3318552,
+      "yesterdayOP_P": 3318552,
+      "qTotCap_P": 90238122000.0,
+      "qTotTran5J_P": 2589165
+    },
+    {
+      "uaInsCode": "65883838195688438",
+      "lval30_UA": "خودرو",
+      "strikePrice": 650,
+      "endDate": "20261028",
+      "contractSize": 1000,
+      "pDrCotVal_UA": 679,
+      "pClosing_UA": 679,
+      "insCode_C": "49166352628228669",
+      "lVal18AFC_C": "ضخود8060",
+      "lVal30_C": "اختيارخ خودرو-650-1405/08/06",
+      "oP_C": 14693067,
+      "yesterdayOP_C": 14693067,
+      "qTotCap_C": 231419479000.0,
+      "qTotTran5J_C": 5633969,
+      "insCode_P": "20385295120329267",
+      "lVal18AFC_P": "طخود8060",
+      "lVal30_P": "اختيارف خودرو-650-1405/08/06",
+      "oP_P": 4037797,
+      "yesterdayOP_P": 4037797,
+      "qTotCap_P": 20592038000.0,
+      "qTotTran5J_P": 2109302
+    }
+  ],
+  "expected": {
+    "all": {
+      "strikes": [
+        {
+          "strike_price": 650,
+          "call_oi": 14693067,
+          "put_oi": 4037797,
+          "call_change": 0,
+          "put_change": 0
+        },
+        {
+          "strike_price": 700,
+          "call_oi": 19428601,
+          "put_oi": 3318552,
+          "call_change": 0,
+          "put_change": 0
+        }
+      ],
+      "call_value": 343270039000.0,
+      "put_value": 110830160000.0
+    },
+    "20261028": {
+      "strikes": [
+        {
+          "strike_price": 650,
+          "call_oi": 14693067,
+          "put_oi": 4037797,
+          "call_change": 0,
+          "put_change": 0
+        },
+        {
+          "strike_price": 700,
+          "call_oi": 19399674,
+          "put_oi": 3318552,
+          "call_change": 0,
+          "put_change": 0
+        }
+      ],
+      "call_value": 342017907000.0,
+      "put_value": 110830160000.0
+    },
+    "20261230": {
+      "strikes": [
+        {
+          "strike_price": 700,
+          "call_oi": 28927,
+          "put_oi": 0,
+          "call_change": 0,
+          "put_change": 0
+        }
+      ],
+      "call_value": 1252132000.0,
+      "put_value": 0.0
+    }
+  }
+}

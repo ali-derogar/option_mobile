@@ -5025,3 +5025,65 @@ html[data-theme="dark"] .filters select {
   font-size: 0.8rem;
   overflow-wrap: anywhere;
 }
+.option-sentiment-active #typeFilter,
+.option-sentiment-active #expiryFilter,
+.option-sentiment-active #moneynessFilter,
+.option-sentiment-active #strikeFilter,
+.option-sentiment-active #btnClearFilters,
+.option-sentiment-active #activeFilters,
+.option-sentiment-active .toolbar .search-wrap,
+.option-sentiment-active .header-actions .date-filter,
+.option-sentiment-active #datePickerPopover,
+.option-sentiment-active #lastUpdate { display: none; }
+
+.sentiment-module { grid-column: 1 / -1; min-width: 0; display: grid; gap: 16px; }
+.sentiment-filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.sentiment-filters label { display: grid; gap: 7px; flex: 1 1 150px; color: var(--text-muted); font-size: 12px; }
+.sentiment-filters select { width: 100%; min-height: 42px; min-width: 0; }
+.sentiment-status, .sentiment-meta, .sentiment-warning, .sentiment-coverage { margin: 0; font-size: 12px; line-height: 1.9; color: var(--text-muted); overflow-wrap: anywhere; }
+.sentiment-error { color: var(--red); }
+.sentiment-warning, .sentiment-coverage:not(:empty) { color: var(--amber); }
+.sentiment-market-summaries { display: grid; gap: 12px; }
+.sentiment-value-block, .sentiment-chart-panel { border: 1px solid var(--border); border-radius: 14px; padding: 16px; min-width: 0; background: var(--bg-card, transparent); }
+.sentiment-value-block h3, .sentiment-chart-panel h3 { margin: 0 0 8px; font-size: 15px; color: var(--text); }
+.sentiment-value-scope, .sentiment-price-label, .sentiment-peaks { color: var(--text-muted); font-size: 12px; line-height: 1.9; margin: 4px 0 12px; overflow-wrap: anywhere; }
+.sentiment-value-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.sentiment-value { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sentiment-value > span { color: var(--text-muted); font-size: 11px; }
+.sentiment-value strong { color: var(--text); font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; position: relative; }
+.sentiment-value small { font-size: 10px; color: var(--amber); }
+.sentiment-value-call strong, .sentiment-call { color: var(--accent); }
+.sentiment-value-put strong, .sentiment-put { color: var(--purple); }
+.sentiment-value [data-exact-value] { cursor: help; }
+.sentiment-value [data-exact-value]:is(:hover, :focus)::after { content: attr(data-exact-value); position: absolute; z-index: 5; inset-inline-start: 0; top: 100%; max-width: 250px; width: max-content; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-1); color: var(--text); font-size: 11px; box-shadow: 0 4px 18px #0003; }
+.sentiment-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; margin: 12px 0 0; color: var(--text-muted); }
+.sentiment-call::before, .sentiment-put::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-inline-end: 6px; border-radius: 3px; background: currentColor; }
+.sentiment-chart-scroll { width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; direction: ltr; }
+.sentiment-chart-wrap { height: 350px; min-width: 100%; position: relative; }
+.sentiment-chart-stage { position: relative; min-width: 0; }
+.sentiment-y-axis { position: absolute; inset: 0 auto 0 0; width: 52px; pointer-events: none; background: var(--bg-1); }
+.sentiment-y-axis span { position: absolute; inset-inline-end: 5px; transform: translateY(-50%); font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+.sentiment-x-label { margin: 4px 0 10px; color: var(--text-muted); text-align: center; font-size: 11px; }
+.sentiment-chart-empty { color: var(--text-muted); text-align: center; line-height: 2; font-size: 13px; }
+.sentiment-chart-empty:empty { display: none; }
+.sentiment-oi-modes { min-width: 0; margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+.sentiment-oi-modes legend { padding: 0 6px; color: var(--text); font-size: 12px; font-weight: 700; }
+.sentiment-oi-mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.sentiment-oi-mode { min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); cursor: pointer; font-size: 12px; }
+.sentiment-oi-mode:has(input:checked) { border-color: currentColor; box-shadow: inset 0 0 0 1px currentColor; }
+.sentiment-oi-mode:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sentiment-oi-mode input { flex-shrink: 0; width: 17px; height: 17px; margin: 0; accent-color: currentColor; cursor: pointer; }
+.sentiment-position-accent { color: var(--accent); }
+.sentiment-position-purple { color: var(--purple); }
+.sentiment-position-amber { color: var(--amber); }
+.sentiment-position-red { color: var(--red); }
+.sentiment-position-legend::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-inline-end: 6px; border-radius: 3px; background: currentColor; }
+.sentiment-oi-mode-hint, .sentiment-oi-mode-selection { margin: 8px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.9; overflow-wrap: anywhere; }
+@media (max-width: 650px) {
+  .sentiment-value-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 18px; }
+  .sentiment-value-block, .sentiment-chart-panel { padding: 12px; }
+  .sentiment-filters { gap: 10px; }
+  .sentiment-filters label { flex-basis: calc(50% - 10px); }
+  .sentiment-filters .btn { width: 100%; }
+  .sentiment-chart-wrap { height: 310px; }
+}
