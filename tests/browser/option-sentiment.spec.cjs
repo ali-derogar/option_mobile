@@ -56,6 +56,9 @@ async function fixture(t, width = 390) {
       if (state.failPost) return route.fulfill({ status: 503, json: { detail: "خطا در تازه‌سازی" } });
       return json(state.postHandler ? await state.postHandler() : { status: state.refreshStatus });
     }
+    if (state.failDashboardRead && url.pathname === "/api/summary") {
+      return route.fulfill({ status: 503, json: { detail: "خطا در دریافت داشبورد" } });
+    }
     switch (url.pathname) {
       case "/api/activation/status": return json({ activated: true });
       case "/api/dates": return json({ items: ["2026-10-21"], latest: "2026-10-21" });
@@ -165,6 +168,28 @@ test("position combinations survive refresh, theme and tab changes", async (t) =
   await expect(page.getByRole("checkbox", { name: "فروش Put", exact: true })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: "خرید Put", exact: true })).not.toBeChecked();
   await expect(page.getByRole("checkbox", { name: "فروش Call", exact: true })).not.toBeChecked();
+});
+
+test("restoring the page keeps cached charts and position controls usable when dashboard reads fail", async (t) => {
+  const { page, state, open } = await fixture(t);
+  await open();
+  await page.getByRole("checkbox", { name: "خرید Put", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "فروش Call", exact: true }).uncheck();
+  const figures = await page.locator("#sentimentSummaries").textContent();
+  state.failDashboardRead = true;
+  state.failRead = true;
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  await expect(page.locator("#loadingOverlay")).toHaveClass(/hidden/);
+  await expect.poll(() => page.evaluate(() => Object.keys(Chart.instances).length)).toBe(2);
+  await expect(page.locator("#sentimentStatus")).toContainText("خطا");
+  assert.equal(await page.locator("#sentimentSummaries").textContent(), figures);
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["خرید Call", "فروش Put"]);
+  await page.getByRole("checkbox", { name: "خرید Call", exact: true }).uncheck();
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["فروش Put"]);
+  await expect(page.locator("#sentimentRefresh")).toBeEnabled();
 });
 
 test("combining both positions of one option does not double coverage or turn missing OI into zero", async (t) => {

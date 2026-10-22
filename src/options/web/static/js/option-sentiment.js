@@ -428,5 +428,12 @@ window.OptionSentiment = (() => {
   }
 
   window.addEventListener("pagehide", unmount);
+  window.addEventListener("pageshow", (event) => {
+    if (!event.persisted || model.root) return;
+    const root = document.getElementById("optionSentimentRoot");
+    if (root && document.body.classList.contains("option-sentiment-active")) {
+      mount(root, model.key, model.contextDate);
+    }
+  });
   return { mount, unmount, refresh, redraw: drawCharts };
 })();
