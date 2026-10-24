@@ -78,15 +78,15 @@ function cssVar(name, fallback) {
 
 function chartPalette() {
   return {
-    text: cssVar("--text", "#142033"),
-    muted: cssVar("--text-muted", "#6b7a8c"),
-    grid: currentTheme() === "dark" ? "rgba(148, 163, 184, 0.16)" : "rgba(107, 122, 140, 0.14)",
-    accent: cssVar("--accent", "#0f8b8d"),
-    accentStrong: cssVar("--accent-strong", "#0a7375"),
-    green: cssVar("--green", "#16885c"),
-    red: cssVar("--red", "#c44d61"),
-    amber: cssVar("--amber", "#a86f05"),
-    purple: cssVar("--purple", "#6d5bd0"),
+    text: cssVar("--text", "#122033"),
+    muted: cssVar("--text-muted", "#596b80"),
+    grid: cssVar("--chart-grid", "rgba(89, 107, 128, 0.14)"),
+    accent: cssVar("--accent", "#087f8c"),
+    accentStrong: cssVar("--accent-strong", "#066674"),
+    green: cssVar("--green", "#15734f"),
+    red: cssVar("--red", "#b63750"),
+    amber: cssVar("--amber", "#8b5a08"),
+    purple: cssVar("--purple", "#6b4ccd"),
   };
 }
 
@@ -94,7 +94,7 @@ function applyTheme(theme) {
   const nextTheme = theme === "dark" ? "dark" : "light";
   document.documentElement.dataset.theme = nextTheme;
   const meta = document.getElementById("themeColorMeta");
-  if (meta) meta.setAttribute("content", nextTheme === "dark" ? "#0b1220" : "#f7f8fb");
+  if (meta) meta.setAttribute("content", cssVar("--bg-0", "#f4f7fb"));
   const toggle = document.getElementById("themeToggle");
   if (toggle) {
     const isDark = nextTheme === "dark";
@@ -1750,7 +1750,7 @@ async function loadOiChart(insCode) {
             label: "موقعیت باز موثر",
             data: effective,
             borderColor: palette.accent,
-            backgroundColor: currentTheme() === "dark" ? "rgba(32, 183, 174, 0.12)" : "rgba(15, 139, 141, 0.1)",
+            backgroundColor: cssVar("--chart-fill", "rgba(8, 127, 140, 0.08)"),
             tension: 0.3,
             fill: true,
           },
@@ -1758,7 +1758,7 @@ async function loadOiChart(insCode) {
             label: "موقعیت خرید",
             data: buy,
             borderColor: palette.green,
-            backgroundColor: currentTheme() === "dark" ? "rgba(52, 211, 153, 0.08)" : "rgba(22, 136, 92, 0.08)",
+            backgroundColor: cssVar("--green-bg", "#eaf6ef"),
             tension: 0.3,
             fill: false,
             hidden: true,
@@ -1767,7 +1767,7 @@ async function loadOiChart(insCode) {
             label: "موقعیت فروش",
             data: sell,
             borderColor: palette.purple,
-            backgroundColor: currentTheme() === "dark" ? "rgba(181, 167, 255, 0.1)" : "rgba(109, 91, 208, 0.1)",
+            backgroundColor: cssVar("--purple-bg", "#f1edfc"),
             tension: 0.3,
             fill: true,
             hidden: true,
@@ -1781,8 +1781,8 @@ async function loadOiChart(insCode) {
           legend: { labels: { color: palette.muted, font: { family: "Vazirmatn" } } },
         },
         scales: {
-          x: { ticks: { color: palette.muted, maxTicksLimit: 6 }, grid: { color: palette.grid } },
-          y: { ticks: { color: palette.muted }, grid: { color: palette.grid } },
+          x: { ticks: { color: palette.muted, maxTicksLimit: 6, font: { family: "Vazirmatn", size: 12 } }, grid: { color: palette.grid } },
+          y: { ticks: { color: palette.muted, font: { family: "Vazirmatn", size: 12 } }, grid: { color: palette.grid } },
         },
       },
     });
@@ -2401,7 +2401,6 @@ function trendMetricValue(item, personKey, metricKey) {
 }
 
 function trendDatasetColor(metric, person) {
-  if (person.key === "natural") return metric.color;
   // Per-metric legal colors, chosen so no legal line shares a color with a
   // natural line inside the same chart group.
   const legalColors = {
@@ -2417,7 +2416,8 @@ function trendDatasetColor(metric, person) {
     open_interest_change: "#818cf8",
     open_interest: "#c084fc",
   };
-  return legalColors[metric.key] || metric.color;
+  const color = person.key === "natural" ? metric.color : legalColors[metric.key] || metric.color;
+  return cssVar(`--${trendLineColorClass(color)}`, color);
 }
 
 function trendLineColorClass(color) {
@@ -2433,7 +2433,7 @@ function trendLineColorClass(color) {
     "#818cf8": "trend-line-indigo",
     "#c084fc": "trend-line-violet",
   };
-  return classes[color] || "trend-line-default";
+  return classes[color] || Object.values(classes).find((name) => cssVar(`--${name}`, "") === color) || "trend-line-default";
 }
 
 function buildTrendDatasets(items) {
@@ -2541,8 +2541,8 @@ function renderTrendChart(data) {
         },
       },
       scales: {
-        x: { ticks: { color: palette.muted, font: { family: "Vazirmatn" } }, grid: { color: palette.grid } },
-        y: { ticks: { color: palette.muted }, grid: { color: palette.grid } },
+        x: { ticks: { color: palette.muted, font: { family: "Vazirmatn", size: 12 } }, grid: { color: palette.grid } },
+        y: { ticks: { color: palette.muted, font: { family: "Vazirmatn", size: 12 } }, grid: { color: palette.grid } },
       },
     },
   });

@@ -198,7 +198,8 @@
   function syncTheme() {
     const dark = document.documentElement.dataset.theme === "dark";
     el("themeToggle").setAttribute("aria-pressed", String(dark));
-    el("themeColorMeta").content = dark ? "#0b1220" : "#f7f8fb";
+    el("themeToggle").setAttribute("aria-label", dark ? "تغییر به حالت روشن" : "تغییر به حالت تاریک");
+    el("themeColorMeta").content = getComputedStyle(document.documentElement).getPropertyValue("--bg-0").trim() || "#f4f7fb";
   }
   el("themeToggle").addEventListener("click", () => {
     const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";

@@ -2,8 +2,8 @@
 <html lang="fa" dir="rtl">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#f7f8fb" id="themeColorMeta" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#f4f7fb" id="themeColorMeta" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230f8b8d'/><text x='16' y='22' text-anchor='middle' fill='white' font-size='14' font-weight='bold'>O</text></svg>" />
   <title>options | اختیار معامله</title>
   <script src="/static/js/theme.js"></script>
@@ -19,17 +19,17 @@
   <div class="app">
     <header class="header">
       <div class="header-brand">
-        <div class="logo">O</div>
-        <div>
+        <div class="logo" role="img" aria-label="options"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="10" stroke="currentColor" stroke-width="2.25"/><path d="m10 19 5-6 4 3 6-7" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 9h4v4" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="brand-copy">
           <h1>اختیار معامله</h1>
           <p class="subtitle">داده رسمی TSETMC</p>
         </div>
         <button type="button" class="theme-toggle" id="themeToggle" aria-label="تغییر تم" aria-pressed="false">
-          <span class="theme-toggle-icon" aria-hidden="true"></span>
+          <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/></svg><svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg>
         </button>
       </div>
       <div class="header-actions">
-        <a class="btn btn-ghost" id="editSymbols" href="#">ویرایش نمادها</a>
+        <a class="btn btn-ghost" id="editSymbols" href="#"><svg class="icon " viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><path d="M14 17.5h7m-3.5-3.5v7"/></svg>ویرایش نمادها</a>
         <div class="date-filter">
           <span>تاریخ</span>
           <button type="button" class="date-picker-button" id="datePickerButton" aria-haspopup="dialog" aria-expanded="false">انتخاب تاریخ</button>
@@ -50,7 +50,7 @@
         </div>
         <span class="last-update" id="lastUpdate">—</span>
         <button type="button" class="btn btn-primary" id="btnRefresh">
-          <span class="btn-icon" id="refreshIcon">↻</span>
+          <span class="btn-icon" id="refreshIcon"><svg class="icon " viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 11.5-1L20 9M4 15l2.5 3A7 7 0 0 0 18 17"/></svg></span>
           <span>به‌روزرسانی داده</span>
         </button>
       </div>
@@ -60,7 +60,7 @@
 
     <section class="expiry-section hidden" id="expirySection">
       <button type="button" class="btn btn-ghost expiry-toggle" id="btnExpiries" aria-expanded="false" aria-controls="expiryPanel">
-        <span>نزدیک‌ترین سررسیدها</span>
+        <svg class="icon " viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4m10-4v4M3 11h18m-14 5h3m4 0h3"/></svg><span>نزدیک‌ترین سررسیدها</span>
         <span class="expiry-badge hidden" id="expiryBadge" aria-live="polite"></span>
       </button>
       <section class="panel expiry-panel hidden" id="expiryPanel" aria-labelledby="expiryTitle">
@@ -195,9 +195,9 @@
         </div>
         <div class="mobile-card-list" id="mobileCardList" aria-live="polite"></div>
         <div class="empty-state hidden" id="emptyState">
-          <div class="empty-icon">OP</div>
+          <div class="empty-icon"><svg class="icon " viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8M8 12h5m-5 4h3"/></svg></div>
           <p id="emptyTitle">داده‌ای موجود نیست</p>
-          <p class="empty-hint" id="emptyHint">ابتدا pipeline را اجرا کنید یا دکمه به‌روزرسانی را بزنید</p>
+          <p class="empty-hint" id="emptyHint">برای دریافت آخرین اطلاعات، به‌روزرسانی داده را بزنید</p>
           <button type="button" class="btn btn-primary" id="btnEmptyRefresh">به‌روزرسانی داده</button>
           <a class="btn btn-primary hidden" id="emptyEditSymbols" href="#">انتخاب نمادها</a>
         </div>
@@ -208,7 +208,7 @@
         <div class="sheet-handle" aria-hidden="true"></div>
         <div class="panel-header">
           <h2 id="detailTitle">جزئیات قرارداد</h2>
-          <button type="button" class="btn-icon-only" id="closeDetail" aria-label="بستن">×</button>
+          <button type="button" class="btn-icon-only" id="closeDetail" aria-label="بستن"><svg class="icon " viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
         </div>
         <div class="detail-content" id="detailContent">
           <p class="detail-placeholder">یک ردیف از جدول را انتخاب کنید</p>
@@ -227,7 +227,7 @@
     </div>
     <div class="activation-overlay hidden" id="activationOverlay" role="dialog" aria-modal="true" aria-labelledby="activationTitle">
       <form class="activation-dialog" id="activationForm">
-        <div class="logo activation-logo">O</div>
+        <div class="logo activation-logo" role="img" aria-label="options"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="10" stroke="currentColor" stroke-width="2.25"/><path d="m10 19 5-6 4 3 6-7" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 9h4v4" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <h2 id="activationTitle">ورود کد دسترسی</h2>
         <p>برای ادامه، کد دسترسی را وارد کنید.</p>
         <input type="text" id="activationCode" inputmode="text" autocomplete="one-time-code" aria-label="کد دسترسی" />

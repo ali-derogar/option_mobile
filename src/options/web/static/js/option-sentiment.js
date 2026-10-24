@@ -325,7 +325,7 @@ window.OptionSentiment = (() => {
           plugins: {
             legend: { display: false },
             tooltip: { rtl: true, textDirection: "rtl", padding: 12, cornerRadius: 10, boxPadding: 5,
-              titleFont: { family: "Vazirmatn", size: 12 }, bodyFont: { family: "Vazirmatn", size: 11 }, callbacks: {
+              titleFont: { family: "Vazirmatn", size: 12 }, bodyFont: { family: "Vazirmatn", size: 12 }, callbacks: {
               title: (items) => `قیمت اعمال: ${fmtNum(items[0]?.parsed.x)} ریال`,
               label: (item) => {
                 const side = series[item.datasetIndex].side;
@@ -337,7 +337,7 @@ window.OptionSentiment = (() => {
           scales: {
             x: { type: "linear", min: Math.min(...bounds) - padding, max: Math.max(...bounds) + padding,
               afterBuildTicks: (axis) => { axis.ticks = strikes.map((value) => ({ value })); },
-              ticks: { color: palette.muted, callback: (v) => fmtNum(v), maxRotation: 0, minRotation: 0, padding: 8, autoSkip: true, autoSkipPadding: 10, font: { family: "Vazirmatn", size: 11 } },
+              ticks: { color: palette.muted, callback: (v) => fmtNum(v), maxRotation: 0, minRotation: 0, padding: 8, autoSkip: true, autoSkipPadding: 10, font: { family: "Vazirmatn", size: 12 } },
               border: { display: false }, grid: { display: false } },
             y: { beginAtZero: true, afterFit: (axis) => { axis.width = 0; },
               ticks: { display: false, maxTicksLimit: 6, precision: 0 }, border: { display: false },

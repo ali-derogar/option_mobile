@@ -2,8 +2,8 @@
 <html lang="fa" dir="rtl">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#f7f8fb" id="themeColorMeta" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#f4f7fb" id="themeColorMeta" />
   <title>ویرایش نمادها | اختیار معامله</title>
   <script src="/static/js/theme.js"></script>
   <link rel="stylesheet" href="/static/css/app.css" />
@@ -16,16 +16,16 @@
   <div class="app symbols-app">
     <header class="header">
       <div class="header-brand">
-        <div class="logo">O</div>
-        <div><h1>ویرایش نمادها</h1><p class="subtitle">انتخاب دارایی‌های پایه برای صفحه اصلی</p></div>
-        <button type="button" class="theme-toggle" id="themeToggle" aria-label="تغییر تم" aria-pressed="false"><span class="theme-toggle-icon" aria-hidden="true"></span></button>
+        <div class="logo" role="img" aria-label="options"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="10" stroke="currentColor" stroke-width="2.25"/><path d="m10 19 5-6 4 3 6-7" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 9h4v4" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="brand-copy"><h1>ویرایش نمادها</h1><p class="subtitle">انتخاب دارایی‌های پایه برای صفحه اصلی</p></div>
+        <button type="button" class="theme-toggle" id="themeToggle" aria-label="تغییر تم" aria-pressed="false"><svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/></svg><svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
       </div>
       <button type="button" class="btn btn-primary" id="fetchCatalog" disabled>دریافت همه نمادها</button>
     </header>
 
     <p class="symbols-help">نمادهای موردنظر را انتخاب کنید. پس از ذخیره، با دکمه به‌روزرسانی در صفحه اصلی اطلاعات قراردادهای آن‌ها دریافت می‌شود.</p>
     <section class="toolbar symbols-toolbar" aria-label="جستجو و مرتب‌سازی">
-      <label class="search-wrap"><span class="sr-only">جستجوی نماد</span><input type="search" id="symbolSearch" placeholder="جستجوی نماد یا نام..." autocomplete="off" /></label>
+      <label class="search-wrap"><svg class="icon search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></svg><span class="sr-only">جستجوی نماد</span><input type="search" id="symbolSearch" placeholder="جستجوی نماد یا نام..." autocomplete="off" /></label>
       <label class="symbols-sort">مرتب‌سازی
         <select id="symbolSort">
           <option value="options_trade_volume:desc">حجم قراردادها: بیشترین</option>
@@ -53,7 +53,7 @@
 
     <div class="activation-overlay hidden" id="activationOverlay" role="dialog" aria-modal="true" aria-labelledby="activationTitle">
       <form class="activation-dialog" id="activationForm">
-        <div class="logo activation-logo">O</div><h2 id="activationTitle">ورود کد دسترسی</h2><p>برای ادامه، کد دسترسی را وارد کنید.</p>
+        <div class="logo activation-logo" role="img" aria-label="options"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="10" stroke="currentColor" stroke-width="2.25"/><path d="m10 19 5-6 4 3 6-7" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 9h4v4" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/></svg></div><h2 id="activationTitle">ورود کد دسترسی</h2><p>برای ادامه، کد دسترسی را وارد کنید.</p>
         <input type="text" id="activationCode" autocomplete="one-time-code" aria-label="کد دسترسی" />
         <button type="submit" class="btn btn-primary" id="activationSubmit">ورود</button><p class="activation-error hidden" id="activationError"></p>
       </form>

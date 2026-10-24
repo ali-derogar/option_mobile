@@ -2,7 +2,8 @@
   "name": "options-browser-tests",
   "private": true,
   "scripts": {
-    "test": "node --test *.spec.cjs"
+    "test": "node --test *.spec.cjs",
+    "review:visual": "node visual-review.cjs"
   },
   "devDependencies": {
     "playwright": "1.64.1"
