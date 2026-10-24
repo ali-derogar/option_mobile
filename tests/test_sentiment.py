@@ -1,6 +1,7 @@
 """Unit tests for options sentiment analysis."""
 
 import pandas as pd
+import pytest
 
 from options.backend.analysis.sentiment import (
     analyze_options_sentiment,
@@ -14,6 +15,13 @@ def test_detect_option_type_from_persian_names() -> None:
     assert detect_option_type({"long_name": "اختیار فروش خودرو"}) == "put"
     assert detect_option_type({"symbol": "ضخود1230"}) == "call"
     assert detect_option_type({"symbol": "طخود1230"}) == "put"
+
+
+def test_declared_option_type_is_not_overridden_by_inferred_metadata():
+    assert detect_option_type({"option_type": "call", "long_name": "اختیار فروش قدیمی"}) == "call"
+    assert detect_option_type({"symbol": "ضخود1230", "long_name": "اختیار فروش قدیمی"}) == "call"
+    assert detect_option_type({"long_name": "اختيار فروش خودرو", "symbol": pd.NA}) == "put"
+    assert detect_option_type({"long_name": "output"}) is None
 
 
 def test_compute_moneyness_for_call_and_put() -> None:
@@ -245,3 +253,40 @@ def test_sentiment_groups_equivalent_underlying_codes_together() -> None:
     assert result["summary"]["group_count"] == 1
     assert result["items"][0]["contract_count"] == 2
     assert result["items"][0]["underlying_ins_code"] == 2001
+
+
+def test_missing_and_zero_underlying_codes_have_distinct_symbol_keys():
+    rows = [{"option_type": "call", "underlying_ins_code": code,
+             "underlying_symbol": symbol, "end_date": 20261230}
+            for code, symbol in [(0, "خودرو"), (0, "فولاد"), (None, "اطلس")]]
+    items = analyze_options_sentiment(pd.DataFrame(rows))["items"]
+    assert len(items) == 3
+    assert len({item["row_key"] for item in items}) == 3
+
+
+def test_sentiment_preserves_long_identifier_in_result_and_row_key():
+    code = 65883838195688438
+    item = analyze_options_sentiment(pd.DataFrame([{
+        "option_type": "call", "underlying_ins_code": code, "end_date": 20261230,
+    }]))["items"][0]
+    assert item["underlying_ins_code"] == code
+    assert item["row_key"] == f"{code}-20261230"
+
+
+def test_call_moneyness_shares_include_atm_in_the_denominator():
+    rows = [{"option_type": "call", "underlying_ins_code": 2001, "end_date": 20261230,
+             "underlying_last_price": 100, "strike_price": strike, "trade_volume": volume}
+            for strike, volume in [(90, 10), (100, 90)]]
+    item = analyze_options_sentiment(pd.DataFrame(rows))["items"][0]
+    assert item["call_itm_share"] == pytest.approx(0.1)
+    assert item["call_otm_share"] == 0
+
+
+def test_partial_previous_oi_does_not_fabricate_a_group_change():
+    rows = [{"option_type": "call", "underlying_ins_code": 2001, "end_date": 20261230,
+             "buy_open_positions": 100, "yesterday_open_positions": previous}
+            for previous in [90, None]]
+    item = analyze_options_sentiment(pd.DataFrame(rows))["items"][0]
+    assert item["open_interest"] == 200
+    assert item["yesterday_open_interest"] is None
+    assert item["open_interest_change"] is None

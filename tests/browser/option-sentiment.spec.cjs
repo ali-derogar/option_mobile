@@ -41,11 +41,16 @@ async function fixture(t, width = 390) {
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
   await page.clock.install({ time: new Date("2026-10-22T10:00:00Z") });
-  const state = { errors: [], requests: [], posts: [], refreshStatus: "cached" };
+  const state = { errors: [], requests: [], posts: [], clientTypeRequests: [], refreshStatus: "cached" };
   page.on("pageerror", (error) => state.errors.push(error.message));
   await page.route("http://options.test/**", async (route) => {
     const url = new URL(route.request().url());
     const json = (data) => route.fulfill({ json: data });
+    if (url.pathname === "/api/client-type" || url.pathname.startsWith("/api/client-type/")) {
+      const codes = route.request().method() === "POST" ? route.request().postDataJSON().ins_codes : [url.pathname.split("/").at(-1)];
+      state.clientTypeRequests.push(codes);
+      return json(state.clientTypeHandler ? await state.clientTypeHandler(codes) : { items: [] });
+    }
     if (url.pathname === "/api/option-sentiment") {
       state.requests.push(new URLSearchParams(url.searchParams));
       if (state.failRead) return route.fulfill({ status: 503, json: { detail: "خطا در دریافت تحلیل" } });
@@ -391,12 +396,12 @@ test("uncached historical data requests its own date and never changes to live",
   await expect(page.locator("#sentimentDate")).toHaveValue("2026-10-20");
 });
 
-test("scrolling keeps count labels fixed and resizing updates their positions", async (t) => {
+test("mobile charts keep compact axes fixed, recenter on touch and adapt when resized", async (t) => {
   const { page, state, open } = await fixture(t);
   state.handler = (params) => {
     const result = payload(params);
     const template = result.strikes[0];
-    result.strikes = Array.from({ length: 30 }, (_, i) => ({ ...template, strike_price: 1000 + i * 100 }));
+    result.strikes = Array.from({ length: 30 }, (_, i) => ({ ...template, strike_price: 1000 + i * 100, call_oi: 2_000_000 }));
     result.spot_price = 3000;
     result.atm_strike = 3000;
     return result;
@@ -404,12 +409,30 @@ test("scrolling keeps count labels fixed and resizing updates their positions", 
   await open();
   const scroller = page.locator("#sentimentOiChart").locator("../..");
   assert.ok(await scroller.evaluate((el) => el.scrollLeft > 0));
+  assert.ok(await scroller.evaluate((el) => el.scrollWidth <= 30 * 44 + 1));
+  assert.equal(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets[0].data.length), 30);
   const axis = page.locator("#sentimentOiAxis");
   const before = await axis.boundingBox();
   await scroller.evaluate((el) => { el.scrollLeft = 0; });
   const after = await axis.boundingBox();
   assert.equal(before.x, after.x);
   await expect(axis.locator("span")).not.toHaveCount(0);
+  await expect(axis).toContainText("میلیون");
+  await expect(page.locator("#sentimentOiHint")).toContainText("افقی بکشید");
+  await page.locator('[data-center-chart="sentimentOiChart"]').tap();
+  assert.ok(await scroller.evaluate((el) => el.scrollLeft > 0));
+  const chart = await page.evaluate(() => {
+    const chart = Chart.getChart("sentimentOiChart"), scroller = chart.canvas.parentElement.parentElement;
+    return { axisEdge: document.querySelector("#sentimentOiAxis").getBoundingClientRect().right, scrollEdge: scroller.getBoundingClientRect().left,
+      tickRotation: chart.scales.x.labelRotation,
+      tooltip: chart.options.plugins.tooltip.callbacks.label({ datasetIndex: 0, dataIndex: 0, dataset: chart.data.datasets[0], parsed: {x: 1000, y: 2_000_000} }) };
+  });
+  assert.ok(chart.axisEdge <= chart.scrollEdge);
+  assert.equal(chart.tickRotation, 0);
+  assert.match(chart.tooltip, /۲٬۰۰۰٬۰۰۰ قرارداد/);
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.clock.runFor(100);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
   await page.setViewportSize({ width: 800, height: 900 });
   await page.clock.runFor(100);
   const offsets = await page.evaluate(() => {
@@ -417,6 +440,30 @@ test("scrolling keeps count labels fixed and resizing updates their positions", 
     return [...document.querySelectorAll("#sentimentOiAxis span")].map((el, i) => Math.abs(parseFloat(el.style.top) - chart.scales.y.getPixelForTick(i)));
   });
   assert.ok(offsets.every((offset) => offset < 1));
+});
+
+test("zero changes use a compact message while missing changes stay unavailable", async (t) => {
+  const { page, state, open } = await fixture(t);
+  let missing = false;
+  state.handler = (params) => {
+    const result = payload(params);
+    result.strikes.forEach((row) => {
+      for (const side of ["call", "put"]) {
+        row[`${side}_change`] = missing ? null : 0;
+        row.coverage[`${side}_change`] = metric(missing ? null : 0, missing ? 0 : 1);
+      }
+    });
+    return result;
+  };
+  await open();
+  await expect(page.locator("#sentimentChangeEmpty")).toContainText("صفر است");
+  await expect(page.locator("#sentimentChangeChart")).toBeHidden();
+  await expect(page.locator("#sentimentChangeFooter")).toBeHidden();
+  assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 1);
+  missing = true;
+  await page.locator("#sentimentRefresh").click();
+  await expect(page.locator("#sentimentChangeEmpty")).toContainText("موجود نیست");
+  await expect(page.locator("#sentimentChangeEmpty")).not.toContainText("صفر است");
 });
 
 test("an error from a different refresh target cannot prevent loading historical data", async (t) => {
@@ -633,4 +680,97 @@ test("charts becoming available within the same date center the spot price on mo
   });
   assert.ok(position.left > 0);
   assert.ok(position.spot > position.left + 52 && position.spot < position.left + position.width);
+});
+
+test("historical contract data never receives live or cached client types from another day", async (t) => {
+  const { page, state } = await fixture(t);
+  const result = await page.evaluate(async () => {
+    state.selectedDate = "2026-10-21";
+    const row = {ins_code: "1", natural_buy_volume: 12};
+    state.items = [row];
+    state.selectedInsCode = "1";
+    state.clientTypeByInsCode["2026-10-22:1"] = {natural_buy_volume: 999};
+    applyCachedClientTypes(state.items);
+    await loadClientTypesForRows(state.items);
+    await loadClientTypeForSelected(row);
+    return row.natural_buy_volume;
+  });
+  assert.equal(result, 12);
+  assert.equal(state.clientTypeRequests.length, 0);
+});
+
+test("live client-type batches respect the server limit and ignore stale record dates", async (t) => {
+  const { page, state } = await fixture(t);
+  state.clientTypeHandler = (codes) => ({items: codes.map((ins_code) => ({ins_code,
+    rec_date: ins_code === "1" ? 20261021 : 20261022, natural_buy_volume: 99}))});
+  const result = await page.evaluate(async () => {
+    state.selectedDate = "2026-10-22";
+    state.items = Array.from({length: 301}, (_, index) => ({ins_code: String(index + 1), natural_buy_volume: 12}));
+    await loadClientTypesForRows(state.items);
+    return [state.items[0].natural_buy_volume, state.items[300].natural_buy_volume];
+  });
+  assert.deepEqual(state.clientTypeRequests.map((codes) => codes.length), [300, 1]);
+  assert.deepEqual(result, [12, 99]);
+});
+
+test("a pending live client-type response cannot update the page after the selected date changes", async (t) => {
+  const { page, state } = await fixture(t);
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  state.clientTypeHandler = () => pending;
+  await page.evaluate(() => {
+    state.selectedDate = "2026-10-22";
+    state.items = [{ins_code: "1", natural_buy_volume: 12}];
+    window.pendingClientTypes = loadClientTypesForRows(state.items);
+  });
+  await expect.poll(() => state.clientTypeRequests.length).toBe(1);
+  await page.evaluate(() => { state.selectedDate = "2026-10-21"; });
+  release({items: [{ins_code: "1", natural_buy_volume: 999}]});
+  await page.evaluate(() => window.pendingClientTypes);
+  assert.equal(await page.evaluate(() => state.items[0].natural_buy_volume), 12);
+});
+
+test("incomplete OI and client volumes stay unknown in daily analysis", async (t) => {
+  const { page } = await fixture(t);
+  const result = await page.evaluate(() => {
+    const rows = [{option_type: "call", moneyness: "ITM", buy_open_positions: 100, yesterday_open_positions: 90},
+      {option_type: "call", moneyness: "ITM", buy_open_positions: 100, yesterday_open_positions: null}];
+    const snapshot = openInterestSnapshot(rows);
+    const analysis = buildFourStepConclusion(rows, "natural", "حقیقی", "natural");
+    return {snapshot, score: analysis.score, label: analysis.finalLabel,
+      zeroOi: openInterestValue({buy_open_positions: 0, sell_open_positions: 20})};
+  });
+  assert.equal(result.snapshot.current, 200);
+  assert.equal(result.snapshot.change, null);
+  assert.equal(result.score, null);
+  assert.match(result.label, /کامل نیست/);
+  assert.equal(result.zeroOi, 0);
+});
+
+test("daily participant scores agree with the historical score for puts", async (t) => {
+  const { page } = await fixture(t);
+  const result = await page.evaluate(() => buildFourStepConclusion([{
+    option_type: "put", moneyness: "OTM", natural_buy_volume: 50, natural_sell_volume: 50,
+    buy_open_positions: 22, yesterday_open_positions: 20,
+  }], "natural", "حقیقی", "natural").score);
+  assert.equal(result, -3);
+});
+
+test("Persian decimals and Tehran timestamps format correctly outside Iran", async (t) => {
+  const { page } = await fixture(t);
+  const result = await page.evaluate(() => ({
+    invalid: [true, false, [], {}, " "].map(asFiniteNumber),
+    decimal: asFiniteNumber("۱٬۲۳۴٫۵"),
+    dateOnly: fmtDate("2026-10-22"), dateNumeric: fmtDate(20261022),
+    time: fmtDate("2026-10-22T08:00:00Z"), naiveTime: fmtDate("2026-10-22T08:00:00"),
+    midnight: localIsoDate(new Date("2026-10-21T21:00:00Z")),
+  }));
+  assert.deepEqual(result.invalid, [null, null, null, null, null]);
+  assert.equal(result.decimal, 1234.5);
+  // Different formatters can pad the Jalali month/day differently.
+  const dateParts = (date) => date.replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0)).split("/").map(Number);
+  assert.deepEqual(dateParts(result.dateOnly), dateParts(result.dateNumeric));
+  assert.equal(result.time, result.naiveTime);
+  assert.match(result.time, /۱۱:۳۰/);
+  assert.equal(result.midnight, "2026-10-22");
 });

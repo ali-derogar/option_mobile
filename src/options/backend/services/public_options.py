@@ -140,7 +140,10 @@ def fetch_public_client_type_current(ins_code: int) -> Optional[Dict[str, Any]]:
     row = payload.get("clientType")
     if not isinstance(row, dict):
         return None
-    return normalize_public_client_type({"insCode": ins_code, **row})
+    returned_code = _to_int(row.get("insCode"))
+    if returned_code not in (None, 0, ins_code):
+        return None
+    return normalize_public_client_type({**row, "insCode": ins_code})
 
 
 def fetch_public_client_type_current_many(ins_codes: List[int]) -> List[Dict[str, Any]]:
@@ -511,6 +514,7 @@ def _clean_numeric_text(value: str) -> str:
         .replace(",", "")
         .replace("٬", "")
         .replace("،", "")
+        .replace("٫", ".")
         .replace(" ", "")
     )
     return _translate_digits(text)
@@ -521,9 +525,9 @@ def _translate_digits(value: str) -> str:
 
 
 def _net_flow(buy_value: Optional[float], sell_value: Optional[float]) -> Optional[float]:
-    if buy_value is None and sell_value is None:
+    if buy_value is None or sell_value is None:
         return None
-    return (buy_value or 0.0) - (sell_value or 0.0)
+    return buy_value - sell_value
 
 
 def _session() -> requests.Session:

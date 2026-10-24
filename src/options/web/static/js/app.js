@@ -209,8 +209,10 @@ const DETAIL_LABELS = {
 };
 
 function asFiniteNumber(value) {
-  if (value == null || value === "") return null;
-  const number = Number(typeof value === "string" ? cleanNumericText(value) : value);
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  const cleaned = typeof value === "string" ? cleanNumericText(value) : value;
+  if (cleaned === "") return null;
+  const number = Number(cleaned);
   return Number.isFinite(number) ? number : null;
 }
 
@@ -221,6 +223,7 @@ function cleanNumericText(value) {
     .replaceAll(",", "")
     .replaceAll("٬", "")
     .replaceAll("،", "")
+    .replaceAll("٫", ".")
     .replaceAll(" ", "");
 }
 
@@ -255,10 +258,11 @@ function fmtDate(d) {
     return `${s.slice(0, 4)}/${s.slice(4, 6)}/${s.slice(6, 8)}`;
   }
   try {
-    const date = new Date(d);
-    if (Number.isNaN(date.getTime())) return s;
     const hasTime = /[T:\s]\d{1,2}:/.test(s);
-    return date.toLocaleString("fa-IR", hasTime ? { dateStyle: "short", timeStyle: "short" } : { dateStyle: "short" });
+    const utcValue = hasTime && !/(Z|[+-]\d{2}:?\d{2})$/i.test(s) ? `${s.replace(" ", "T")}Z` : d;
+    const date = new Date(utcValue);
+    if (Number.isNaN(date.getTime())) return s;
+    return date.toLocaleString("fa-IR", hasTime ? { timeZone: "Asia/Tehran", dateStyle: "short", timeStyle: "short" } : { timeZone: "UTC", dateStyle: "short" });
   } catch {
     return s;
   }
@@ -351,7 +355,9 @@ function isoDate(gy, gm, gd) {
 }
 
 function localIsoDate(date = new Date()) {
-  return isoDate(date.getFullYear(), date.getMonth() + 1, date.getDate());
+  const parts = new Intl.DateTimeFormat("en", { timeZone: "Asia/Tehran", year: "numeric", month: "2-digit", day: "2-digit" })
+    .formatToParts(date).reduce((result, part) => ({ ...result, [part.type]: part.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 function calendarTodayIso() {
@@ -1459,15 +1465,26 @@ function selectRowByIndex(index) {
   }
 }
 
+function clientTypeDate() {
+  return state.selectedDate || state.latestDate || localIsoDate();
+}
+
+function matchesClientTypeDate(row, date) {
+  const recDate = translateDigits(row?.rec_date || "").replace(/[-/٬,]/g, "");
+  return !recDate || recDate === date.replaceAll("-", "");
+}
+
 async function loadClientTypeForSelected(row) {
   const insCode = row?.ins_code;
-  if (!insCode) return;
+  const date = clientTypeDate();
+  if (!insCode || date !== localIsoDate()) return;
   const requestId = ++state.clientTypeRequestId;
   try {
     const data = await api(`/api/client-type/${encodeURIComponent(insCode)}`);
-    if (requestId !== state.clientTypeRequestId || String(insCode) !== String(state.selectedInsCode)) return;
+    if (requestId !== state.clientTypeRequestId || date !== clientTypeDate() || date !== localIsoDate() || String(insCode) !== String(state.selectedInsCode)) return;
     const item = data.item || {};
-    state.clientTypeByInsCode[String(insCode)] = item;
+    if (!matchesClientTypeDate(item, date)) return;
+    state.clientTypeByInsCode[`${date}:${insCode}`] = item;
     mergeClientTypeIntoRow(row, item);
     const rowKey = getRowKey(row);
     state.items.forEach((itemRow) => {
@@ -1488,18 +1505,23 @@ async function loadClientTypeForSelected(row) {
 
 async function loadClientTypesForRows(rows) {
   const insCodes = [...new Set((rows || []).map((row) => row?.ins_code).filter(Boolean).map(String))];
-  if (!insCodes.length) return;
+  const date = clientTypeDate();
+  if (!insCodes.length || date !== localIsoDate()) return;
   const requestId = ++state.clientTypeBatchRequestId;
   try {
-    const data = await api("/api/client-type", {
-      method: "POST",
-      body: JSON.stringify({ ins_codes: insCodes }),
-    });
-    if (requestId !== state.clientTypeBatchRequestId) return;
-    (data.items || []).forEach((clientType) => {
+    const received = [];
+    for (let offset = 0; offset < insCodes.length; offset += 300) {
+      if (requestId !== state.clientTypeBatchRequestId || date !== clientTypeDate() || date !== localIsoDate()) return;
+      const data = await api("/api/client-type", {
+        method: "POST", body: JSON.stringify({ ins_codes: insCodes.slice(offset, offset + 300) }),
+      });
+      received.push(...(data.items || []));
+    }
+    if (requestId !== state.clientTypeBatchRequestId || date !== clientTypeDate() || date !== localIsoDate()) return;
+    received.forEach((clientType) => {
       const insCode = String(clientType?.ins_code || "");
-      if (!insCode) return;
-      state.clientTypeByInsCode[insCode] = clientType;
+      if (!insCode || !matchesClientTypeDate(clientType, date)) return;
+      state.clientTypeByInsCode[`${date}:${insCode}`] = clientType;
       state.items.forEach((row) => {
         if (String(row?.ins_code) === insCode) mergeClientTypeIntoRow(row, clientType);
       });
@@ -1515,8 +1537,9 @@ async function loadClientTypesForRows(rows) {
 }
 
 function applyCachedClientTypes(rows) {
+  const date = clientTypeDate();
   (rows || []).forEach((row) => {
-    const clientType = state.clientTypeByInsCode[String(row?.ins_code || "")];
+    const clientType = state.clientTypeByInsCode[`${date}:${row?.ins_code || ""}`];
     if (clientType) mergeClientTypeIntoRow(row, clientType);
   });
 }
@@ -1830,9 +1853,8 @@ function numericValue(value) {
 function openInterestValue(row) {
   const buy = asFiniteNumber(row.buy_open_positions);
   const sell = asFiniteNumber(row.sell_open_positions);
-  if (buy == null) return sell;
-  if (sell == null) return buy;
-  return Math.max(buy, sell);
+  if (buy != null && buy >= 0) return buy;
+  return sell != null && sell >= 0 ? sell : null;
 }
 
 function analysisContractLabel(row) {
@@ -1890,15 +1912,25 @@ function rowSellVolume(row) {
 }
 
 function rowParticipantBuyVolume(row, prefix) {
-  return numericValue(row[`${prefix}_buy_volume`]);
+  return asFiniteNumber(row[`${prefix}_buy_volume`]);
 }
 
 function rowParticipantSellVolume(row, prefix) {
-  return numericValue(row[`${prefix}_sell_volume`]);
+  return asFiniteNumber(row[`${prefix}_sell_volume`]);
 }
 
 function rowParticipantVolume(row, prefix) {
-  return rowParticipantBuyVolume(row, prefix) + rowParticipantSellVolume(row, prefix);
+  const buy = rowParticipantBuyVolume(row, prefix), sell = rowParticipantSellVolume(row, prefix);
+  return buy != null && sell != null ? buy + sell : null;
+}
+
+function sumKnownRows(rows, getter) {
+  const values = rows.map((row) => asFiniteNumber(getter(row)));
+  return values.every((value) => value != null && value >= 0) ? values.reduce((total, value) => total + value, 0) : null;
+}
+
+function compareKnownValues(left, right) {
+  return left == null || right == null ? 0 : Math.sign(left - right);
 }
 
 function rowTradeVolume(row) {
@@ -1907,6 +1939,7 @@ function rowTradeVolume(row) {
 }
 
 function ratioLabel(num, den) {
+  if (num == null || den == null) return "—";
   if (!den) return num ? "∞" : "—";
   return (num / den).toLocaleString("fa-IR", { maximumFractionDigits: 2 });
 }
@@ -1917,8 +1950,11 @@ function analysisMetricValue(value) {
 }
 
 function openInterestSnapshot(rows) {
-  const hasCurrent = rows.some((row) => openInterestValue(row) != null);
-  const hasYesterday = rows.some((row) => row.yesterday_open_positions != null);
+  const hasCurrent = rows.length > 0 && rows.every((row) => openInterestValue(row) != null);
+  const hasYesterday = rows.length > 0 && rows.every((row) => {
+    const value = asFiniteNumber(row.yesterday_open_positions);
+    return value != null && value >= 0;
+  });
   const current = hasCurrent ? sumRows(rows, (row) => openInterestValue(row)) : null;
   const yesterday = hasYesterday ? sumRows(rows, (row) => row.yesterday_open_positions) : null;
   return {
@@ -1939,38 +1975,41 @@ function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
   const putItmRows = putRows.filter((row) => row.moneyness === "ITM");
   const putOtmRows = putRows.filter((row) => row.moneyness === "OTM");
 
-  const callBuy = sumRows(callRows, (row) => rowParticipantBuyVolume(row, prefix));
-  const callSell = sumRows(callRows, (row) => rowParticipantSellVolume(row, prefix));
-  const putBuy = sumRows(putRows, (row) => rowParticipantBuyVolume(row, prefix));
-  const putSell = sumRows(putRows, (row) => rowParticipantSellVolume(row, prefix));
-  const callItmVolume = sumRows(callItmRows, (row) => rowParticipantVolume(row, prefix));
-  const callOtmVolume = sumRows(callOtmRows, (row) => rowParticipantVolume(row, prefix));
-  const putItmVolume = sumRows(putItmRows, (row) => rowParticipantVolume(row, prefix));
-  const putOtmVolume = sumRows(putOtmRows, (row) => rowParticipantVolume(row, prefix));
-  const callVolume = sumRows(callRows, (row) => rowParticipantVolume(row, prefix));
-  const putVolume = sumRows(putRows, (row) => rowParticipantVolume(row, prefix));
+  const callBuy = sumKnownRows(callRows, (row) => rowParticipantBuyVolume(row, prefix));
+  const callSell = sumKnownRows(callRows, (row) => rowParticipantSellVolume(row, prefix));
+  const putBuy = sumKnownRows(putRows, (row) => rowParticipantBuyVolume(row, prefix));
+  const putSell = sumKnownRows(putRows, (row) => rowParticipantSellVolume(row, prefix));
+  const callItmVolume = sumKnownRows(callItmRows, (row) => rowParticipantVolume(row, prefix));
+  const callOtmVolume = sumKnownRows(callOtmRows, (row) => rowParticipantVolume(row, prefix));
+  const putItmVolume = sumKnownRows(putItmRows, (row) => rowParticipantVolume(row, prefix));
+  const putOtmVolume = sumKnownRows(putOtmRows, (row) => rowParticipantVolume(row, prefix));
+  const callVolume = sumKnownRows(callRows, (row) => rowParticipantVolume(row, prefix));
+  const putVolume = sumKnownRows(putRows, (row) => rowParticipantVolume(row, prefix));
   const callOi = openInterestSnapshot(callRows);
   const putOi = openInterestSnapshot(putRows);
   const hasOiChange = callOi.hasChange || putOi.hasChange;
 
-  const callBuyDominates = callBuy > callSell;
-  const callSellDominates = callSell > callBuy;
-  const putSellDominates = putSell > putBuy;
-  const putBuyDominates = putBuy > putSell;
+  const callDataComplete = callBuy != null && callSell != null;
+  const putDataComplete = putBuy != null && putSell != null;
+  const callBuyDominates = compareKnownValues(callBuy, callSell) > 0;
+  const callSellDominates = compareKnownValues(callSell, callBuy) > 0;
+  const putSellDominates = compareKnownValues(putSell, putBuy) > 0;
+  const putBuyDominates = compareKnownValues(putBuy, putSell) > 0;
   const step1Score =
     (callBuyDominates ? 1 : callSellDominates ? -1 : 0) +
     (putSellDominates ? 1 : putBuyDominates ? -1 : 0);
-  const callOtmDominates = callOtmVolume > callItmVolume;
-  const callItmDominates = callItmVolume > callOtmVolume;
-  const putOtmDominates = putOtmVolume > putItmVolume;
-  const putItmDominates = putItmVolume > putOtmVolume;
+  const callOtmDominates = compareKnownValues(callOtmVolume, callItmVolume) > 0;
+  const callItmDominates = compareKnownValues(callItmVolume, callOtmVolume) > 0;
+  const putOtmDominates = compareKnownValues(putOtmVolume, putItmVolume) > 0;
+  const putItmDominates = compareKnownValues(putItmVolume, putOtmVolume) > 0;
   const step2Score =
     (callOtmDominates ? 1 : callItmDominates ? 0.5 : 0) +
     (putOtmDominates ? -1 : 0);
   const step2Bullish = step2Score > 0;
   const step2Weak = step2Score < 0;
   const step2Cautious = !step2Bullish && !step2Weak && (callItmDominates || putItmDominates);
-  const step3Bullish = callVolume > putVolume;
+  const step3Bullish = compareKnownValues(callVolume, putVolume) > 0;
+  const step3Weak = compareKnownValues(callVolume, putVolume) < 0;
   const step4CallConfirm = callOi.change != null && callOi.change > 0;
   const step4CallWeak = callOi.change != null && callOi.change < 0;
   const step4PutConfirm = putOi.change != null && putOi.change < 0;
@@ -1981,21 +2020,21 @@ function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
   const step4Confirm = step4Score > 0;
   const step4Weak = step4Score < 0;
 
-  const score =
+  const score = rows.length > 0 && callDataComplete && putDataComplete ?
     step1Score +
     step2Score +
-    (step3Bullish ? 1 : callVolume < putVolume ? -1 : 0) +
-    step4Score;
+    (step3Bullish ? 1 : step3Weak ? -1 : 0) +
+    step4Score : null;
 
-  let finalLabel = "خنثی";
+  let finalLabel = score == null ? "داده حقیقی/حقوقی کامل نیست" : "خنثی";
   let finalClass = "neutral";
-  if (score >= 5) {
+  if (score != null && score >= 5) {
     finalLabel = "صعودی قوی";
     finalClass = "bullish";
-  } else if (score >= 3) {
+  } else if (score != null && score >= 3) {
     finalLabel = "صعودی محتاط";
     finalClass = "cautious";
-  } else if (score <= -1) {
+  } else if (score != null && score <= -1) {
     finalLabel = "ضعیف";
     finalClass = "weak";
   }
@@ -2011,12 +2050,12 @@ function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
         kicker: "جریان سفارش",
         title: "حجم خرید و فروش",
         label: [
-          callBuyDominates
+          !callDataComplete ? "Call: داده ناقص" : callBuyDominates
             ? "Call: خرید بیشتر؛ صعودی"
             : callSellDominates
               ? "Call: فروش بیشتر؛ ضعیف"
               : "Call: متعادل",
-          putSellDominates
+          !putDataComplete ? "Put: داده ناقص" : putSellDominates
             ? "Put: فروش بیشتر؛ صعودی"
             : putBuyDominates
               ? "Put: خرید بیشتر؛ ضعیف"
@@ -2025,11 +2064,11 @@ function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
         className: step1Score > 0 ? "bullish" : step1Score < 0 ? "weak" : "neutral",
         signals: [
           {
-            label: callBuyDominates ? "Call صعودی" : callSellDominates ? "Call ضعیف" : "Call متعادل",
+            label: !callDataComplete ? "Call داده ناقص" : callBuyDominates ? "Call صعودی" : callSellDominates ? "Call ضعیف" : "Call متعادل",
             className: callBuyDominates ? "bullish" : callSellDominates ? "weak" : "neutral",
           },
           {
-            label: putSellDominates ? "Put صعودی" : putBuyDominates ? "Put ضعیف" : "Put متعادل",
+            label: !putDataComplete ? "Put داده ناقص" : putSellDominates ? "Put صعودی" : putBuyDominates ? "Put ضعیف" : "Put متعادل",
             className: putSellDominates ? "bullish" : putBuyDominates ? "weak" : "neutral",
           },
         ],
@@ -2047,11 +2086,11 @@ function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
         className: step2Bullish ? "bullish" : step2Weak ? "weak" : step2Cautious ? "cautious" : "neutral",
         signals: [
           {
-            label: callOtmDominates ? "Call OTM غالب" : callItmDominates ? "Call ITM غالب" : "Call متعادل",
+            label: !callDataComplete ? "Call داده ناقص" : callOtmDominates ? "Call OTM غالب" : callItmDominates ? "Call ITM غالب" : "Call متعادل",
             className: callOtmDominates ? "bullish" : callItmDominates ? "cautious" : "neutral",
           },
           {
-            label: putOtmDominates ? "Put OTM غالب" : putItmDominates ? "Put ITM غالب" : "Put متعادل",
+            label: !putDataComplete ? "Put داده ناقص" : putOtmDominates ? "Put OTM غالب" : putItmDominates ? "Put ITM غالب" : "Put متعادل",
             className: putOtmDominates ? "weak" : putItmDominates ? "cautious" : "neutral",
           },
         ],
@@ -2065,8 +2104,8 @@ function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
       {
         kicker: "ترکیب قراردادها",
         title: "نسبت Call به Put",
-        label: step3Bullish ? "Call غالب" : callVolume < putVolume ? "Put غالب" : "متعادل",
-        className: step3Bullish ? "bullish" : callVolume < putVolume ? "weak" : "neutral",
+        label: callVolume == null || putVolume == null ? "داده ناقص" : step3Bullish ? "Call غالب" : step3Weak ? "Put غالب" : "متعادل",
+        className: step3Bullish ? "bullish" : step3Weak ? "weak" : "neutral",
         metrics: [
           ["Call", callVolume],
           ["Put", putVolume],
@@ -3073,6 +3112,10 @@ document.getElementById("closeDetail")?.addEventListener("click", closeDetailShe
 document.getElementById("detailBackdrop")?.addEventListener("click", closeDetailSheet);
 window.addEventListener("pagehide", () => {
   state.dataRequestId += 1;
+  state.clientTypeRequestId += 1;
+  state.clientTypeBatchRequestId += 1;
+  state.trendRequestId += 1;
+  destroyOiChart();
   refreshPollGeneration += 1;
   clearTimeout(refreshPollTimer);
   refreshPollTimer = null;

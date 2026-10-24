@@ -6,14 +6,14 @@ from math import isfinite
 from datetime import datetime
 from typing import Any
 
-from options.backend.analysis.sentiment import detect_option_type
+from options.backend.analysis.sentiment import current_open_interest, detect_option_type
 
 
 def number(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        result = float(str(value).translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")).replace(",", "").replace("٬", ""))
+        result = float(str(value).translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")).replace(",", "").replace("٬", "").replace("٫", "."))
     except (ValueError, TypeError, OverflowError):
         return None
     return result if isfinite(result) else None
@@ -50,11 +50,7 @@ def contract_expiry(row: dict) -> str | None:
 
 
 def current_oi(row: dict) -> float | None:
-    for field in ("buy_open_positions", "sell_open_positions"):
-        value = number(row.get(field))
-        if value is not None and value >= 0:
-            return value
-    return None
+    return current_open_interest(row)
 
 
 def oi_change(row: dict) -> float | None:

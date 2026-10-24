@@ -320,6 +320,7 @@ def test_client_type_endpoint_fetches_current_public_row(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert seen["ins_code"] == 13869259092326636
+    assert response.json()["item"]["ins_code"] == "13869259092326636"
     assert response.json()["item"]["natural_buy_volume"] == 482.0
 
 
@@ -346,6 +347,7 @@ def test_client_type_batch_endpoint_fetches_all_unique_public_rows(monkeypatch) 
     assert response.status_code == 200
     assert seen["ins_codes"] == [13869259092326636, 1001]
     assert response.json()["total"] == 2
+    assert [row["ins_code"] for row in response.json()["items"]] == ["13869259092326636", "1001"]
 
 
 def test_calendar_today_returns_api_marked_date(monkeypatch) -> None:

@@ -18,6 +18,21 @@ window.OptionSentiment = (() => {
   const finite = (value) => value != null && typeof value !== "boolean" && Number.isFinite(Number(value));
   const signed = (value) => finite(value) ? `${Number(value) > 0 ? "+" : ""}${fmtNum(value)}` : "—";
   const text = (id, value) => { const el = element(id); if (el) el.textContent = value; };
+  const compactCount = (value) => Number(value).toLocaleString("fa-IR", { notation: "compact", maximumFractionDigits: 1 });
+
+  function centerChart(chart) {
+    if (!chart || !finite(model.data?.spot_price)) return;
+    const scroller = chart.canvas.parentElement.parentElement;
+    scroller.scrollLeft = Math.max(0, chart.scales.x.getPixelForValue(Number(model.data.spot_price)) - scroller.clientWidth / 2);
+  }
+
+  function chartFooter(suffix) {
+    return `<div class="sentiment-chart-footer" id="sentiment${suffix}Footer">
+      <span class="sentiment-x-label">قیمت اعمال (ریال)</span>
+      <button type="button" class="sentiment-center-chart hidden" data-center-chart="sentiment${suffix}Chart">بازگشت به قیمت پایه</button>
+      <span class="sentiment-chart-hint" id="sentiment${suffix}Hint">برای دیدن مقدار دقیق، ستون را لمس کنید.</span>
+    </div>`;
+  }
 
   async function requestApi(path, options = {}) {
     const controller = new AbortController();
@@ -80,7 +95,7 @@ window.OptionSentiment = (() => {
       <div class="sentiment-market-summaries" id="sentimentSummaries"></div>
       <section class="sentiment-chart-panel" aria-labelledby="sentimentOiTitle">
         <h3 id="sentimentOiTitle">موقعیت باز بر اساس قیمت اعمال</h3>
-        <p class="sentiment-price-label"></p>
+        <div class="sentiment-price-label"></div>
         <fieldset class="sentiment-oi-modes" aria-describedby="sentimentOiModeHint">
           <legend>حالت بررسی</legend>
           <div class="sentiment-oi-mode-grid">${oiModes.map((mode) => `
@@ -89,34 +104,41 @@ window.OptionSentiment = (() => {
               <span>${mode.label}</span>
             </label>`).join("")}
           </div>
-          <p class="sentiment-oi-mode-hint" id="sentimentOiModeHint">یک یا چند حالت را برای بررسی ترکیبی انتخاب کنید.</p>
+          <p class="sentiment-oi-mode-hint" id="sentimentOiModeHint">یک یا چند حالت را انتخاب کنید.</p>
           <p class="sentiment-oi-mode-selection" id="sentimentOiModeSelection" role="status" aria-live="polite"></p>
         </fieldset>
-        <p class="sentiment-oi-mode-hint">هر موقعیت باز یک سمت خرید و یک سمت فروش دارد؛ مقادیر دو سمت برابرند و در نمایش ترکیبی با هم جمع نمی‌شوند.</p>
         <p class="sentiment-coverage" id="sentimentOiCoverage"></p>
         <div class="sentiment-legend" id="sentimentOiLegend"></div>
+        <p class="sentiment-chart-unit">تعداد قرارداد</p>
         <p class="sentiment-chart-empty" id="sentimentOiEmpty"></p>
         <div class="sentiment-chart-stage"><div class="sentiment-chart-scroll" tabindex="0" aria-label="نمودار موقعیت باز؛ پیمایش افقی برای همه قیمت‌های اعمال">
           <div class="sentiment-chart-wrap"><canvas id="sentimentOiChart" role="img" aria-label="موقعیت باز خرید و فروش Call و Put بر اساس قیمت اعمال"></canvas></div>
         </div><div class="sentiment-y-axis" id="sentimentOiAxis" aria-hidden="true"></div></div>
-        <p class="sentiment-x-label">قیمت اعمال (ریال)</p>
-        <p class="sentiment-peaks" id="sentimentPeaks"></p>
+        ${chartFooter("Oi")}
+        <details class="sentiment-chart-details"><summary>بیشترین موقعیت‌ها و راهنمای نمودار</summary>
+          <div class="sentiment-peaks" id="sentimentPeaks"></div>
+          <p class="sentiment-oi-mode-hint">هر موقعیت باز یک سمت خرید و یک سمت فروش دارد؛ مقادیر دو سمت برابرند و در نمایش ترکیبی با هم جمع نمی‌شوند.</p>
+        </details>
       </section>
       <section class="sentiment-chart-panel" aria-labelledby="sentimentChangeTitle">
         <h3 id="sentimentChangeTitle">تغییر موقعیت باز بر اساس قیمت اعمال</h3>
-        <p class="sentiment-price-label"></p>
+        <div class="sentiment-price-label"></div>
         <p class="sentiment-coverage" id="sentimentChangeCoverage"></p>
-        <div class="sentiment-legend"><span class="sentiment-call">اختیار خرید</span><span class="sentiment-put">اختیار فروش</span><span>بالای صفر: افزایش · پایین صفر: کاهش</span></div>
+        <div class="sentiment-legend"><span class="sentiment-call">اختیار خرید</span><span class="sentiment-put">اختیار فروش</span></div>
+        <p class="sentiment-chart-unit">تعداد قرارداد · بالای صفر: افزایش · پایین صفر: کاهش</p>
         <p class="sentiment-chart-empty" id="sentimentChangeEmpty"></p>
         <div class="sentiment-chart-stage"><div class="sentiment-chart-scroll" tabindex="0" aria-label="نمودار تغییر موقعیت باز؛ پیمایش افقی برای همه قیمت‌های اعمال">
           <div class="sentiment-chart-wrap"><canvas id="sentimentChangeChart" role="img" aria-label="تغییر موقعیت باز نسبت به روز معاملاتی قبل"></canvas></div>
         </div><div class="sentiment-y-axis" id="sentimentChangeAxis" aria-hidden="true"></div></div>
-        <p class="sentiment-x-label">قیمت اعمال (ریال)</p>
+        ${chartFooter("Change")}
       </section>`;
     element("sentimentUnderlying").addEventListener("change", (event) => { model.key = event.target.value; load(); });
     element("sentimentExpiry").addEventListener("change", (event) => { model.expiry = event.target.value; load(); });
     element("sentimentDate").addEventListener("change", (event) => { model.date = event.target.value; load(); });
     element("sentimentRefresh").addEventListener("click", refresh);
+    model.root.querySelectorAll("[data-center-chart]").forEach((button) => {
+      button.addEventListener("click", () => centerChart(model.charts.find((chart) => chart.canvas.id === button.dataset.centerChart)));
+    });
     model.root.querySelectorAll("[data-oi-mode]").forEach((control) => {
       control.addEventListener("change", () => {
         model.oiModes = [...model.root.querySelectorAll("[data-oi-mode]:checked")].map((input) => input.value);
@@ -181,11 +203,12 @@ window.OptionSentiment = (() => {
     const warning = element("sentimentWarning");
     warning.textContent = messages.filter(Boolean).join(" ");
     warning.classList.toggle("hidden", !warning.textContent);
-    element("sentimentSummaries").innerHTML = summaryHtml("market", "کل بازار", data.summaries.market, `${dateLabel} · همه دارایی‌ها و همه سررسیدها`)
+    element("sentimentSummaries").innerHTML = summaryHtml("market", "کل بازار", data.summaries.market, `${dateLabel} · همه نمادهای دارای آپشن · همه سررسیدها`)
       + summaryHtml("underlying", "دارایی پایه", data.summaries.underlying, `${assetName} · همه سررسیدها`)
       + (model.expiry !== "all" ? summaryHtml("selection", "انتخاب فعلی", data.summaries.selection, `${assetName} · ${fmtDate(model.expiry)}`) : "");
-    const priceText = `قیمت دارایی پایه${data.spot_price_kind === "closing" ? " (پایانی)" : ""}: ${fmtNum(data.spot_price)} ریال · نزدیک‌ترین قیمت اعمال (ATM): ${fmtNum(data.atm_strike)} ریال`;
-    model.root.querySelectorAll(".sentiment-price-label").forEach((el) => { el.textContent = priceText; });
+    const priceHtml = `<div class="sentiment-price-spot"><span>قیمت پایه${data.spot_price_kind === "closing" ? " (پایانی)" : ""}</span><strong>${fmtNum(data.spot_price)} <small>ریال</small></strong></div>
+      <div class="sentiment-price-atm" title="نزدیک‌ترین قیمت اعمال به قیمت پایه"><span>قیمت اعمال ATM</span><strong>${fmtNum(data.atm_strike)} <small>ریال</small></strong></div>`;
+    model.root.querySelectorAll(".sentiment-price-label").forEach((el) => { el.innerHTML = priceHtml; });
     text("sentimentChangeCoverage", coverage(data.quality.change));
     drawCharts();
   }
@@ -196,7 +219,7 @@ window.OptionSentiment = (() => {
       control.checked = model.oiModes.includes(control.value);
     });
     text("sentimentOiModeSelection", selectedModes.length ? `نمایش: ${selectedModes.map((mode) => mode.label).join(" + ")}` : "هیچ حالتی انتخاب نشده است.");
-    element("sentimentOiLegend").innerHTML = selectedModes.map((mode) => `<span class="sentiment-position-legend sentiment-position-${mode.color}">${mode.label}</span>`).join("") + "<span>واحد: تعداد قرارداد</span>";
+    element("sentimentOiLegend").innerHTML = selectedModes.map((mode) => `<span class="sentiment-position-legend sentiment-position-${mode.color}">${mode.label}</span>`).join("");
     const selectedSides = [...new Set(selectedModes.map((mode) => mode.side))];
     const info = data.strikes.reduce((result, row) => {
       selectedSides.forEach((side) => {
@@ -208,11 +231,11 @@ window.OptionSentiment = (() => {
     }, { known: 0, total: 0 });
     info.complete = info.known === info.total;
     text("sentimentOiCoverage", selectedSides.length === 2 ? coverage(data.quality.oi) : selectedSides.length ? coverage(info) : "");
-    text("sentimentPeaks", selectedModes.map((mode) => {
+    element("sentimentPeaks").innerHTML = selectedModes.map((mode) => {
       const peak = data.peaks[mode.side];
-      const label = `بیشترین موقعیت باز ${mode.label}`;
-      return peak ? `${label}: ${fmtNum(peak.value)} قرارداد در قیمت اعمال ${fmtNum(peak.strike_price)} ریال${peak.complete && peak.scope_complete !== false ? "" : " (داده ناقص؛ بیشینه در داده‌های موجود)"}` : `${label}: —`;
-    }).join(" · "));
+      return `<div><span class="sentiment-position-${mode.color}">${mode.label}</span><strong>${peak ? `${fmtNum(peak.value)} قرارداد` : "—"}</strong>
+        <span>${peak ? `اعمال ${fmtNum(peak.strike_price)} ریال${peak.complete && peak.scope_complete !== false ? "" : " (داده ناقص؛ بیشینه در داده‌های موجود)"}` : "داده موجود نیست"}</span></div>`;
+    }).join("");
   }
 
   const priceMarkers = {
@@ -222,19 +245,24 @@ window.OptionSentiment = (() => {
       if (!axis) return;
       axis.replaceChildren(...chart.scales.y.ticks.map((tick, i) => {
         const label = document.createElement("span");
-        label.textContent = fmtNum(tick.value);
+        label.textContent = compactCount(tick.value);
         label.style.top = `${chart.scales.y.getPixelForTick(i)}px`;
         return label;
       }));
+      const scroller = chart.canvas.parentElement.parentElement;
+      const scrollable = scroller.scrollWidth > scroller.clientWidth + 1;
+      const suffix = chart.canvas.id.replace("sentiment", "").replace("Chart", "");
+      text(`sentiment${suffix}Hint`, scrollable ? "برای دیدن بقیه قیمت‌ها، افقی بکشید؛ برای مقدار دقیق، لمس کنید." : "برای دیدن مقدار دقیق، ستون را لمس کنید.");
+      element(`sentiment${suffix}Footer`)?.querySelector("button").classList.toggle("hidden", !scrollable || !finite(model.data?.spot_price));
     },
     afterDatasetsDraw(chart) {
       const data = model.data;
       if (!data) return;
       const { ctx, chartArea: area, scales: { x } } = chart;
       const palette = chartPalette();
-      for (const [value, label, color, level] of [
-        [data.spot_price, "قیمت پایه", palette.red, 0],
-        [data.atm_strike, "ATM", palette.purple, 1],
+      for (const [value, color, level] of [
+        [data.spot_price, palette.red, 0],
+        [data.atm_strike, palette.purple, 1],
       ]) {
         if (!finite(value)) continue;
         const pixel = x.getPixelForValue(Number(value));
@@ -244,14 +272,6 @@ window.OptionSentiment = (() => {
         ctx.lineWidth = 2;
         ctx.setLineDash(level ? [3, 4] : [7, 3]);
         ctx.beginPath(); ctx.moveTo(pixel, area.top); ctx.lineTo(pixel, area.bottom); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = color;
-        ctx.font = "12px Vazirmatn, sans-serif";
-        const content = `${label}: ${fmtNum(value)}`;
-        const width = ctx.measureText(content).width;
-        const labelX = Math.max(area.left + width / 2, Math.min(area.right - width / 2, pixel));
-        ctx.textAlign = "center";
-        ctx.fillText(content, labelX, area.top - 28 + level * 17);
         ctx.restore();
       }
     },
@@ -276,31 +296,34 @@ window.OptionSentiment = (() => {
       const canvas = element(`sentiment${suffix}Chart`);
       const wrap = canvas.parentElement;
       const available = rows.some((row) => series.some((mode) => row.coverage[`${mode.side}_${field}`].known > 0));
-      wrap.parentElement.parentElement.classList.toggle("hidden", !available);
       const allZero = available && rows.every((row) => series.every((mode) => row[`${mode.side}_${field}`] == null || row[`${mode.side}_${field}`] === 0));
+      wrap.parentElement.parentElement.classList.toggle("hidden", !available || allZero);
+      element(`sentiment${suffix}Footer`).classList.toggle("hidden", !available || allZero);
       text(`sentiment${suffix}Empty`, available ? (allZero ? `${field === "oi" ? "موقعیت باز" : "تغییر موقعیت باز"} قراردادهای دارای داده صفر است.` : "")
         : field === "oi" ? (!selectedModes.length ? "برای نمایش نمودار، حداقل یکی از چهار حالت را انتخاب کنید." : "داده قابل نمایش موقعیت باز برای قیمت‌های اعمال این انتخاب موجود نیست.") : "داده قابل نمایش برای مقایسه با روز معاملاتی قبل موجود نیست.");
-      if (!available || typeof Chart === "undefined") continue;
-      wrap.style.width = `${Math.max(wrap.parentElement.clientWidth, rows.length * Math.max(56, series.length * 24 + 16), 320)}px`;
+      if (!available || allZero || typeof Chart === "undefined") continue;
+      wrap.style.width = `max(100%, ${rows.length * Math.max(36, series.length * 8 + 12)}px)`;
       const palette = chartPalette();
       const strikes = rows.map((r) => r.strike_price);
       const spacing = Math.min(...strikes.slice(1).map((v, i) => v - strikes[i])) || strikes[0] * 0.05;
-      const padding = Number.isFinite(spacing) ? spacing : Math.max(1, strikes[0] * 0.05);
+      const padding = Number.isFinite(spacing) ? spacing * 0.6 : Math.max(1, strikes[0] * 0.05);
       const bounds = [...strikes, ...(finite(data.spot_price) ? [data.spot_price] : [])];
       model.charts.push(new Chart(canvas, {
         type: "bar", plugins: [priceMarkers],
         data: { datasets: series.map((mode) => ({
           label: mode.label, backgroundColor: palette[mode.color],
-          borderColor: palette[mode.color], borderWidth: 1, maxBarThickness: 22,
+          borderColor: palette[mode.color], borderWidth: 0, maxBarThickness: 18, borderRadius: 3,
+          categoryPercentage: 0.85, barPercentage: 0.9,
           data: rows.map((row) => ({ x: row.strike_price, y: row[`${mode.side}_${field}`] })),
         })) },
         options: {
           responsive: true, maintainAspectRatio: false, animation: false, parsing: false,
-          layout: { padding: { top: 45 } },
+          layout: { padding: { top: 12, right: 10, bottom: 4, left: 10 } },
           interaction: { mode: "index", intersect: false },
           plugins: {
             legend: { display: false },
-            tooltip: { rtl: true, textDirection: "rtl", titleFont: { family: "Vazirmatn" }, bodyFont: { family: "Vazirmatn" }, callbacks: {
+            tooltip: { rtl: true, textDirection: "rtl", padding: 12, cornerRadius: 10, boxPadding: 5,
+              titleFont: { family: "Vazirmatn", size: 12 }, bodyFont: { family: "Vazirmatn", size: 11 }, callbacks: {
               title: (items) => `قیمت اعمال: ${fmtNum(items[0]?.parsed.x)} ریال`,
               label: (item) => {
                 const side = series[item.datasetIndex].side;
@@ -312,16 +335,18 @@ window.OptionSentiment = (() => {
           scales: {
             x: { type: "linear", min: Math.min(...bounds) - padding, max: Math.max(...bounds) + padding,
               afterBuildTicks: (axis) => { axis.ticks = strikes.map((value) => ({ value })); },
-              ticks: { color: palette.muted, callback: (v) => fmtNum(v), maxRotation: 55, minRotation: 35, font: { family: "Vazirmatn" } }, grid: { display: false } },
-            y: { beginAtZero: true, afterFit: (axis) => { axis.width = 52; }, ticks: { color: "transparent", callback: (v) => fmtNum(v), font: { family: "Vazirmatn" }, precision: 0 },
-              grid: { color: (context) => context.tick?.value === 0 ? palette.text : palette.grid, lineWidth: (context) => context.tick?.value === 0 ? 2 : 1 } },
+              ticks: { color: palette.muted, callback: (v) => fmtNum(v), maxRotation: 0, minRotation: 0, padding: 8, autoSkip: true, autoSkipPadding: 10, font: { family: "Vazirmatn", size: 11 } },
+              border: { display: false }, grid: { display: false } },
+            y: { beginAtZero: true, afterFit: (axis) => { axis.width = 0; },
+              ticks: { display: false, maxTicksLimit: 6, precision: 0 }, border: { display: false },
+              grid: { drawTicks: false, color: (context) => context.tick?.value === 0 ? palette.muted : palette.grid, lineWidth: (context) => context.tick?.value === 0 ? 1.5 : 1 } },
           },
         },
       }));
       const chart = model.charts[model.charts.length - 1];
       const scroller = wrap.parentElement;
-      scroller.scrollLeft = sameScope && previousCharts.has(canvas.id) ? positions[chartIndex]
-        : finite(data.spot_price) ? Math.max(0, chart.scales.x.getPixelForValue(Number(data.spot_price)) - scroller.clientWidth / 2) : 0;
+      if (sameScope && previousCharts.has(canvas.id)) scroller.scrollLeft = positions[chartIndex];
+      else centerChart(chart);
     }
   }
 

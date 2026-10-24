@@ -410,10 +410,24 @@ def test_normalize_client_type_accepts_grouped_numeric_strings() -> None:
     assert normalized["natural_buy_count"] == 1234
 
 
-def test_normalize_client_type_missing_one_side_treats_it_as_zero() -> None:
-    assert normalize_client_type({"Buy_N_Value": 500})["natural_money_flow"] == 500.0
-    assert normalize_client_type({"Sell_N_Value": 500})["natural_money_flow"] == -500.0
+def test_normalize_client_type_requires_both_sides_for_net_money_flow() -> None:
+    assert normalize_client_type({"Buy_N_Value": 500})["natural_money_flow"] is None
+    assert normalize_client_type({"Sell_N_Value": 500})["natural_money_flow"] is None
     assert normalize_client_type({})["natural_money_flow"] is None
+    assert normalize_client_type({"Buy_N_Value": 500, "Sell_N_Value": 0})["natural_money_flow"] == 500
+
+
+def test_public_client_type_requires_both_sides_for_money_flow():
+    from options.backend.services.public_options import normalize_public_client_type
+    assert normalize_public_client_type({"buy_I_Value": 500})["natural_money_flow"] is None
+    assert normalize_public_client_type({"sell_N_Value": 500})["legal_money_flow"] is None
+    assert normalize_public_client_type({"buy_I_Value": 500, "sell_I_Value": 0})["natural_money_flow"] == 500
+
+
+def test_numeric_feed_normalizers_reject_booleans_and_support_persian_decimals():
+    assert normalize_option({"StrikePrice": True})["strike_price"] is None
+    assert normalize_option({"StrikePrice": "۱۰۰٫۵"})["strike_price"] == 100.5
+    assert normalize_client_type({"Buy_N_Value": False})["natural_buy_value"] is None
 
 
 def test_client_type_normalization_and_filter_tolerate_bad_instrument_codes() -> None:

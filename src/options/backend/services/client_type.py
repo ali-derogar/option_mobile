@@ -71,7 +71,7 @@ def filter_for_ins_codes(
 
 
 def _to_float(value: Any) -> Optional[float]:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     if isinstance(value, str):
         value = _clean_numeric_text(value)
@@ -79,7 +79,7 @@ def _to_float(value: Any) -> Optional[float]:
             return None
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if isfinite(number) else None
 
@@ -109,11 +109,12 @@ def _clean_numeric_text(value: str) -> str:
         .replace(",", "")
         .replace("٬", "")
         .replace("،", "")
+        .replace("٫", ".")
         .replace(" ", "")
     )
 
 
 def _net_flow(buy_value: Optional[float], sell_value: Optional[float]) -> Optional[float]:
-    if buy_value is None and sell_value is None:
+    if buy_value is None or sell_value is None:
         return None
-    return (buy_value or 0.0) - (sell_value or 0.0)
+    return buy_value - sell_value

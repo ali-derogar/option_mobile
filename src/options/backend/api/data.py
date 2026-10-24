@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from options.backend.analysis.sentiment import analyze_options_sentiment
+from options.backend.analysis.sentiment import analyze_options_sentiment, current_open_interest, open_interest_snapshot
 from options.backend.storage import Storage
 
 ID_FIELDS = {"ins_code", "underlying_ins_code", "underlying_key"}
@@ -65,7 +65,7 @@ def get_merged_contracts(
     contracts = filter_underlying_codes(contracts, underlying_ins_codes)
     if contracts.empty:
         return contracts
-    client_type = storage.get_latest_client_type_df(snapshot_date=snapshot_date)
+    client_type = storage.get_latest_client_type_df(snapshot_date=snapshot_date or storage.get_latest_snapshot_date())
     if client_type.empty:
         return contracts
     if "ins_code" not in contracts.columns or "ins_code" not in client_type.columns:
@@ -141,7 +141,9 @@ def _code_to_string(value: Any) -> str:
 def _underlying_key(row: pd.Series) -> Optional[str]:
     code = row.get("underlying_ins_code")
     if _is_present(code):
-        return _code_to_string(code)
+        key = _code_to_string(code)
+        if key.isdigit() and int(key) > 0:
+            return key
     symbol = row.get("underlying_symbol")
     if _is_present(symbol):
         return _normalize_text(symbol)
@@ -158,6 +160,8 @@ def _attach_underlying_keys(df: pd.DataFrame) -> pd.DataFrame:
         if not _is_present(code):
             continue
         key = _code_to_string(code)
+        if not key.isdigit() or int(key) <= 0:
+            continue
         for text in (symbol, short_name):
             normalized = _normalize_text(text)
             if normalized:
@@ -201,10 +205,12 @@ def _numeric_series(series: pd.Series) -> pd.Series:
 
 
 def _to_finite_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
     try:
         if pd.isna(value):
             return None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         pass
     if isinstance(value, str):
         value = _clean_numeric_text(value)
@@ -212,23 +218,15 @@ def _to_finite_float(value: Any) -> Optional[float]:
             return None
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if isfinite(number) else None
 
 
 def _open_interest_value(row: Any) -> Optional[float]:
-    if hasattr(row, "get"):
-        buy = _to_finite_float(row.get("buy_open_positions"))
-        sell = _to_finite_float(row.get("sell_open_positions"))
-    else:
-        buy = _to_finite_float(getattr(row, "buy_open_positions", None))
-        sell = _to_finite_float(getattr(row, "sell_open_positions", None))
-    if buy is None:
-        return sell
-    if sell is None:
-        return buy
-    return max(buy, sell)
+    if not hasattr(row, "get"):
+        row = {field: getattr(row, field, None) for field in ("buy_open_positions", "sell_open_positions")}
+    return current_open_interest(row)
 
 
 def _sum_open_interest_frame(df: pd.DataFrame) -> Optional[float]:
@@ -368,6 +366,7 @@ def _clean_numeric_text(value: str) -> str:
         .replace(",", "")
         .replace("٬", "")
         .replace("،", "")
+        .replace("٫", ".")
         .replace(" ", "")
     )
 
@@ -470,7 +469,7 @@ def get_sentiment(
             or q_lower in _normalize_text(item.get("sentiment_label"))
         ]
     return {
-        "items": items,
+        "items": [{key: _serialize_value(value, key) for key, value in item.items()} for item in items],
         "total": len(items),
         "summary": result["summary"],
     }
@@ -513,6 +512,7 @@ def get_underlying_trend(
 
 
 def _build_trend_person(rows: List[Dict[str, Any]], prefix: str) -> Dict[str, Any]:
+    rows = [row for row in rows if row.get("moneyness") in {"ITM", "OTM"}]
     call_rows = [row for row in rows if row.get("option_type") == "call"]
     put_rows = [row for row in rows if row.get("option_type") == "put"]
     itm_rows = [row for row in rows if row.get("moneyness") == "ITM"]
@@ -527,22 +527,32 @@ def _build_trend_person(rows: List[Dict[str, Any]], prefix: str) -> Dict[str, An
     call_volume = _sum_participant_volume(call_rows, prefix)
     put_volume = _sum_participant_volume(put_rows, prefix)
 
-    current_oi = _sum_open_interest_rows(rows)
-    has_yesterday_oi = any(row.get("yesterday_open_positions") is not None for row in rows)
-    yesterday_oi = _sum_rows(rows, "yesterday_open_positions") if has_yesterday_oi else None
-    oi_change = current_oi - yesterday_oi if current_oi is not None and has_yesterday_oi else None
+    oi = open_interest_snapshot(rows)
+    current_oi, yesterday_oi, oi_change = oi["current"], oi["yesterday"], oi["change"]
+    call_oi = open_interest_snapshot(call_rows)["change"]
+    put_oi = open_interest_snapshot(put_rows)["change"]
 
-    call_signal = 1 if call_buy > call_sell else -1 if call_sell > call_buy else 0
-    put_signal = 1 if put_sell > put_buy else -1 if put_buy > put_sell else 0
-    moneyness_score = 2 if otm_volume > itm_volume else 1 if itm_volume > otm_volume else 0
-    call_put_score = 1 if call_volume > put_volume else -1 if put_volume > call_volume else 0
-    oi_score = 1 if oi_change is not None and oi_change > 0 else -1 if oi_change is not None and oi_change < 0 else 0
-    score = call_signal + put_signal + moneyness_score + call_put_score + oi_score
+    def compare(left, right):
+        return 0 if left is None or right is None else (left > right) - (left < right)
+
+    call_signal = compare(call_buy, call_sell)
+    put_signal = compare(put_sell, put_buy)
+    call_itm = _sum_participant_volume([row for row in call_rows if row.get("moneyness") == "ITM"], prefix)
+    call_otm = _sum_participant_volume([row for row in call_rows if row.get("moneyness") == "OTM"], prefix)
+    put_itm = _sum_participant_volume([row for row in put_rows if row.get("moneyness") == "ITM"], prefix)
+    put_otm = _sum_participant_volume([row for row in put_rows if row.get("moneyness") == "OTM"], prefix)
+    call_moneyness = compare(call_otm, call_itm)
+    moneyness_score = (1 if call_moneyness > 0 else 0.5 if call_moneyness < 0 else 0) - (1 if compare(put_otm, put_itm) > 0 else 0)
+    call_put_score = compare(call_volume, put_volume)
+    oi_score = (1 if call_oi is not None and call_oi > 0 else -1 if call_oi is not None and call_oi < 0 else 0)
+    oi_score -= (1 if put_oi is not None and put_oi > 0 else -1 if put_oi is not None and put_oi < 0 else 0)
+    complete = bool(rows) and all(value is not None for value in (call_buy, call_sell, put_buy, put_sell))
+    score = call_signal + put_signal + moneyness_score + call_put_score + oi_score if complete else None
 
     return {
         "score": score,
-        "label": _trend_day_label(score),
-        "class_name": _trend_day_class(score),
+        "label": _trend_day_label(score) if score is not None else "داده حقیقی/حقوقی کامل نیست",
+        "class_name": _trend_day_class(score) if score is not None else "neutral",
         "call_buy": call_buy,
         "call_sell": call_sell,
         "put_buy": put_buy,
@@ -551,7 +561,7 @@ def _build_trend_person(rows: List[Dict[str, Any]], prefix: str) -> Dict[str, An
         "otm_volume": otm_volume,
         "call_volume": call_volume,
         "put_volume": put_volume,
-        "call_put_ratio": None if put_volume == 0 else call_volume / put_volume,
+        "call_put_ratio": call_volume / put_volume if call_volume is not None and put_volume not in (None, 0) else None,
         "open_interest": current_oi,
         "yesterday_open_interest": yesterday_oi,
         "open_interest_change": oi_change,
@@ -563,7 +573,7 @@ def _build_trend_summary(daily_items: List[Dict[str, Any]], person: str) -> Dict
     scores = [
         item["people"][person]["score"]
         for item in daily_items
-        if item.get("people", {}).get(person)
+        if item.get("people", {}).get(person, {}).get("score") is not None
     ]
     if not scores:
         return {"label": "داده کافی نیست", "class_name": "neutral", "average_score": None}
@@ -596,33 +606,36 @@ def _build_trend_summary(daily_items: List[Dict[str, Any]], person: str) -> Dict
     }
 
 
-def _sum_participant_volume(rows: List[Dict[str, Any]], prefix: str) -> float:
-    return _sum_rows(rows, f"{prefix}_buy_volume") + _sum_rows(rows, f"{prefix}_sell_volume")
+def _sum_participant_volume(rows: List[Dict[str, Any]], prefix: str) -> Optional[float]:
+    buy = _sum_rows(rows, f"{prefix}_buy_volume")
+    sell = _sum_rows(rows, f"{prefix}_sell_volume")
+    return buy + sell if buy is not None and sell is not None else None
 
 
-def _sum_rows(rows: List[Dict[str, Any]], key: str) -> float:
-    return sum(_numeric_value(row.get(key)) for row in rows)
+def _sum_rows(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
+    values = [_to_finite_float(row.get(key)) for row in rows]
+    return sum(values) if all(value is not None and value >= 0 for value in values) else None
 
 
 def _numeric_value(value: Any) -> float:
     return _to_finite_float(value) or 0.0
 
 
-def _trend_day_label(score: int) -> str:
-    if score >= 4:
+def _trend_day_label(score: float) -> str:
+    if score >= 5:
         return "صعودی قوی"
-    if score >= 2:
+    if score >= 3:
         return "صعودی محتاط"
-    if score <= -2:
+    if score <= -1:
         return "ضعیف"
     return "خنثی"
 
 
-def _trend_day_class(score: int) -> str:
-    if score >= 4:
+def _trend_day_class(score: float) -> str:
+    if score >= 5:
         return "bullish"
-    if score >= 2:
+    if score >= 3:
         return "cautious"
-    if score <= -2:
+    if score <= -1:
         return "weak"
     return "neutral"

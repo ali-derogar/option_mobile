@@ -116,3 +116,13 @@ def test_intrinsic_value_basic_properties_over_a_grid() -> None:
                 assert put_value <= previous_put
             previous_call = call_value
             previous_put = put_value
+
+
+@pytest.mark.parametrize("invalid", [True, False, -1, float("inf"), float("nan")])
+def test_invalid_prices_do_not_produce_moneyness_or_intrinsic_value(invalid):
+    assert compute_moneyness("call", 100, invalid) == "unknown"
+    assert compute_intrinsic_value("call", invalid, 100) is None
+
+
+def test_persian_decimal_separator_is_supported_in_price_calculations():
+    assert compute_intrinsic_value("call", "۱۰۰٫۵", "۱۲۰٫۲۵") == pytest.approx(19.75)

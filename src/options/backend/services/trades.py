@@ -53,7 +53,7 @@ def filter_for_ins_codes(
 
 
 def _to_float(value: Any) -> Optional[float]:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     if isinstance(value, str):
         value = _clean_numeric_text(value)
@@ -61,7 +61,7 @@ def _to_float(value: Any) -> Optional[float]:
             return None
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if isfinite(number) else None
 
@@ -91,5 +91,6 @@ def _clean_numeric_text(value: str) -> str:
         .replace(",", "")
         .replace("٬", "")
         .replace("،", "")
+        .replace("٫", ".")
         .replace(" ", "")
     )

@@ -575,7 +575,7 @@ async def client_type_current(request: Request) -> JSONResponse:
     except Exception as exc:
         logger.exception("Client type fetch failed for %s", ins_code)
         raise HTTPException(503, "client type fetch failed") from exc
-    return _json({"item": row or {"ins_code": str(ins_code)}})
+    return _json({"item": {**(row or {}), "ins_code": str(ins_code)}})
 
 
 async def client_type_current_many(request: Request) -> JSONResponse:
@@ -602,6 +602,7 @@ async def client_type_current_many(request: Request) -> JSONResponse:
     except Exception as exc:
         logger.exception("Client type batch fetch failed for %d contracts", len(ins_codes))
         raise HTTPException(503, "client type fetch failed") from exc
+    rows = [{**row, "ins_code": str(row["ins_code"])} for row in rows]
     return _json({"items": rows, "total": len(rows)})
 
 

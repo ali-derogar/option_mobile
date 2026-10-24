@@ -31,6 +31,9 @@ class FakeStorage:
     def get_latest_client_type_df(self, snapshot_date=None):
         return self.client_type.copy()
 
+    def get_latest_snapshot_date(self):
+        return "2025-06-14"
+
 
 def contracts_df() -> pd.DataFrame:
     now = datetime(2025, 6, 14, 9, 30, tzinfo=timezone.utc)
@@ -394,7 +397,7 @@ def test_get_sentiment_filter_keeps_summary_unfiltered_but_items_filtered() -> N
 
     assert result["total"] == 2
     assert result["summary"]["group_count"] == 2
-    assert {item["underlying_ins_code"] for item in result["items"]} == {2001}
+    assert {item["underlying_ins_code"] for item in result["items"]} == {"2001"}
 
 
 def test_get_sentiment_filter_accepts_persian_digit_codes() -> None:
@@ -403,7 +406,7 @@ def test_get_sentiment_filter_accepts_persian_digit_codes() -> None:
     result = get_sentiment(storage, q="۲۰۰۱")
 
     assert result["total"] == 2
-    assert {item["underlying_ins_code"] for item in result["items"]} == {2001}
+    assert {item["underlying_ins_code"] for item in result["items"]} == {"2001"}
 
 
 def test_get_underlying_trend_computes_participant_scores() -> None:
@@ -422,7 +425,7 @@ def test_get_underlying_trend_computes_participant_scores() -> None:
     assert natural["open_interest_change"] == pytest.approx(3.0)
 
 
-def test_get_underlying_trend_uses_available_open_interest_side() -> None:
+def test_get_underlying_trend_preserves_the_reported_buy_open_interest() -> None:
     contracts = contracts_df()
     contracts.loc[0, "sell_open_positions"] = 15.0
     storage = FakeStorage(contracts, client_type_df())
@@ -430,8 +433,8 @@ def test_get_underlying_trend_uses_available_open_interest_side() -> None:
     result = get_underlying_trend(storage, "2001", ["2025-06-14"])
     natural = result["items"][0]["people"]["natural"]
 
-    assert natural["open_interest"] == pytest.approx(37.0)
-    assert natural["open_interest_change"] == pytest.approx(7.0)
+    assert natural["open_interest"] == pytest.approx(33.0)
+    assert natural["open_interest_change"] == pytest.approx(3.0)
 
 
 def test_get_underlying_trend_requires_current_and_yesterday_open_interest_for_change() -> None:
@@ -448,16 +451,44 @@ def test_get_underlying_trend_requires_current_and_yesterday_open_interest_for_c
     assert natural["has_open_interest"] is False
 
 
-def test_get_underlying_trend_treats_missing_participant_volume_as_zero() -> None:
+def test_get_underlying_trend_keeps_missing_participant_data_unavailable() -> None:
     storage = FakeStorage(contracts_df())
 
     result = get_underlying_trend(storage, "2001", ["2025-06-14"])
     natural = result["items"][0]["people"]["natural"]
     legal = result["items"][0]["people"]["legal"]
 
-    assert natural["call_buy"] == 0
-    assert natural["call_sell"] == 0
-    assert natural["put_buy"] == 0
-    assert natural["put_sell"] == 0
-    assert legal["call_buy"] == 0
-    assert legal["call_sell"] == 0
+    assert natural["call_buy"] is None
+    assert natural["call_sell"] is None
+    assert natural["put_buy"] is None
+    assert natural["put_sell"] is None
+    assert legal["call_buy"] is None
+    assert legal["call_sell"] is None
+    assert natural["score"] is None
+    assert result["summary"]["natural"]["average_score"] is None
+
+
+def test_latest_contracts_only_merge_client_types_for_their_snapshot_day():
+    class DateStorage(FakeStorage):
+        def get_latest_client_type_df(self, snapshot_date=None):
+            assert snapshot_date == "2025-06-14"
+            return self.client_type.copy()
+    get_merged_contracts(DateStorage(contracts_df(), client_type_df()))
+
+
+def test_partial_previous_oi_cannot_produce_a_trend_change():
+    contracts = contracts_df()
+    contracts.loc[0, "yesterday_open_positions"] = None
+    item = get_underlying_trend(FakeStorage(contracts), "2001", ["2025-06-14"])["items"][0]
+    assert item["people"]["natural"]["open_interest_change"] is None
+    assert item["people"]["natural"]["yesterday_open_interest"] is None
+
+
+def test_trend_put_otm_and_increasing_put_oi_do_not_add_bullish_points():
+    contracts = contracts_df().iloc[[1]].copy()
+    contracts["moneyness"] = "OTM"
+    client_type = client_type_df().iloc[[1]].copy()
+    client_type["natural_buy_volume"] = 50
+    client_type["natural_sell_volume"] = 50
+    item = get_underlying_trend(FakeStorage(contracts, client_type), "2001", ["2025-06-14"])["items"][0]
+    assert item["people"]["natural"]["score"] == -3

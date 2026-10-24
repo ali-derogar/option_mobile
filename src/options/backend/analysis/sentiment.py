@@ -8,6 +8,7 @@ classified as bullish, bearish, or mixed.
 from __future__ import annotations
 
 from math import isfinite
+import re
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -23,6 +24,14 @@ PERSIAN_LABELS = {
 
 def detect_option_type(row: Dict[str, Any] | pd.Series) -> Optional[str]:
     """Infer option type from the available TSETMC text fields."""
+    declared = _first_text(row.get("option_type"))
+    if declared in {"call", "put"}:
+        return declared
+    symbol = _first_text(row.get("symbol"))
+    if symbol.startswith("ض"):
+        return "call"
+    if symbol.startswith("ط"):
+        return "put"
     parts = [
         row.get("option_type"),
         row.get("symbol"),
@@ -30,20 +39,15 @@ def detect_option_type(row: Dict[str, Any] | pd.Series) -> Optional[str]:
         row.get("long_name"),
         row.get("instrument_id"),
     ]
-    text = " ".join(str(p) for p in parts if p).strip().lower()
+    text = _first_text(" ".join(str(p) for p in parts if p is not None))
     if not text:
         return None
 
-    if "put" in text or "اختیار فروش" in text:
+    if re.search(r"\bput\b", text) or "اختیار فروش" in text:
         return "put"
-    if "call" in text or "اختیار خرید" in text:
+    if re.search(r"\bcall\b", text) or "اختیار خرید" in text:
         return "call"
 
-    symbol = str(row.get("symbol") or "").strip()
-    if symbol.startswith("ض"):
-        return "call"
-    if symbol.startswith("ط"):
-        return "put"
     return None
 
 
@@ -54,7 +58,7 @@ def compute_moneyness(
 ) -> str:
     strike = _to_float(strike_price)
     underlying = _to_float(underlying_price)
-    if option_type not in {"call", "put"} or strike is None or underlying is None:
+    if option_type not in {"call", "put"} or strike is None or underlying is None or strike < 0 or underlying < 0:
         return "unknown"
     if underlying == strike:
         return "ATM"
@@ -70,7 +74,7 @@ def compute_intrinsic_value(
 ) -> Optional[float]:
     strike = _to_float(strike_price)
     underlying = _to_float(underlying_price)
-    if option_type not in {"call", "put"} or strike is None or underlying is None:
+    if option_type not in {"call", "put"} or strike is None or underlying is None or strike < 0 or underlying < 0:
         return None
     if option_type == "call":
         return max(underlying - strike, 0.0)
@@ -132,17 +136,20 @@ def _analyze_group(group: pd.DataFrame, underlying_ins_code: Any, end_date: Any)
     put_volume = _sum(puts, "sentiment_trade_volume")
     call_put_ratio = _ratio(call_volume, put_volume)
 
-    call_itm = _sum(calls[calls["moneyness"] == "ITM"], "sentiment_trade_volume")
-    call_otm = _sum(calls[calls["moneyness"] == "OTM"], "sentiment_trade_volume")
-    put_itm = _sum(puts[puts["moneyness"] == "ITM"], "sentiment_trade_volume")
-    put_otm = _sum(puts[puts["moneyness"] == "OTM"], "sentiment_trade_volume")
-    call_known_volume = _total_or_none([call_itm, call_otm])
+    def bucket_volume(frame, status):
+        bucket = frame[frame["moneyness"] == status]
+        return 0.0 if bucket.empty else _sum(bucket, "sentiment_trade_volume")
+
+    call_itm = bucket_volume(calls, "ITM")
+    call_otm = bucket_volume(calls, "OTM")
+    put_itm = bucket_volume(puts, "ITM")
+    put_otm = bucket_volume(puts, "OTM")
+    call_known_volume = _sum(calls[calls["moneyness"].isin(["ITM", "OTM", "ATM"])], "sentiment_trade_volume")
     call_itm_share = _ratio(call_itm, call_known_volume)
     call_otm_share = _ratio(call_otm, call_known_volume)
 
-    current_oi = _sum(group, "sentiment_current_oi")
-    oi_change = _sum(group, "sentiment_oi_change")
-    yesterday_oi = current_oi - oi_change if current_oi is not None and oi_change is not None else None
+    oi = open_interest_snapshot(group.to_dict(orient="records"))
+    current_oi, yesterday_oi, oi_change = oi["current"], oi["yesterday"], oi["change"]
     oi_change_pct = _ratio(oi_change, abs(yesterday_oi)) if yesterday_oi not in (None, 0) else None
 
     natural_flow = _sum(group, "natural_money_flow")
@@ -216,6 +223,8 @@ def _analyze_group(group: pd.DataFrame, underlying_ins_code: Any, end_date: Any)
         warnings.append(f"{unknown.shape[0]} قرارداد بدون تشخیص قطعی Call/Put")
     if group["effective_underlying_price"].isna().all():
         warnings.append("قیمت دارایی پایه موجود نیست؛ ITM/OTM قابل اتکا نیست")
+    if oi_change is None:
+        warnings.append("پوشش موقعیت باز امروز و دیروز کامل نیست؛ تغییر کل قابل محاسبه نیست")
     client_volume_cols = [
         "natural_buy_volume",
         "legal_buy_volume",
@@ -231,7 +240,7 @@ def _analyze_group(group: pd.DataFrame, underlying_ins_code: Any, end_date: Any)
     sample = group.iloc[0]
 
     return {
-        "row_key": f"{_clean_key(underlying_ins_code)}-{_clean_key(end_date)}",
+        "row_key": f"{sample['sentiment_underlying_key']}-{_clean_key(end_date)}",
         "underlying_ins_code": _serialize_num(underlying_ins_code),
         "underlying_symbol": _first_non_empty(group, "underlying_symbol") or _first_non_empty(group, "underlying_short_name"),
         "end_date": _serialize_num(end_date),
@@ -279,7 +288,9 @@ def _underlying_group_key(row: pd.Series) -> str:
     code = row.get("underlying_ins_code")
     if code is not None:
         text = _clean_numeric_text(str(code))
-        if text.isdigit():
+        if text.endswith(".0"):
+            text = text[:-2]
+        if text.isdigit() and int(text) > 0:
             try:
                 return str(int(text))
             except ValueError:
@@ -325,16 +336,30 @@ def _trade_volume(row: pd.Series) -> Optional[float]:
 
 
 def _current_open_interest(row: pd.Series) -> Optional[float]:
-    buy_positions = _to_float(row.get("buy_open_positions"))
-    if buy_positions is not None:
-        return buy_positions
-    return _to_float(row.get("sell_open_positions"))
+    return current_open_interest(row)
+
+
+def current_open_interest(row: Any) -> Optional[float]:
+    """Use the reported buy side, including zero; fall back only when unavailable."""
+    values = [_to_float(row.get(field)) for field in ("buy_open_positions", "sell_open_positions")]
+    known = [value for value in values if value is not None and value >= 0]
+    return known[0] if known else None
+
+
+def open_interest_snapshot(rows: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    """Compare totals only when both days cover the same complete set of contracts."""
+    current_values = [current_open_interest(row) for row in rows]
+    previous_values = [_to_float(row.get("yesterday_open_positions")) for row in rows]
+    current = sum(current_values) if rows and all(v is not None for v in current_values) else None
+    yesterday = sum(previous_values) if rows and all(v is not None and v >= 0 for v in previous_values) else None
+    return {"current": current, "yesterday": yesterday,
+            "change": current - yesterday if current is not None and yesterday is not None else None}
 
 
 def _open_interest_change(row: pd.Series) -> Optional[float]:
     current = _current_open_interest(row)
     yesterday = _to_float(row.get("yesterday_open_positions"))
-    if current is None or yesterday is None:
+    if current is None or yesterday is None or yesterday < 0:
         return None
     return current - yesterday
 
@@ -418,7 +443,7 @@ def _same_side_volume(a: Optional[float], b: Optional[float]) -> bool:
 
 
 def _to_float(value: Any) -> Optional[float]:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     if isinstance(value, str):
         value = _clean_numeric_text(value)
@@ -426,7 +451,7 @@ def _to_float(value: Any) -> Optional[float]:
             return None
     try:
         num = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if not isfinite(num):
         return None
@@ -439,11 +464,16 @@ def _clean_numeric_text(value: str) -> str:
         .replace(",", "")
         .replace("٬", "")
         .replace("،", "")
+        .replace("٫", ".")
         .replace(" ", "")
     )
 
 
 def _serialize_num(value: Any) -> Any:
+    if value is not None and not isinstance(value, bool):
+        text = _clean_numeric_text(str(value))
+        if text.isdigit():
+            return int(text)
     num = _to_float(value)
     if num is None:
         return None
