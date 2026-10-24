@@ -732,6 +732,80 @@ def test_public_market_watch_and_instrument_info_fields_are_merged_in_expected_p
     assert enriched["buy_open_positions"] == pytest.approx(59333.0)
 
 
+def test_direct_metadata_recovers_unknown_type_and_recalculates_intrinsic_value():
+    contract = {"ins_code": 101, "option_type": None, "strike_price": 1000,
+                "underlying_last_price": 1200, "moneyness": "unknown", "intrinsic_value": None}
+    enriched = public_options.enrich_public_contracts_with_instrument_info([contract], {
+        101: {"insCode": 101, "lVal18AFC": "ضخود", "lVal30": "اختیارخ خودرو"},
+    })[0]
+    assert enriched["option_type"] == "call"
+    assert enriched["moneyness"] == "ITM"
+    assert enriched["intrinsic_value"] == 200
+
+
+@pytest.mark.parametrize("name", ["اختیارخ خودرو-۱٬۰۰۰٫۵-۱۴۰۵/۰۹/۱۸", "اختیارخ خودرو-1000.5-05/09/18"])
+def test_direct_metadata_accepts_decimal_strikes_and_short_jalali_years(name):
+    parsed = public_options._parse_option_long_name(name)
+    assert parsed["strike_price"] == 1000.5
+    assert parsed["end_date"] == 20261209
+
+
+@pytest.mark.parametrize("expiry", ["1405/09/181", "140509181", "1405/09/18garbage"])
+def test_direct_metadata_does_not_accept_a_valid_prefix_of_a_corrupt_expiry(expiry):
+    assert public_options._parse_option_long_name(f"اختیارخ خودرو-1000-{expiry}") == {}
+
+
+def test_historical_contract_type_uses_the_trading_symbol_when_the_name_conflicts():
+    parsed = _parse_option_name({"lVal18AFC": "طخود", "lVal30": "اختیارخ خودرو-1000-1405/09/18"})
+    assert parsed["option_type"] == "put"
+
+
+def test_historical_parser_supports_full_option_names_and_persian_decimal_strikes():
+    row = {"insCode": 101, "lVal18AFC": "ضخود", "lVal30": "اختیار خرید خودرو-۱٬۰۰۰٫۵-۱۴۰۵/۰۹/۱۸"}
+    result = _normalize_historical_option(row, {}, {})
+    assert result is not None
+    assert result["strike_price"] == 1000.5
+    assert result["end_date"] == 20261209
+
+
+def test_direct_metadata_from_another_instrument_cannot_replace_contract_fields():
+    contract = {"ins_code": 101, "symbol": "ضخود", "strike_price": 1000}
+    enriched = public_options.enrich_public_contracts_with_instrument_info([contract], {
+        101: {"insCode": 102, "lVal18AFC": "طخود", "lVal30": "اختیارف خودرو-2000-1405/09/18"},
+    })[0]
+    assert enriched == contract
+
+
+@pytest.mark.parametrize("returned_code,expected", [(None, 1001), (0, 1001), (1001, 1001), (1002, None)])
+def test_historical_client_types_use_requested_identity_and_reject_conflicts(monkeypatch, returned_code, expected):
+    monkeypatch.setattr(historical_options, "_session", lambda: FakePublicSession({"clientType": [
+        {"insCode": returned_code, "recDate": 20250614, "buy_I_Volume": 20},
+    ]}))
+    row = historical_options.fetch_public_client_type_for_date(1001, "20250614")
+    assert (row["ins_code"] if row else None) == expected
+
+
+def test_historical_underlying_lookup_prefers_symbol_over_another_instruments_name():
+    rows = [
+        {"insCode": 999, "lVal18AFC": "دیگر", "lVal30": "خودرو", "pDrCotVal": 9000},
+        {"insCode": 2001, "lVal18AFC": "خودرو", "lVal30": "ایران خودرو", "pDrCotVal": 1200},
+    ]
+    lookup = historical_options._build_underlying_lookup(rows)
+    assert lookup["خودرو"]["insCode"] == 2001
+
+
+def test_historical_contract_does_not_invent_contract_size_or_override_known_underlying():
+    row = {"insCode": 101, "lVal18AFC": "ضخود", "lVal30": "اختیارخ خودرو-1000-1405/09/18"}
+    lookup = {"خودرو": {"insCode": 2001, "lVal18AFC": "خودرو", "pDrCotVal": 1200}}
+    contract = _normalize_historical_option(row, lookup, {101: {
+        "underlying_ins_code": 999, "underlying_symbol": "دیگر", "underlying_short_name": "دارایی دیگر",
+    }})
+    assert contract["contract_size"] is None
+    assert contract["underlying_ins_code"] == 2001
+    assert contract["underlying_symbol"] == "خودرو"
+    assert contract["underlying_short_name"] == "خودرو"
+
+
 def test_historical_option_rejects_non_finite_numbers() -> None:
     normalized = _normalize_historical_option(
         {

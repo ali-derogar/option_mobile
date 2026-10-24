@@ -307,8 +307,9 @@ function jalaliToGregorian(jy, jm, jd) {
 
 function gregorianToJalali(gy, gm, gd) {
   const gdm = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-  let jy = gy <= 1600 ? 0 : 979;
-  gy -= gy <= 1600 ? 621 : 1600;
+  const postEpoch = gy > 1600 || (gy === 1600 && gm > 3);
+  let jy = postEpoch ? 979 : 0;
+  gy -= postEpoch ? 1600 : 621;
   const gy2 = gm > 2 ? gy + 1 : gy;
   let days = (365 * gy) + div(gy2 + 3, 4) - div(gy2 + 99, 100) + div(gy2 + 399, 400) - 80 + gd + gdm[gm - 1];
   jy += 33 * div(days, 12053);
@@ -639,8 +640,9 @@ function calendarDayMap(monthData) {
     });
   });
   (monthData?.events || []).forEach((event) => {
-    const day = Number(String(event.jalali_date || "").split("-")[2]);
-    if (!day) return;
+    const [year, month, day] = translateDigits(event.jalali_date || "").split("-").map(Number);
+    if (year !== Number(monthData.year) || month !== Number(monthData.month)
+        || !Number.isInteger(day) || day < 1 || day > jalaliMonthLength(year, month)) return;
     const item = map.get(day) || { day, events: [], is_holiday: false, is_weekend: false };
     item.events = item.events || [];
     const eventKey = event.id ?? `${event.jalali_date}:${event.title}`;
@@ -965,8 +967,8 @@ function applyFilterAndSort() {
     const key = state.sortKey;
     const dir = state.sortDir;
     state.filtered.sort((a, b) => {
-      const av = a[key];
-      const bv = b[key];
+      const av = state.view === "underlying" && key === "buy_open_positions" ? openInterestValue(a) : a[key];
+      const bv = state.view === "underlying" && key === "buy_open_positions" ? openInterestValue(b) : b[key];
       if (av == null && bv == null) return 0;
       if (av == null) return 1;
       if (bv == null) return -1;
@@ -1249,7 +1251,7 @@ function renderTable() {
       const selected = getRowKey(row) === state.selectedRowKey ? "selected" : "";
       const cells = config.columns
         .map((c) => {
-          const val = row[c.key];
+          const val = state.view === "underlying" && c.key === "buy_open_positions" ? openInterestValue(row) : row[c.key];
           let cls = "";
           if (c.fmt === "flow" && val != null) {
             cls = val > 0 ? "cell-positive" : val < 0 ? "cell-negative" : "";
@@ -1322,8 +1324,9 @@ function activityLabel(row) {
 }
 
 function optionSignalLabel(row) {
-  const flow = numericValue(row.natural_money_flow);
+  const flow = asFiniteNumber(row.natural_money_flow);
   const oi = oiChange(row);
+  if (flow == null && oi == null) return "داده کافی نیست";
   if (flow > 0 && oi > 0) return "جریان مثبت و OI افزایشی";
   if (flow < 0 && oi < 0) return "جریان منفی و OI کاهشی";
   if (flow > 0) return "جریان حقیقی مثبت";
@@ -1335,15 +1338,19 @@ function optionSignalLabel(row) {
 
 function oiChange(row) {
   const current = openInterestValue(row);
-  if (current == null || row.yesterday_open_positions == null) return null;
-  return numericValue(current) - numericValue(row.yesterday_open_positions);
+  const yesterday = asFiniteNumber(row.yesterday_open_positions);
+  if (current == null || yesterday == null || yesterday < 0) return null;
+  return numericValue(current) - yesterday;
 }
 
 function rowSignalClass(row) {
   const flow = numericValue(row.natural_money_flow);
   const oi = oiChange(row);
-  if (flow > 0 || oi > 0) return "signal-positive";
-  if (flow < 0 || oi < 0) return "signal-negative";
+  // Money flow is the primary signal; OI only decides when flow is flat or
+  // missing, mirroring optionSignalLabel so the bar color never disagrees.
+  const direction = flow != null && flow !== 0 ? flow : (oi ?? 0);
+  if (direction > 0) return "signal-positive";
+  if (direction < 0) return "signal-negative";
   return "signal-neutral";
 }
 
@@ -1885,7 +1892,7 @@ function buildAnalysisModel(rows) {
     }
     ANALYSIS_SUM_FIELDS.forEach((field) => {
       const value = asFiniteNumber(row[field]);
-      if (value == null) return;
+      if (value == null || value < 0) return;
       bucket[field] += value;
       bucket._presentFields[field] += 1;
       addAnalysisDetail(bucket, field, row, value);
@@ -1895,12 +1902,13 @@ function buildAnalysisModel(rows) {
 }
 
 function sumRows(rows, getter) {
-  return rows.reduce((total, row) => total + numericValue(getter(row)), 0);
+  return asFiniteNumber(rows.reduce((total, row) => total + numericValue(getter(row)), 0));
 }
 
 function sumPresentValues(row, keys) {
-  const values = keys.map((key) => asFiniteNumber(row[key])).filter((value) => value != null);
-  return values.length ? values.reduce((total, value) => total + value, 0) : null;
+  const values = keys.map((key) => asFiniteNumber(row[key]));
+  return values.length && values.every((value) => value != null && value >= 0)
+    ? asFiniteNumber(values.reduce((total, value) => total + value, 0)) : null;
 }
 
 function rowBuyVolume(row) {
@@ -1912,21 +1920,23 @@ function rowSellVolume(row) {
 }
 
 function rowParticipantBuyVolume(row, prefix) {
-  return asFiniteNumber(row[`${prefix}_buy_volume`]);
+  const value = asFiniteNumber(row[`${prefix}_buy_volume`]);
+  return value != null && value >= 0 ? value : null;
 }
 
 function rowParticipantSellVolume(row, prefix) {
-  return asFiniteNumber(row[`${prefix}_sell_volume`]);
+  const value = asFiniteNumber(row[`${prefix}_sell_volume`]);
+  return value != null && value >= 0 ? value : null;
 }
 
 function rowParticipantVolume(row, prefix) {
   const buy = rowParticipantBuyVolume(row, prefix), sell = rowParticipantSellVolume(row, prefix);
-  return buy != null && sell != null ? buy + sell : null;
+  return buy != null && sell != null ? asFiniteNumber(buy + sell) : null;
 }
 
 function sumKnownRows(rows, getter) {
   const values = rows.map((row) => asFiniteNumber(getter(row)));
-  return values.every((value) => value != null && value >= 0) ? values.reduce((total, value) => total + value, 0) : null;
+  return values.every((value) => value != null && value >= 0) ? asFiniteNumber(values.reduce((total, value) => total + value, 0)) : null;
 }
 
 function compareKnownValues(left, right) {
@@ -1941,7 +1951,7 @@ function rowTradeVolume(row) {
 function ratioLabel(num, den) {
   if (num == null || den == null) return "—";
   if (!den) return num ? "∞" : "—";
-  return (num / den).toLocaleString("fa-IR", { maximumFractionDigits: 2 });
+  return asFiniteNumber(num / den)?.toLocaleString("fa-IR", { maximumFractionDigits: 2 }) ?? "—";
 }
 
 function analysisMetricValue(value) {
@@ -1950,13 +1960,14 @@ function analysisMetricValue(value) {
 }
 
 function openInterestSnapshot(rows) {
-  const hasCurrent = rows.length > 0 && rows.every((row) => openInterestValue(row) != null);
-  const hasYesterday = rows.length > 0 && rows.every((row) => {
+  const currentComplete = rows.length > 0 && rows.every((row) => openInterestValue(row) != null);
+  const yesterdayComplete = rows.length > 0 && rows.every((row) => {
     const value = asFiniteNumber(row.yesterday_open_positions);
     return value != null && value >= 0;
   });
-  const current = hasCurrent ? sumRows(rows, (row) => openInterestValue(row)) : null;
-  const yesterday = hasYesterday ? sumRows(rows, (row) => row.yesterday_open_positions) : null;
+  const current = currentComplete ? sumRows(rows, (row) => openInterestValue(row)) : null;
+  const yesterday = yesterdayComplete ? sumRows(rows, (row) => row.yesterday_open_positions) : null;
+  const hasCurrent = current != null, hasYesterday = yesterday != null;
   return {
     hasCurrent,
     hasYesterday,
@@ -1970,23 +1981,27 @@ function openInterestSnapshot(rows) {
 function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
   const callRows = rows.filter((row) => row.option_type === "call");
   const putRows = rows.filter((row) => row.option_type === "put");
+  const typesComplete = callRows.length + putRows.length === rows.length;
+  const callMoneynessComplete = typesComplete && callRows.every((row) => ["ITM", "OTM", "ATM"].includes(row.moneyness));
+  const putMoneynessComplete = typesComplete && putRows.every((row) => ["ITM", "OTM", "ATM"].includes(row.moneyness));
+  const moneynessComplete = typesComplete && callMoneynessComplete && putMoneynessComplete;
   const callItmRows = callRows.filter((row) => row.moneyness === "ITM");
   const callOtmRows = callRows.filter((row) => row.moneyness === "OTM");
   const putItmRows = putRows.filter((row) => row.moneyness === "ITM");
   const putOtmRows = putRows.filter((row) => row.moneyness === "OTM");
 
-  const callBuy = sumKnownRows(callRows, (row) => rowParticipantBuyVolume(row, prefix));
-  const callSell = sumKnownRows(callRows, (row) => rowParticipantSellVolume(row, prefix));
-  const putBuy = sumKnownRows(putRows, (row) => rowParticipantBuyVolume(row, prefix));
-  const putSell = sumKnownRows(putRows, (row) => rowParticipantSellVolume(row, prefix));
-  const callItmVolume = sumKnownRows(callItmRows, (row) => rowParticipantVolume(row, prefix));
-  const callOtmVolume = sumKnownRows(callOtmRows, (row) => rowParticipantVolume(row, prefix));
-  const putItmVolume = sumKnownRows(putItmRows, (row) => rowParticipantVolume(row, prefix));
-  const putOtmVolume = sumKnownRows(putOtmRows, (row) => rowParticipantVolume(row, prefix));
-  const callVolume = sumKnownRows(callRows, (row) => rowParticipantVolume(row, prefix));
-  const putVolume = sumKnownRows(putRows, (row) => rowParticipantVolume(row, prefix));
-  const callOi = openInterestSnapshot(callRows);
-  const putOi = openInterestSnapshot(putRows);
+  const callBuy = typesComplete ? sumKnownRows(callRows, (row) => rowParticipantBuyVolume(row, prefix)) : null;
+  const callSell = typesComplete ? sumKnownRows(callRows, (row) => rowParticipantSellVolume(row, prefix)) : null;
+  const putBuy = typesComplete ? sumKnownRows(putRows, (row) => rowParticipantBuyVolume(row, prefix)) : null;
+  const putSell = typesComplete ? sumKnownRows(putRows, (row) => rowParticipantSellVolume(row, prefix)) : null;
+  const callItmVolume = callMoneynessComplete ? sumKnownRows(callItmRows, (row) => rowParticipantVolume(row, prefix)) : null;
+  const callOtmVolume = callMoneynessComplete ? sumKnownRows(callOtmRows, (row) => rowParticipantVolume(row, prefix)) : null;
+  const putItmVolume = putMoneynessComplete ? sumKnownRows(putItmRows, (row) => rowParticipantVolume(row, prefix)) : null;
+  const putOtmVolume = putMoneynessComplete ? sumKnownRows(putOtmRows, (row) => rowParticipantVolume(row, prefix)) : null;
+  const callVolume = typesComplete ? sumKnownRows(callRows, (row) => rowParticipantVolume(row, prefix)) : null;
+  const putVolume = typesComplete ? sumKnownRows(putRows, (row) => rowParticipantVolume(row, prefix)) : null;
+  const callOi = openInterestSnapshot(typesComplete ? callRows : []);
+  const putOi = openInterestSnapshot(typesComplete ? putRows : []);
   const hasOiChange = callOi.hasChange || putOi.hasChange;
 
   const callDataComplete = callBuy != null && callSell != null;
@@ -2020,13 +2035,15 @@ function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
   const step4Confirm = step4Score > 0;
   const step4Weak = step4Score < 0;
 
-  const score = rows.length > 0 && callDataComplete && putDataComplete ?
+  const score = rows.length > 0 && typesComplete && moneynessComplete && callDataComplete && putDataComplete ?
     step1Score +
     step2Score +
     (step3Bullish ? 1 : step3Weak ? -1 : 0) +
     step4Score : null;
 
-  let finalLabel = score == null ? "داده حقیقی/حقوقی کامل نیست" : "خنثی";
+  const unavailableLabel = !typesComplete ? "نوع قرارداد مشخص نیست"
+    : !moneynessComplete ? "وضعیت ITM/OTM کامل نیست" : "داده حقیقی/حقوقی کامل نیست";
+  let finalLabel = score == null ? unavailableLabel : "خنثی";
   let finalClass = "neutral";
   if (score != null && score >= 5) {
     finalLabel = "صعودی قوی";
@@ -2082,15 +2099,15 @@ function buildFourStepConclusion(rows, prefix, personLabel, personClass) {
       {
         kicker: "محدوده قیمت اعمال",
         title: "ITM و OTM",
-        label: step2Bullish ? "Call مثبت‌تر" : step2Weak ? "Put ضعیف‌تر" : step2Cautious ? "محتاط" : "متعادل",
+        label: !moneynessComplete ? "وضعیت ITM/OTM کامل نیست" : step2Bullish ? "Call مثبت‌تر" : step2Weak ? "Put ضعیف‌تر" : step2Cautious ? "محتاط" : "متعادل",
         className: step2Bullish ? "bullish" : step2Weak ? "weak" : step2Cautious ? "cautious" : "neutral",
         signals: [
           {
-            label: !callDataComplete ? "Call داده ناقص" : callOtmDominates ? "Call OTM غالب" : callItmDominates ? "Call ITM غالب" : "Call متعادل",
+            label: !callDataComplete || !callMoneynessComplete ? "Call داده ناقص" : callOtmDominates ? "Call OTM غالب" : callItmDominates ? "Call ITM غالب" : "Call متعادل",
             className: callOtmDominates ? "bullish" : callItmDominates ? "cautious" : "neutral",
           },
           {
-            label: !putDataComplete ? "Put داده ناقص" : putOtmDominates ? "Put OTM غالب" : putItmDominates ? "Put ITM غالب" : "Put متعادل",
+            label: !putDataComplete || !putMoneynessComplete ? "Put داده ناقص" : putOtmDominates ? "Put OTM غالب" : putItmDominates ? "Put ITM غالب" : "Put متعادل",
             className: putOtmDominates ? "weak" : putItmDominates ? "cautious" : "neutral",
           },
         ],
@@ -2360,17 +2377,22 @@ function trendMetricValue(item, personKey, metricKey) {
 
 function trendDatasetColor(metric, person) {
   if (person.key === "natural") return metric.color;
+  // Per-metric legal colors, chosen so no legal line shares a color with a
+  // natural line inside the same chart group.
   const legalColors = {
-    "#38bdf8": "#a78bfa",
-    "#34d399": "#22d3ee",
-    "#f97316": "#fb7185",
-    "#f472b6": "#facc15",
-    "#a78bfa": "#38bdf8",
-    "#22d3ee": "#818cf8",
-    "#facc15": "#f97316",
-    "#fb7185": "#c084fc",
+    score: "#a78bfa",
+    call_buy: "#22d3ee",
+    call_sell: "#fb7185",
+    put_buy: "#facc15",
+    put_sell: "#38bdf8",
+    itm_volume: "#a78bfa",
+    otm_volume: "#38bdf8",
+    call_volume: "#f472b6",
+    put_volume: "#f97316",
+    open_interest_change: "#818cf8",
+    open_interest: "#c084fc",
   };
-  return legalColors[metric.color] || metric.color;
+  return legalColors[metric.key] || metric.color;
 }
 
 function trendLineColorClass(color) {
@@ -2583,7 +2605,7 @@ function combinedMetric(a, b, prefix) {
 }
 
 function hasAnalysisField(bucket, field) {
-  return (bucket?._presentFields?.[field] || 0) > 0;
+  return bucket != null && (bucket._presentFields?.[field] || 0) === bucket.contract_count;
 }
 
 function analysisFieldValue(bucket, field) {
@@ -2595,10 +2617,8 @@ function analysisFieldDetails(bucket, field) {
 }
 
 function combineAnalysisField(a, b, field) {
-  const hasA = hasAnalysisField(a, field);
-  const hasB = hasAnalysisField(b, field);
-  if (!hasA && !hasB) return null;
-  return (hasA ? numericValue(a[field]) : 0) + (hasB ? numericValue(b[field]) : 0);
+  const av = analysisFieldValue(a, field), bv = analysisFieldValue(b, field);
+  return av != null && bv != null ? av + bv : null;
 }
 
 function combineAnalysisDetails(a, b, field) {
@@ -2640,7 +2660,10 @@ function renderCalculationDetails(details) {
 
 function renderBucketCalculation(bucket, field) {
   const value = analysisFieldValue(bucket, field);
-  if (value == null) return "";
+  if (value == null) {
+    const known = bucket?._presentFields?.[field] || 0;
+    return `<small class="analysis-calculation">داده ناقص: ${fmtNum(known)} از ${fmtNum(bucket.contract_count)} قرارداد</small>`;
+  }
   return renderCalculationDetails(analysisFieldDetails(bucket, field));
 }
 
@@ -2770,7 +2793,7 @@ function renderAnalysisBucket(label, bucket) {
       <div class="analysis-oi-summary">
         <div>
           <span>موقعیت باز</span>
-          <strong>${analysisMetricValue(analysisFieldValue(bucket, "buy_open_positions"))}</strong>
+          <strong>${analysisMetricValue(analysisFieldValue(bucket, "open_interest_positions"))}</strong>
         </div>
         <div>
           <span>فروش باز</span>
@@ -2882,7 +2905,8 @@ function renderAnalysis() {
   setText("analysisScope", audience.trendOnly ? "۷ روزه" : `${fmtNum(rows.length)} قرارداد ITM/OTM`);
   const analysisBody = audience.trendOnly
     ? renderTrendShell()
-    : renderFourStepConclusion(rows) + renderAnalysisSide("call", "اختیار خرید", model) + renderAnalysisSide("put", "اختیار فروش", model);
+    : `<p class="analysis-scope-note">نتیجه‌گیری شامل همه قراردادهای فیلترشده، از جمله ATM است؛ جدول‌ها و جمع‌های زیر فقط ITM و OTM را پوشش می‌دهند. موقعیت باز مربوط به کل قرارداد است و به حقیقی و حقوقی تفکیک نشده است.</p>`
+      + renderFourStepConclusion(filteredRows) + renderAnalysisSide("call", "اختیار خرید", model) + renderAnalysisSide("put", "اختیار فروش", model);
   destroyTrendChart();
   content.innerHTML = renderAnalysisAudienceTabs() + analysisBody;
   panel.classList.remove("hidden");

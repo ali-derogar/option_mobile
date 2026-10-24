@@ -101,3 +101,21 @@ def test_calendar_api_returns_usable_dates_when_upstream_rejects_access(monkeypa
     assert day.json()["jalali_date"] == "1405-07-29"
     assert day.json()["events_available"] is False
     fetch.assert_called_once()
+
+
+def test_month_events_and_counts_exclude_neighboring_months_and_invalid_days():
+    raw = {"data": {
+        "day_list": [{"index_in_base1": 1}, {"index_in_base1": 31}],
+        "event_list": [
+            {"id": 1, "jalali_year": 1405, "jalali_month": 7, "jalali_day": 1},
+            {"id": 2, "jalali_year": 1405, "jalali_month": 8, "jalali_day": 1, "is_holiday": True},
+            {"id": 3, "jalali_year": 1405, "jalali_month": 7, "jalali_day": 31, "is_holiday": True},
+            {"id": 4, "jalali_year": 1404, "jalali_month": 7, "jalali_day": 1, "is_holiday": True},
+        ],
+    }}
+    month = calendar_data.format_calendar_events(raw, 1405, 7)
+    assert [event["id"] for event in month["events"]] == [1]
+    assert month["total_events"] == 1
+    assert month["total_holidays"] == 0
+    assert [day["day"] for day in month["days"]] == [1]
+    assert not month["days"][0]["is_holiday"]

@@ -95,7 +95,7 @@ print(json.dumps({
         "workers": 16,
         "login_timeout": 3,
         "request_timeout": 120,
-        "flow": 1,
+        "flow": 0,
     }
 
 

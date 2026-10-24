@@ -303,6 +303,27 @@ def test_underlying_lookup_merges_symbol_rows_with_known_code() -> None:
     assert summary["underlying_count"] == 1
 
 
+def test_an_ambiguous_symbol_does_not_attach_uncoded_contracts_to_an_arbitrary_asset():
+    df = pd.concat([contracts_df(), contracts_df().iloc[[0]]], ignore_index=True)
+    df["ins_code"] = [1001, 1002, 1003]
+    df["underlying_ins_code"] = [2001, 2002, None]
+    storage = FakeStorage(df)
+    first = get_underlying_contracts(storage, "2001")
+    second = get_underlying_contracts(storage, "2002")
+    assert [row["ins_code"] for row in first["items"]] == ["1001"]
+    assert [row["ins_code"] for row in second["items"]] == ["1002"]
+
+
+def test_short_name_only_underlying_is_preserved_in_summary_and_contract_lookup():
+    df = contracts_df()
+    df["underlying_ins_code"] = None
+    df["underlying_symbol"] = None
+    df["underlying_short_name"] = "کیان"
+    storage = FakeStorage(df)
+    assert get_summary(storage)["underlying_count"] == 1
+    assert get_underlying_contracts(storage, "كيان")["total"] == 2
+
+
 def test_get_summary_totals_are_exact() -> None:
     storage = FakeStorage(contracts_df(), client_type_df())
 
@@ -388,6 +409,14 @@ def test_api_aggregates_accept_grouped_numeric_strings() -> None:
     assert underlyings["items"][0]["max_strike_price"] == pytest.approx(1300.0)
     assert summary["total_trade_volume"] == pytest.approx(13345.0)
     assert summary["total_natural_flow"] == pytest.approx(750.0)
+
+
+def test_api_summary_does_not_serialize_overflowing_finite_inputs_as_infinity():
+    df = contracts_df()
+    df["trade_volume"] = 1e308
+    summary = get_summary(FakeStorage(df))
+    assert summary["total_trade_volume"] is None
+    json.dumps(summary, allow_nan=False)
 
 
 def test_get_sentiment_filter_keeps_summary_unfiltered_but_items_filtered() -> None:
@@ -492,3 +521,30 @@ def test_trend_put_otm_and_increasing_put_oi_do_not_add_bullish_points():
     client_type["natural_sell_volume"] = 50
     item = get_underlying_trend(FakeStorage(contracts, client_type), "2001", ["2025-06-14"])["items"][0]
     assert item["people"]["natural"]["score"] == -3
+
+
+def test_unknown_option_types_cannot_generate_a_neutral_participant_score():
+    contracts = contracts_df().iloc[[0]].copy()
+    contracts["option_type"] = None
+    result = get_underlying_trend(FakeStorage(contracts, client_type_df()), "2001", ["2025-06-14"])
+    person = result["items"][0]["people"]["natural"]
+    assert person["score"] is None
+    assert "نوع قرارداد" in person["label"]
+    assert person["call_put_ratio"] is None
+
+
+def test_trend_summary_does_not_substitute_older_days_for_missing_recent_scores():
+    from options.backend.api.data import _build_trend_summary
+    items = [{"people": {"natural": {"score": value}}} for value in (0, 4, 5, None)]
+    result = _build_trend_summary(items, "natural")
+    assert result["average_score"] is None
+    assert result["class_name"] == "neutral"
+    assert "کامل نیست" in result["label"]
+
+
+def test_missing_moneyness_cannot_look_like_zero_itm_otm_participant_volume():
+    contracts = contracts_df()
+    contracts.loc[0, "moneyness"] = "unknown"
+    person = get_underlying_trend(FakeStorage(contracts, client_type_df()), "2001", ["2025-06-14"])["items"][0]["people"]["natural"]
+    assert person["itm_volume"] is None
+    assert person["otm_volume"] is None

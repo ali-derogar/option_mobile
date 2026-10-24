@@ -422,6 +422,27 @@ def test_get_latest_client_type_df_prefers_current_fetch_for_current_market_day(
     assert pd.isna(row["natural_money_flow"])
 
 
+def test_today_client_types_exclude_history_imports_fetched_today(storage: Storage):
+    now = datetime(2026, 8, 25, 12, tzinfo=timezone.utc)
+    storage.now = lambda: now
+    storage.insert_client_type_stats([client_type_payload(rec_date=20260825, natural_buy_volume=100)])
+    storage.now = lambda: now.replace(hour=13)
+    storage.insert_client_type_stats([
+        client_type_payload(rec_date=20260824, natural_buy_volume=999),
+        client_type_payload(ins_code=1002, rec_date=20260824, natural_buy_volume=888),
+    ])
+    result = storage.get_latest_client_type_df("2026-08-25")
+    assert result[["ins_code", "natural_buy_volume"]].to_dict(orient="records") == [
+        {"ins_code": 1001, "natural_buy_volume": 100},
+    ]
+
+
+def test_historical_client_types_do_not_fall_back_to_an_explicit_different_date(storage: Storage):
+    storage.now = lambda: datetime(2026, 8, 25, 12, tzinfo=timezone.utc)
+    storage.insert_client_type_stats([client_type_payload(rec_date=20260824)])
+    assert storage.get_latest_client_type_df("2026-08-25").empty
+
+
 def test_storage_normalizes_grouped_client_type_record_dates(storage: Storage) -> None:
     storage.insert_client_type_stats(
         [client_type_payload(rec_date="۲۰۲۵/۰۶/۱۴", natural_money_flow=222)]

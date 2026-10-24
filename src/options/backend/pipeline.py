@@ -67,6 +67,7 @@ def _store_public_option_fallback(
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     underlying_ins_codes: Optional[Set[int]] = None,
     limit: Optional[int] = None,
+    delay_between_calls: float = 0.0,
 ) -> Dict[str, Any]:
     def progress(**payload: Any) -> None:
         if progress_callback:
@@ -116,7 +117,7 @@ def _store_public_option_fallback(
             message=f"در حال دریافت حقیقی/حقوقی عمومی برای {len(ins_codes)} قرارداد",
             client_type_total=len(ins_codes),
         )
-        client_type_rows = fetch_public_client_type_current_many(ins_codes)
+        client_type_rows = fetch_public_client_type_current_many(ins_codes, delay_between_calls)
         if client_type_rows:
             client_type_stored = storage.insert_client_type_stats(client_type_rows)
             money_flow_stored = storage.insert_money_flow(_rows_with_money_flow(client_type_rows))
@@ -187,6 +188,7 @@ def run_pipeline(
             progress_callback=progress_callback,
             underlying_ins_codes=underlying_ins_codes,
             limit=limit,
+            delay_between_calls=delay_between_calls,
         )
 
     client = TsetmcClient()
@@ -207,6 +209,7 @@ def run_pipeline(
             progress_callback=progress_callback,
             underlying_ins_codes=underlying_ins_codes,
             limit=limit,
+            delay_between_calls=delay_between_calls,
         )
 
     logger.info("Fetching all option contracts...")
@@ -271,17 +274,17 @@ def run_pipeline(
     }
     logger.info("Matched %d option trades from TradeLastDay", len(trade_index))
 
-    underlying_ins_codes = {
+    option_underlying_codes = {
         o["underlying_ins_code"]
         for o in normalized_options
         if o.get("underlying_ins_code")
     }
     underlying_trade_index: Dict[int, Dict[str, Any]] = {}
-    if underlying_ins_codes:
-        logger.info("Fetching underlying last day trades for %d assets...", len(underlying_ins_codes))
+    if option_underlying_codes:
+        logger.info("Fetching underlying last day trades for %d assets...", len(option_underlying_codes))
         try:
             raw_underlying_trades = fetch_trade_last_day(client, flow=0)
-            underlying_trades = filter_for_ins_codes(raw_underlying_trades, underlying_ins_codes)
+            underlying_trades = filter_for_ins_codes(raw_underlying_trades, option_underlying_codes)
             underlying_trade_index = {
                 normalize_trade(t)["ins_code"]: normalize_trade(t) for t in underlying_trades
             }
@@ -342,7 +345,7 @@ def run_pipeline(
             client_type_done=0,
             client_type_total=total,
         )
-        client_type_rows = fetch_public_client_type_current_many(sorted(option_ins_codes))
+        client_type_rows = fetch_public_client_type_current_many(sorted(option_ins_codes), delay_between_calls)
         progress(
             stage="client_type",
             message=f"حقیقی/حقوقی {len(client_type_rows)}/{total} دریافت شد",

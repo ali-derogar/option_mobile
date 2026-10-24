@@ -345,7 +345,7 @@ def test_pipeline_scopes_details_snapshots_and_client_type(storage, monkeypatch,
     result = pipeline.run_pipeline(underlying_ins_codes={2001}, limit=1)
     assert result["options"] == 1
     details.assert_called_once_with([1001])
-    clients.assert_called_once_with([1001])
+    clients.assert_called_once_with([1001], 0.1)
     assert storage.get_contracts_df()["ins_code"].tolist() == [1001]
     assert storage.get_contract_snapshot_df()["ins_code"].tolist() == [1001]
 

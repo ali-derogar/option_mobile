@@ -72,6 +72,17 @@ def test_internal_ratio_handles_zero_and_missing_values() -> None:
     assert sentiment._ratio(10, None) is None
 
 
+def test_overflowing_aggregate_and_ratio_are_unavailable_instead_of_infinite():
+    assert sentiment._sum_values([1e308, 1e308]) is None
+    assert sentiment._ratio(1e308, 1e-308) is None
+    snapshot = sentiment.open_interest_snapshot([
+        {"buy_open_positions": 1e308, "yesterday_open_positions": 1},
+        {"buy_open_positions": 1e308, "yesterday_open_positions": 1},
+    ])
+    assert snapshot["current"] is None
+    assert snapshot["change"] is None
+
+
 def test_internal_sum_ignores_invalid_numbers_without_fabricating_values() -> None:
     df = pd.DataFrame({"value": [10, "2.5", None, math.nan, math.inf, "bad"]})
 

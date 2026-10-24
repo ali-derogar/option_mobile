@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from options.backend.analysis.numeric import finite_ratio, finite_sum
+
 
 PERSIAN_LABELS = {
     "bullish": "صعودی",
@@ -43,9 +45,9 @@ def detect_option_type(row: Dict[str, Any] | pd.Series) -> Optional[str]:
     if not text:
         return None
 
-    if re.search(r"\bput\b", text) or "اختیار فروش" in text:
+    if re.search(r"\bput\b", text) or "اختیار فروش" in text or "اختیارف" in text:
         return "put"
-    if re.search(r"\bcall\b", text) or "اختیار خرید" in text:
+    if re.search(r"\bcall\b", text) or "اختیار خرید" in text or "اختیارخ" in text:
         return "call"
 
     return None
@@ -135,6 +137,8 @@ def _analyze_group(group: pd.DataFrame, underlying_ins_code: Any, end_date: Any)
     call_volume = _sum(calls, "sentiment_trade_volume")
     put_volume = _sum(puts, "sentiment_trade_volume")
     call_put_ratio = _ratio(call_volume, put_volume)
+    call_buy_classes, call_sell_classes = _client_class_volumes(calls)
+    put_buy_classes, put_sell_classes = _client_class_volumes(puts)
 
     def bucket_volume(frame, status):
         bucket = frame[frame["moneyness"] == status]
@@ -150,7 +154,8 @@ def _analyze_group(group: pd.DataFrame, underlying_ins_code: Any, end_date: Any)
 
     oi = open_interest_snapshot(group.to_dict(orient="records"))
     current_oi, yesterday_oi, oi_change = oi["current"], oi["yesterday"], oi["change"]
-    oi_change_pct = _ratio(oi_change, abs(yesterday_oi)) if yesterday_oi not in (None, 0) else None
+    oi_change_ratio = _ratio(oi_change, yesterday_oi)
+    oi_change_pct = 100 * oi_change_ratio if oi_change_ratio is not None else None
 
     natural_flow = _sum(group, "natural_money_flow")
     legal_flow = _sum(group, "legal_money_flow")
@@ -159,16 +164,18 @@ def _analyze_group(group: pd.DataFrame, underlying_ins_code: Any, end_date: Any)
     reasons: List[str] = []
     warnings: List[str] = []
 
-    if _is_advancing(call_buy, call_sell):
+    # Aggregated buy and sell volumes always match (every trade has both sides),
+    # so pressure is judged within each client class: real vs real, legal vs legal.
+    if _classes_advancing(call_buy_classes, call_sell_classes):
         score += 2
         reasons.append("برتری حجم خرید اختیار خرید")
-    if _is_advancing(put_sell, put_buy):
+    if _classes_advancing(put_sell_classes, put_buy_classes):
         score += 2
         reasons.append("برتری حجم فروش اختیار فروش")
-    if _is_advancing(call_sell, call_buy):
+    if _classes_advancing(call_sell_classes, call_buy_classes):
         score -= 2
         reasons.append("برتری حجم فروش اختیار خرید")
-    if _is_advancing(put_buy, put_sell):
+    if _classes_advancing(put_buy_classes, put_sell_classes):
         score -= 2
         reasons.append("برتری حجم خرید اختیار فروش")
 
@@ -182,12 +189,15 @@ def _analyze_group(group: pd.DataFrame, underlying_ins_code: Any, end_date: Any)
         elif call_put_ratio >= 1.2:
             score += 1
             reasons.append("نسبت Call/Put بالاتر از ۱.۲")
-        elif call_put_ratio <= 0.5:
+        elif call_put_ratio <= 1 / 3:
             score -= 3
             reasons.append("نسبت Call/Put بسیار پایین‌تر از ۱")
-        elif call_put_ratio <= 0.8:
+        elif call_put_ratio <= 1 / 1.5:
+            score -= 2
+            reasons.append("نسبت Call/Put پایین‌تر از ۰.۶۷")
+        elif call_put_ratio <= 1 / 1.2:
             score -= 1
-            reasons.append("نسبت Call/Put پایین‌تر از ۰.۸")
+            reasons.append("نسبت Call/Put پایین‌تر از ۰.۸۳")
 
     if natural_flow is not None:
         if natural_flow > 0:
@@ -238,6 +248,8 @@ def _analyze_group(group: pd.DataFrame, underlying_ins_code: Any, end_date: Any)
     sentiment_class = _label_from_score(score, call_itm_share, call_otm_share)
     confidence = _confidence(score, warnings)
     sample = group.iloc[0]
+    known_prices = [_to_float(value) for value in group["effective_underlying_price"]]
+    underlying_price = next((price for price in known_prices if price is not None), None)
 
     return {
         "row_key": f"{sample['sentiment_underlying_key']}-{_clean_key(end_date)}",
@@ -248,7 +260,7 @@ def _analyze_group(group: pd.DataFrame, underlying_ins_code: Any, end_date: Any)
         "call_count": int(calls.shape[0]),
         "put_count": int(puts.shape[0]),
         "unknown_count": int(unknown.shape[0]),
-        "underlying_price": _to_float(sample.get("effective_underlying_price")),
+        "underlying_price": underlying_price,
         "call_buy_volume": call_buy,
         "call_sell_volume": call_sell,
         "put_buy_volume": put_buy,
@@ -323,6 +335,30 @@ def _sell_volume(row: pd.Series) -> Optional[float]:
     return _sum_values(values)
 
 
+def _client_class_volumes(frame: pd.DataFrame):
+    buy = [_sum(frame, f"{prefix}_buy_volume") for prefix in ("natural", "legal")]
+    sell = [_sum(frame, f"{prefix}_sell_volume") for prefix in ("natural", "legal")]
+    return buy, sell
+
+
+def _classes_advancing(
+    a_by_class: List[Optional[float]],
+    b_by_class: List[Optional[float]],
+    threshold: float = 1.05,
+) -> bool:
+    """True when side A beats side B in every client class that shows activity."""
+    verdicts = 0
+    for a, b in zip(a_by_class, b_by_class):
+        if a is None and b is None:
+            continue
+        if (a or 0) == 0 and (b or 0) == 0:
+            continue
+        if not _is_advancing(a, b, threshold):
+            return False
+        verdicts += 1
+    return verdicts > 0
+
+
 def _trade_volume(row: pd.Series) -> Optional[float]:
     direct = _to_float(row.get("trade_volume"))
     if direct is not None:
@@ -350,8 +386,8 @@ def open_interest_snapshot(rows: List[Dict[str, Any]]) -> Dict[str, Optional[flo
     """Compare totals only when both days cover the same complete set of contracts."""
     current_values = [current_open_interest(row) for row in rows]
     previous_values = [_to_float(row.get("yesterday_open_positions")) for row in rows]
-    current = sum(current_values) if rows and all(v is not None for v in current_values) else None
-    yesterday = sum(previous_values) if rows and all(v is not None and v >= 0 for v in previous_values) else None
+    current = finite_sum(current_values) if rows and all(v is not None for v in current_values) else None
+    yesterday = finite_sum(previous_values) if rows and all(v is not None and v >= 0 for v in previous_values) else None
     return {"current": current, "yesterday": yesterday,
             "change": current - yesterday if current is not None and yesterday is not None else None}
 
@@ -412,20 +448,15 @@ def _sum_values(values: List[Optional[float]]) -> Optional[float]:
     clean = [v for v in values if v is not None and isfinite(v)]
     if not clean:
         return None
-    return float(sum(clean))
+    return finite_sum(clean)
 
 
 def _total_or_none(values: List[Optional[float]]) -> Optional[float]:
-    clean = [v for v in values if v is not None and isfinite(v)]
-    if not clean:
-        return None
-    return float(sum(clean))
+    return _sum_values(values)
 
 
 def _ratio(num: Optional[float], den: Optional[float]) -> Optional[float]:
-    if num is None or den in (None, 0):
-        return None
-    return float(num / den)
+    return finite_ratio(num, den)
 
 
 def _is_advancing(a: Optional[float], b: Optional[float], threshold: float = 1.05) -> bool:

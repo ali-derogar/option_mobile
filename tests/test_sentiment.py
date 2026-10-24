@@ -13,6 +13,8 @@ from options.backend.analysis.sentiment import (
 def test_detect_option_type_from_persian_names() -> None:
     assert detect_option_type({"long_name": "اختیار خرید خودرو"}) == "call"
     assert detect_option_type({"long_name": "اختیار فروش خودرو"}) == "put"
+    assert detect_option_type({"long_name": "اختیارخ بساما-1200-1405/09-18"}) == "call"
+    assert detect_option_type({"long_name": "اختیارف بساما-1200-1405/09-18"}) == "put"
     assert detect_option_type({"symbol": "ضخود1230"}) == "call"
     assert detect_option_type({"symbol": "طخود1230"}) == "put"
 
@@ -29,6 +31,15 @@ def test_compute_moneyness_for_call_and_put() -> None:
     assert compute_moneyness("call", 100, 80) == "OTM"
     assert compute_moneyness("put", 100, 80) == "ITM"
     assert compute_moneyness("put", 100, 120) == "OTM"
+
+
+@pytest.mark.parametrize("current,expected", [(None, None), (120, 20), (0, -100)])
+def test_oi_percentage_requires_both_days_and_is_in_percentage_units(current, expected):
+    result = analyze_options_sentiment(pd.DataFrame([{
+        "option_type": "call", "underlying_ins_code": 2001, "end_date": 20261209,
+        "buy_open_positions": current, "yesterday_open_positions": 100,
+    }]))
+    assert result["items"][0]["open_interest_change_pct"] == expected
 
 
 def test_bullish_sentiment_when_call_buy_and_put_sell_dominate() -> None:

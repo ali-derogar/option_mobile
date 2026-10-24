@@ -146,6 +146,54 @@ def test_bad_expiry_is_not_offered_and_zero_underlying_code_uses_symbol():
     assert result["expiries"] == []
 
 
+def test_known_underlying_code_and_symbol_only_contracts_share_one_asset():
+    rows = [contract(underlying_symbol="کیان"), contract("2", underlying_ins_code=None, underlying_symbol="كيان")]
+    result = analyze_strikes(rows, "۲٬۰۰۱")
+    assert result["underlying_key"] == "2001"
+    assert len(result["underlyings"]) == 1
+    assert result["quality"]["selected_contract_count"] == 2
+    assert result["strikes"][0]["call_oi"] == 100
+
+
+def test_ambiguous_symbol_only_contracts_cannot_be_merged_into_a_known_asset():
+    rows = [contract(), contract("2", underlying_ins_code="2002"), contract("3", underlying_ins_code=None)]
+    assert analyze_strikes(rows, "2001")["quality"]["selected_contract_count"] == 1
+    assert analyze_strikes(rows, "2002")["quality"]["selected_contract_count"] == 1
+
+
+def test_conflicting_underlying_prices_are_not_resolved_by_input_order():
+    rows = [contract(), contract("2", underlying_last_price=9000)]
+    for ordered in (rows, rows[::-1]):
+        result = analyze_strikes(ordered, "2001")
+        assert result["spot_price"] is None
+        assert result["atm_strike"] is None
+        assert result["quality"]["spot_price_conflict"] is True
+
+
+def test_known_total_turnover_does_not_drop_contracts_with_unknown_option_type():
+    result = analyze_strikes([contract(trade_value=100), contract("2", option_type=None, symbol="?", trade_value=50)], "2001")
+    total = result["summaries"]["market"]["total"]
+    assert total["value"] == 150
+    assert total["known"] == total["total"] == 2
+    assert total["complete"] is True
+    assert result["summaries"]["market"]["call"]["complete"] is False
+    assert result["summaries"]["market"]["ratio_state"] == "unavailable"
+
+
+@pytest.mark.parametrize("codes", [["²"], ["12345678901234567", "٢"]])
+def test_unsupported_numeric_identifier_characters_do_not_crash_analysis(codes):
+    result = analyze_strikes([contract(code) for code in codes], "2001")
+    assert result["quality"]["contract_count"] == (0 if codes == ["²"] else 2)
+
+
+def test_finite_turnover_values_cannot_produce_non_finite_json_totals_or_ratios():
+    for rows in ([contract(trade_value=1e308), contract("2", trade_value=1e308)],
+                 [contract(trade_value=1e308), contract("2", option_type="put", trade_value=1e-308)]):
+        result = analyze_strikes(rows, "2001")
+        json.dumps(result, allow_nan=False)
+        assert result["summaries"]["market"]["call_put_ratio"] is None
+
+
 def test_historical_response_rejects_an_explicit_wrong_session(monkeypatch):
     monkeypatch.setattr(historical_options, "fetch_instruments_history_in_day", lambda day: [{"dEven": 20261019}])
     with pytest.raises(ValueError, match="date"):

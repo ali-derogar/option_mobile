@@ -408,3 +408,16 @@ test("a failed date change restores both the previous rows and the previous summ
   await expect(page.locator("#statBuyOi")).toHaveText("۱");
   await expect(page.locator("#lastUpdate")).not.toHaveClass(/stale/);
 });
+
+test("calendar events from another month cannot mark the current month as a holiday", async (t) => {
+  const { page, state } = await fixture(t, "dashboard");
+  state.calendarData = {
+    year: 1405, month: 7, days: [], events_available: true,
+    events: [{ id: 1, title: "رویداد ماه دیگر", jalali_date: "1405-08-29", is_holiday: true }],
+  };
+  await state.open();
+  await page.locator("#datePickerButton").click();
+  const day = page.locator('.date-picker-day[data-date="2026-10-21"]');
+  await expect(day).not.toHaveClass(/is-holiday/);
+  await expect(day).not.toHaveAttribute("title", /رویداد ماه دیگر/);
+});

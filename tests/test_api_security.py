@@ -296,6 +296,14 @@ def test_open_interest_accepts_grouped_persian_instrument_code(monkeypatch) -> N
     assert called["ins_code"] == 1001
 
 
+def test_open_interest_rejects_codes_that_overflow_sqlite(monkeypatch) -> None:
+    monkeypatch.setattr(main.storage, "is_activated", lambda: True)
+    with TestClient(main.app, raise_server_exceptions=False) as client:
+        response = client.get("/api/open-interest/9223372036854775808",
+            headers={main.LOCAL_API_HEADER: main.LOCAL_API_TOKEN})
+    assert response.status_code == 400
+
+
 def test_client_type_endpoint_fetches_current_public_row(monkeypatch) -> None:
     monkeypatch.setattr(main.storage, "is_activated", lambda: True)
     seen = {}

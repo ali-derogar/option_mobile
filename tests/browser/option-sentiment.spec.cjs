@@ -117,21 +117,19 @@ test("isolated filters, distinct summary scopes, numeric price positions and sig
   await expect(page.locator("#typeFilter")).toBeHidden();
 });
 
-test("four position modes support every individual selection and combination", async (t) => {
+test("both position modes support every individual selection and combination", async (t) => {
   const { page, state, open } = await fixture(t, 360);
   await open();
   const modes = [
-    { key: "buy_call", label: "خرید Call", values: [100, 20], color: "accent" },
-    { key: "buy_put", label: "خرید Put", values: [40, 10], color: "purple" },
-    { key: "sell_call", label: "فروش Call", values: [100, 20], color: "amber" },
-    { key: "sell_put", label: "فروش Put", values: [40, 10], color: "red" },
+    { key: "call", label: "اختیار خرید", values: [100, 20], color: "accent" },
+    { key: "put", label: "اختیار فروش", values: [40, 10], color: "purple" },
   ];
-  await expect(page.locator("[data-oi-mode]")).toHaveCount(4);
+  await expect(page.locator("[data-oi-mode]")).toHaveCount(2);
   await expect(page.locator("[data-oi-filter], #sentimentOiClear")).toHaveCount(0);
   const changeId = await page.evaluate(() => Chart.getChart("sentimentChangeChart").id);
   const summaries = await page.locator("#sentimentSummaries").textContent();
   const requestCount = state.requests.length;
-  for (let mask = 0; mask < 16; mask += 1) {
+  for (let mask = 0; mask < 4; mask += 1) {
     for (const [index, mode] of modes.entries()) {
       await page.getByRole("checkbox", { name: mode.label, exact: true }).setChecked(Boolean(mask & (1 << index)));
     }
@@ -149,7 +147,7 @@ test("four position modes support every individual selection and combination", a
     assert.equal(chart.charts, selected.length ? 2 : 1);
     assert.equal(await page.locator("#sentimentSummaries").textContent(), summaries);
     await expect(page.locator("#sentimentOiLegend .sentiment-position-legend")).toHaveCount(selected.length);
-    if (!selected.length) await expect(page.locator("#sentimentOiEmpty")).toContainText("حداقل یکی از چهار حالت");
+    if (!selected.length) await expect(page.locator("#sentimentOiEmpty")).toContainText("حداقل یکی از دو حالت");
   }
   assert.equal(state.requests.length, requestCount);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
@@ -158,10 +156,9 @@ test("four position modes support every individual selection and combination", a
 test("position combinations survive refresh, theme and tab changes", async (t) => {
   const { page, open } = await fixture(t);
   await open();
-  await page.getByRole("checkbox", { name: "خرید Put", exact: true }).uncheck();
-  await page.getByRole("checkbox", { name: "فروش Call", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "اختیار فروش", exact: true }).uncheck();
   const selection = async () => page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label));
-  assert.deepEqual(await selection(), ["خرید Call", "فروش Put"]);
+  assert.deepEqual(await selection(), ["اختیار خرید"]);
   await page.evaluate(() => applyTheme("dark"));
   await page.locator("#sentimentRefresh").click();
   await expect(page.locator("#sentimentStatus")).toHaveText("تحلیل آماده است.");
@@ -169,18 +166,15 @@ test("position combinations survive refresh, theme and tab changes", async (t) =
   await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toContainText("۴ میلیون");
   await page.getByRole("tab", { name: "حقیقی", exact: true }).click();
   await open();
-  assert.deepEqual(await selection(), ["خرید Call", "فروش Put"]);
-  await expect(page.getByRole("checkbox", { name: "خرید Call", exact: true })).toBeChecked();
-  await expect(page.getByRole("checkbox", { name: "فروش Put", exact: true })).toBeChecked();
-  await expect(page.getByRole("checkbox", { name: "خرید Put", exact: true })).not.toBeChecked();
-  await expect(page.getByRole("checkbox", { name: "فروش Call", exact: true })).not.toBeChecked();
+  assert.deepEqual(await selection(), ["اختیار خرید"]);
+  await expect(page.getByRole("checkbox", { name: "اختیار خرید", exact: true })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "اختیار فروش", exact: true })).not.toBeChecked();
 });
 
 test("restoring the page keeps cached charts and position controls usable when dashboard reads fail", async (t) => {
   const { page, state, open } = await fixture(t);
   await open();
-  await page.getByRole("checkbox", { name: "خرید Put", exact: true }).uncheck();
-  await page.getByRole("checkbox", { name: "فروش Call", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "اختیار فروش", exact: true }).uncheck();
   const figures = await page.locator("#sentimentSummaries").textContent();
   state.failDashboardRead = true;
   state.failRead = true;
@@ -192,18 +186,17 @@ test("restoring the page keeps cached charts and position controls usable when d
   await expect.poll(() => page.evaluate(() => Object.keys(Chart.instances).length)).toBe(2);
   await expect(page.locator("#sentimentStatus")).toContainText("خطا");
   assert.equal(await page.locator("#sentimentSummaries").textContent(), figures);
-  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["خرید Call", "فروش Put"]);
-  await page.getByRole("checkbox", { name: "خرید Call", exact: true }).uncheck();
-  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["فروش Put"]);
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["اختیار خرید"]);
+  await page.getByRole("checkbox", { name: "اختیار خرید", exact: true }).uncheck();
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart")?.data.datasets.map((dataset) => dataset.label) ?? []), []);
+  await expect(page.locator("#sentimentOiEmpty")).toContainText("حداقل یکی از دو حالت");
   await expect(page.locator("#sentimentRefresh")).toBeEnabled();
 });
 
 test("restoring the page ignores a pending response from the previous visit and preserves selected modes", async (t) => {
   const { page, state, open } = await fixture(t);
   await open();
-  await page.getByRole("checkbox", { name: "خرید Put", exact: true }).uncheck();
-  await page.getByRole("checkbox", { name: "فروش Call", exact: true }).uncheck();
-  await page.getByRole("checkbox", { name: "فروش Put", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "اختیار فروش", exact: true }).uncheck();
   let release;
   const pending = new Promise((resolve) => { release = resolve; });
   state.handler = (params) => params.get("expiry") === "20261209" ? pending : payload(params);
@@ -220,7 +213,7 @@ test("restoring the page ignores a pending response from the previous visit and 
   await expect(page.locator("#sentimentExpiry")).toHaveValue("all");
   await expect(page.locator('[data-sentiment-summary="underlying"] strong').first()).toContainText("۱۰ میلیون");
   await expect(page.locator('[data-sentiment-summary="selection"]')).toHaveCount(0);
-  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["خرید Call"]);
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["اختیار خرید"]);
   assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 2);
   assert.equal(state.posts.length, 2);
 });
@@ -242,7 +235,7 @@ test("restoring a different analysis tab does not restart the hidden sentiment m
   assert.equal(await page.evaluate(() => Chart.getChart("sentimentOiChart") == null), true);
 });
 
-test("combining both positions of one option does not double coverage or turn missing OI into zero", async (t) => {
+test("missing call OI stays missing instead of turning into zero when only the put side is shown", async (t) => {
   const { page, state, open } = await fixture(t);
   state.handler = (params) => {
     const result = payload(params);
@@ -255,18 +248,16 @@ test("combining both positions of one option does not double coverage or turn mi
     return result;
   };
   await open();
-  await page.getByRole("checkbox", { name: "خرید Call", exact: true }).uncheck();
-  await page.getByRole("checkbox", { name: "فروش Call", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "اختیار خرید", exact: true }).uncheck();
   await expect(page.locator("#sentimentOiCoverage")).toHaveText("داده ناقص: ۲ از ۴ قرارداد");
-  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.data.map((point) => point.y))), [[40, 10], [40, 10]]);
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.data.map((point) => point.y))), [[40, 10]]);
   const tooltip = await page.evaluate(() => {
     const chart = Chart.getChart("sentimentOiChart");
-    return chart.options.plugins.tooltip.callbacks.label({ datasetIndex: 1, dataIndex: 0, dataset: chart.data.datasets[1], parsed: { x: 1000, y: 40 } });
+    return chart.options.plugins.tooltip.callbacks.label({ datasetIndex: 0, dataIndex: 0, dataset: chart.data.datasets[0], parsed: { x: 1000, y: 40 } });
   });
-  assert.match(tooltip, /فروش Put: ۴۰ قرارداد · داده ناقص: ۱ از ۲ قرارداد/);
-  await page.getByRole("checkbox", { name: "خرید Put", exact: true }).uncheck();
-  await page.getByRole("checkbox", { name: "فروش Put", exact: true }).uncheck();
-  await page.getByRole("checkbox", { name: "فروش Call", exact: true }).check();
+  assert.match(tooltip, /اختیار فروش: ۴۰ قرارداد · داده ناقص: ۱ از ۲ قرارداد/);
+  await page.getByRole("checkbox", { name: "اختیار فروش", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "اختیار خرید", exact: true }).check();
   await expect(page.locator("#sentimentOiCoverage")).toHaveText("داده ناقص: ۰ از ۲ قرارداد");
   await expect(page.locator("#sentimentOiEmpty")).toContainText("موجود نیست");
   assert.equal(await page.evaluate(() => Chart.getChart("sentimentOiChart") == null), true);
@@ -747,6 +738,19 @@ test("incomplete OI and client volumes stay unknown in daily analysis", async (t
   assert.equal(result.zeroOi, 0);
 });
 
+test("missing previous OI cannot create an increasing-position badge", async (t) => {
+  const { page } = await fixture(t);
+  const result = await page.evaluate(() => {
+    const row = { buy_open_positions: 100, yesterday_open_positions: null };
+    return { change: oiChange(row), label: optionSignalLabel(row), color: rowSignalClass(row),
+      actualZero: oiChange({ ...row, yesterday_open_positions: 0 }) };
+  });
+  assert.equal(result.change, null);
+  assert.equal(result.actualZero, 100);
+  assert.equal(result.color, "signal-neutral");
+  assert.match(result.label, /داده کافی نیست/);
+});
+
 test("daily participant scores agree with the historical score for puts", async (t) => {
   const { page } = await fixture(t);
   const result = await page.evaluate(() => buildFourStepConclusion([{
@@ -754,6 +758,131 @@ test("daily participant scores agree with the historical score for puts", async 
     buy_open_positions: 22, yesterday_open_positions: 20,
   }], "natural", "حقیقی", "natural").score);
   assert.equal(result, -3);
+});
+
+test("unknown contract types and missing moneyness cannot create complete daily conclusions", async (t) => {
+  const { page } = await fixture(t);
+  const result = await page.evaluate(() => {
+    const row = {option_type: "call", moneyness: "ITM", natural_buy_volume: 100, natural_sell_volume: 20};
+    const unknown = buildFourStepConclusion([{...row, option_type: null}], "natural", "حقیقی", "natural");
+    const unclassified = buildFourStepConclusion([{...row, moneyness: "unknown"}], "natural", "حقیقی", "natural");
+    return {unknown: {score: unknown.score, label: unknown.finalLabel},
+      unclassified: {score: unclassified.score, label: unclassified.finalLabel, metrics: unclassified.steps[1].metrics}};
+  });
+  assert.equal(result.unknown.score, null);
+  assert.match(result.unknown.label, /نوع قرارداد/);
+  assert.equal(result.unclassified.score, null);
+  assert.match(result.unclassified.label, /ITM\/OTM/);
+  assert.equal(result.unclassified.metrics[0][1], null);
+  assert.equal(result.unclassified.metrics[1][1], null);
+});
+
+test("contract details do not label partial participant volumes as total volume", async (t) => {
+  const { page } = await fixture(t);
+  const result = await page.evaluate(() => {
+    const row = {natural_buy_volume: 100, legal_buy_volume: null, natural_sell_volume: 50, legal_sell_volume: 0};
+    renderDetail(row);
+    return {buy: sumPresentValues(row, ["natural_buy_volume", "legal_buy_volume"]),
+      sell: sumPresentValues(row, ["natural_sell_volume", "legal_sell_volume"]),
+      invalidParticipant: rowParticipantVolume({natural_buy_volume: -50, natural_sell_volume: 100}, "natural")};
+  });
+  assert.equal(result.buy, null);
+  assert.equal(result.sell, 50);
+  assert.equal(result.invalidParticipant, null);
+  await expect(page.locator("#detailContent")).not.toContainText("حجم خرید کل");
+  await expect(page.locator("#detailContent")).toContainText("حجم فروش کل");
+});
+
+test("overflowing daily aggregates cannot become directional signals", async (t) => {
+  const { page } = await fixture(t);
+  const result = await page.evaluate(() => {
+    const row = {option_type: "call", moneyness: "ITM", natural_buy_volume: 1e308,
+      natural_sell_volume: 1, buy_open_positions: 1e308, yesterday_open_positions: 1};
+    const rows = [row, {...row}];
+    const conclusion = buildFourStepConclusion(rows, "natural", "حقیقی", "natural");
+    return {score: conclusion.score, callBuy: conclusion.steps[0].metrics[0][1], oi: openInterestSnapshot(rows),
+      participant: rowParticipantVolume({natural_buy_volume: 1e308, natural_sell_volume: 1e308}, "natural")};
+  });
+  assert.equal(result.score, null);
+  assert.equal(result.callBuy, null);
+  assert.equal(result.participant, null);
+  assert.equal(result.oi.current, null);
+  assert.equal(result.oi.change, null);
+  assert.equal(result.oi.hasCurrent, false);
+});
+
+test("exact turnover tooltips stay within the viewport in both themes", async (t) => {
+  const { page, open } = await fixture(t, 320);
+  await open();
+  for (const width of [320, 390, 1280]) {
+    await page.setViewportSize({width, height: 844});
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate(value => applyTheme(value), theme);
+      for (const selector of [".sentiment-value-call", ".sentiment-value-put", ".sentiment-value-total"]) {
+        const target = page.locator(`[data-sentiment-summary="market"] ${selector} [data-exact-value]`);
+        await target.focus();
+        const bounds = await target.evaluate(el => {
+          const anchor = el.getBoundingClientRect(), style = getComputedStyle(el, "::after"), width = parseFloat(style.width);
+          const left = style.left !== "auto" ? anchor.left + parseFloat(style.left) : anchor.right - parseFloat(style.right) - width;
+          return {left, right: left + width, viewport: innerWidth};
+        });
+        assert.ok(bounds.left >= 0 && bounds.right <= bounds.viewport, JSON.stringify({width, theme, selector, ...bounds}));
+      }
+    }
+  }
+});
+
+test("daily conclusions include ATM contracts while the strike buckets keep their stated scope", async (t) => {
+  const { page } = await fixture(t);
+  const expected = await page.evaluate(() => {
+    state.items = [
+      { ins_code: "1", option_type: "call", moneyness: "ATM", natural_buy_volume: 100,
+        natural_sell_volume: 10, buy_open_positions: 20, yesterday_open_positions: 10 },
+      { ins_code: "2", option_type: "put", moneyness: "ITM", natural_buy_volume: 10,
+        natural_sell_volume: 20, buy_open_positions: 10, yesterday_open_positions: 10 },
+    ];
+    state.analysisAudience = "natural";
+    renderAnalysis();
+    return buildFourStepConclusion(state.items, "natural", "حقیقی", "natural").finalLabel;
+  });
+  await expect(page.locator(".analysis-conclusion-person-head strong")).toHaveText(expected);
+  await expect(page.locator(".analysis-step").first()).toContainText("۱۰۰");
+  await expect(page.locator(".analysis-scope-note")).toContainText("ATM");
+});
+
+test("partial client volumes are not presented as a complete bucket total", async (t) => {
+  const { page } = await fixture(t);
+  const result = await page.evaluate(() => {
+    const model = buildAnalysisModel([
+      { option_type: "call", moneyness: "ITM", natural_buy_volume: 100 },
+      { option_type: "call", moneyness: "ITM", natural_buy_volume: null },
+    ]);
+    return {
+      bucket: analysisFieldValue(model.call.ITM, "natural_buy_volume"),
+      total: combineAnalysisField(model.call.ITM, model.call.OTM, "natural_buy_volume"),
+      html: renderBucketCalculation(model.call.ITM, "natural_buy_volume"),
+      empty: analysisFieldValue(model.call.OTM, "natural_buy_volume"),
+    };
+  });
+  assert.equal(result.bucket, null);
+  assert.equal(result.total, null);
+  assert.equal(result.empty, 0);
+  assert.match(result.html, /داده ناقص/);
+});
+
+test("the contract table OI column and sorting agree with contract details", async (t) => {
+  const { page } = await fixture(t, 1280);
+  await page.evaluate(() => {
+    state.analysisVisible = false;
+    state.items = [
+      { ins_code: "1", symbol: "ضخود۱", buy_open_positions: null, sell_open_positions: 30 },
+      { ins_code: "2", symbol: "ضخود۲", buy_open_positions: 0, sell_open_positions: 40 },
+    ];
+    applyFilterAndSort();
+  });
+  await expect(page.locator("#tableBody tr td:last-child")).toHaveText(["۳۰", "۰"]);
+  await page.locator('th[data-key="buy_open_positions"]').dispatchEvent("click");
+  await expect(page.locator("#tableBody tr td:last-child")).toHaveText(["۰", "۳۰"]);
 });
 
 test("Persian decimals and Tehran timestamps format correctly outside Iran", async (t) => {

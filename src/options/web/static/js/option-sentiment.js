@@ -1,10 +1,10 @@
 /** Whole-market option sentiment. Its filters never read the contract table's filters. */
 window.OptionSentiment = (() => {
+  // A position always has one buyer and one seller, so buy/sell volumes per
+  // side are identical by construction; one toggle per side is all the data supports.
   const oiModes = [
-    { key: "buy_call", side: "call", label: "خرید Call", color: "accent" },
-    { key: "buy_put", side: "put", label: "خرید Put", color: "purple" },
-    { key: "sell_call", side: "call", label: "فروش Call", color: "amber" },
-    { key: "sell_put", side: "put", label: "فروش Put", color: "red" },
+    { key: "call", side: "call", label: "اختیار خرید", color: "accent" },
+    { key: "put", side: "put", label: "اختیار فروش", color: "purple" },
   ];
   const model = {
     root: null, key: null, expiry: "all", date: "", contextDate: "", data: null,
@@ -112,7 +112,7 @@ window.OptionSentiment = (() => {
         <p class="sentiment-chart-unit">تعداد قرارداد</p>
         <p class="sentiment-chart-empty" id="sentimentOiEmpty"></p>
         <div class="sentiment-chart-stage"><div class="sentiment-chart-scroll" tabindex="0" aria-label="نمودار موقعیت باز؛ پیمایش افقی برای همه قیمت‌های اعمال">
-          <div class="sentiment-chart-wrap"><canvas id="sentimentOiChart" role="img" aria-label="موقعیت باز خرید و فروش Call و Put بر اساس قیمت اعمال"></canvas></div>
+          <div class="sentiment-chart-wrap"><canvas id="sentimentOiChart" role="img" aria-label="موقعیت باز اختیار خرید و فروش بر اساس قیمت اعمال"></canvas></div>
         </div><div class="sentiment-y-axis" id="sentimentOiAxis" aria-hidden="true"></div></div>
         ${chartFooter("Oi")}
         <details class="sentiment-chart-details"><summary>بیشترین موقعیت‌ها و راهنمای نمودار</summary>
@@ -155,6 +155,7 @@ window.OptionSentiment = (() => {
 
   function coverage(info) {
     if (!info || info.complete) return "";
+    if (info.overflow) return "مقدار از محدوده محاسبه خارج است.";
     if (!info.total) return "داده موجود نیست.";
     if (info.known === info.total) return "پوشش بازار ناقص است.";
     return `داده ناقص: ${fmtNum(info.known)} از ${fmtNum(info.total)} قرارداد`;
@@ -198,8 +199,9 @@ window.OptionSentiment = (() => {
     const received = data.received_at ? new Date(data.received_at).toLocaleString("fa-IR", { timeZone: "Asia/Tehran" }) : "—";
     text("sentimentMeta", `تاریخ معاملاتی: ${dateLabel} · زمان دریافت به وقت تهران: ${received}`);
     const messages = [data.warning];
-    if (data.quality.unknown_type_count) messages.push(`${fmtNum(data.quality.unknown_type_count)} قرارداد با نوع اختیار نامشخص کنار گذاشته شده است.`);
+    if (data.quality.unknown_type_count) messages.push(`${fmtNum(data.quality.unknown_type_count)} قرارداد با نوع اختیار نامشخص در تفکیک Call/Put لحاظ نشده است؛ ارزش معاملات موجود آن‌ها فقط در مجموع لحاظ می‌شود.`);
     if (data.quality.invalid_strike_count) messages.push(`${fmtNum(data.quality.invalid_strike_count)} قرارداد قیمت اعمال معتبر ندارد.`);
+    if (data.quality.spot_price_conflict) messages.push("قیمت‌های گزارش‌شده دارایی پایه ناسازگارند؛ نشانگر قیمت فقط در صورت وجود مقدار سازگار نمایش داده می‌شود.");
     const warning = element("sentimentWarning");
     warning.textContent = messages.filter(Boolean).join(" ");
     warning.classList.toggle("hidden", !warning.textContent);
@@ -300,7 +302,7 @@ window.OptionSentiment = (() => {
       wrap.parentElement.parentElement.classList.toggle("hidden", !available || allZero);
       element(`sentiment${suffix}Footer`).classList.toggle("hidden", !available || allZero);
       text(`sentiment${suffix}Empty`, available ? (allZero ? `${field === "oi" ? "موقعیت باز" : "تغییر موقعیت باز"} قراردادهای دارای داده صفر است.` : "")
-        : field === "oi" ? (!selectedModes.length ? "برای نمایش نمودار، حداقل یکی از چهار حالت را انتخاب کنید." : "داده قابل نمایش موقعیت باز برای قیمت‌های اعمال این انتخاب موجود نیست.") : "داده قابل نمایش برای مقایسه با روز معاملاتی قبل موجود نیست.");
+        : field === "oi" ? (!selectedModes.length ? "برای نمایش نمودار، حداقل یکی از دو حالت را انتخاب کنید." : "داده قابل نمایش موقعیت باز برای قیمت‌های اعمال این انتخاب موجود نیست.") : "داده قابل نمایش برای مقایسه با روز معاملاتی قبل موجود نیست.");
       if (!available || allZero || typeof Chart === "undefined") continue;
       wrap.style.width = `max(100%, ${rows.length * Math.max(36, series.length * 8 + 12)}px)`;
       const palette = chartPalette();

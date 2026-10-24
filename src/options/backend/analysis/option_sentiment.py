@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from options.backend.analysis.sentiment import current_open_interest, detect_option_type
+from options.backend.analysis.numeric import finite_sum
 
 
 def number(value: Any) -> float | None:
@@ -23,19 +24,41 @@ def identity(value: Any) -> str:
     """Do not round TSETMC's 17-digit identifiers through float conversion."""
     if value is None or isinstance(value, bool):
         return ""
-    text = str(value).strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+    text = str(value).strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")).replace(",", "").replace("٬", "").replace("،", "")
     if text.endswith(".0"):
         text = text[:-2]
-    return str(int(text)) if text.isdigit() else ""
+    return (text.lstrip("0") or "0") if text.isascii() and text.isdigit() else ""
 
 
 def normalize_text(value: Any) -> str:
-    return str(value or "").strip().replace("ي", "ی").replace("ك", "ک").replace("\u200c", "")
+    text = "" if value is None else str(value).strip()
+    if text.lower() in {"nan", "none", "nat", "<na>"}:
+        return ""
+    return text.replace("ي", "ی").replace("ك", "ک").replace("\u200c", "")
 
 
 def underlying_key(row: dict) -> str:
     code = identity(row.get("underlying_ins_code"))
-    return code if code and code != "0" else normalize_text(row.get("underlying_symbol") or row.get("underlying_short_name"))
+    return code if code and code != "0" else (normalize_text(row.get("underlying_symbol")) or normalize_text(row.get("underlying_short_name")))
+
+
+def _resolve_underlying_keys(rows: list[dict]) -> None:
+    aliases: dict[str, set[str]] = {}
+    for row in rows:
+        code = identity(row.get("underlying_ins_code"))
+        if code and code != "0":
+            for field in ("underlying_symbol", "underlying_short_name"):
+                alias = normalize_text(row.get(field))
+                if alias:
+                    aliases.setdefault(alias, set()).add(code)
+    for row in rows:
+        key = underlying_key(row)
+        if not identity(row.get("underlying_ins_code")) or identity(row.get("underlying_ins_code")) == "0":
+            candidates = set().union(*(aliases.get(normalize_text(row.get(field)), set())
+                for field in ("underlying_symbol", "underlying_short_name")))
+            if len(candidates) == 1:
+                key = next(iter(candidates))
+        row["_underlying_key"] = key
 
 
 def contract_expiry(row: dict) -> str | None:
@@ -60,14 +83,15 @@ def oi_change(row: dict) -> float | None:
 
 
 def metric(values: list[float | None]) -> dict:
-    known = [v for v in values if v is not None]
-    return {
-        "value": sum(known) if known or not values else None,
-        "known": len(known), "total": len(values), "complete": len(known) == len(values),
-    }
+    known = [v for v in values if v is not None and isfinite(v)]
+    total = finite_sum(known) if known or not values else None
+    overflow = bool(known) and total is None
+    return {"value": None if overflow else total,
+        "known": len(known), "total": len(values), "complete": len(known) == len(values) and not overflow,
+        **({"overflow": True} if overflow else {})}
 
 
-def trade_summary(rows: list[dict], unknown_count: int = 0) -> dict:
+def trade_summary(rows: list[dict]) -> dict:
     def turnover(row):
         value = number(row.get("trade_value"))
         return value if value is not None and value >= 0 else None
@@ -75,8 +99,9 @@ def trade_summary(rows: list[dict], unknown_count: int = 0) -> dict:
     calls = metric([turnover(r) for r in rows if r["option_type"] == "call"])
     puts = metric([turnover(r) for r in rows if r["option_type"] == "put"])
     total = metric([turnover(r) for r in rows])
+    unknown_count = sum(r["option_type"] not in {"call", "put"} for r in rows)
     if unknown_count:
-        for info in (calls, puts, total):
+        for info in (calls, puts):
             info["total"] += unknown_count
             info["complete"] = False
             if not info["known"]:
@@ -85,7 +110,9 @@ def trade_summary(rows: list[dict], unknown_count: int = 0) -> dict:
     ratio_state = "unavailable"
     if calls["complete"] and puts["complete"]:
         if puts["value"] > 0:
-            ratio, ratio_state = calls["value"] / puts["value"], "finite"
+            quotient = calls["value"] / puts["value"]
+            if isfinite(quotient):
+                ratio, ratio_state = quotient, "finite"
         elif calls["value"] > 0:
             ratio_state = "infinite"
     return {"call": calls, "put": puts, "total": total, "call_put_ratio": ratio, "ratio_state": ratio_state}
@@ -97,27 +124,37 @@ def analyze_strikes(contracts: list[dict], selected_key: str | None = None, expi
         code = identity(row.get("ins_code"))
         if code and code != "0":
             by_code[code] = {**row, "ins_code": code, "option_type": detect_option_type(row)}
+    all_rows = list(by_code.values())
+    _resolve_underlying_keys(all_rows)
     unknown_count = sum(r["option_type"] not in {"call", "put"} for r in by_code.values())
     rows = [r for r in by_code.values() if r["option_type"] in {"call", "put"}]
     assets = {}
-    for row in rows:
-        key = underlying_key(row)
+    for row in all_rows:
+        key = row["_underlying_key"]
         if key:
-            assets[key] = {"key": key, "symbol": row.get("underlying_symbol") or row.get("underlying_short_name") or key}
+            symbol = normalize_text(row.get("underlying_symbol")) or normalize_text(row.get("underlying_short_name"))
+            if key not in assets or symbol:
+                assets[key] = {"key": key, "symbol": symbol or key}
     assets = sorted(assets.values(), key=lambda a: a["symbol"])
-    selected_key = normalize_text(selected_key) if selected_key else (assets[0]["key"] if assets else "")
-    selected_key = next((a["key"] for a in assets if normalize_text(a["symbol"]) == selected_key), selected_key)
-    asset_rows = [r for r in rows if underlying_key(r) == selected_key]
+    selected_key = (identity(selected_key) or normalize_text(selected_key)) if selected_key else (assets[0]["key"] if assets else "")
+    symbol_matches = [a["key"] for a in assets if normalize_text(a["symbol"]) == selected_key]
+    if len(symbol_matches) == 1:
+        selected_key = symbol_matches[0]
+    asset_rows = [r for r in all_rows if r["_underlying_key"] == selected_key]
     expiries = sorted({contract_expiry(r) for r in asset_rows if contract_expiry(r)})
     expiry = expiry if expiry in expiries else "all"
-    selected = [r for r in asset_rows if expiry == "all" or identity(r.get("end_date")) == expiry]
-    unknown_asset = [r for r in by_code.values() if r["option_type"] not in {"call", "put"} and underlying_key(r) == selected_key]
-    unknown_selected = [r for r in unknown_asset if expiry == "all" or identity(r.get("end_date")) == expiry]
+    selected_all = [r for r in asset_rows if expiry == "all" or identity(r.get("end_date")) == expiry]
+    selected = [r for r in selected_all if r["option_type"] in {"call", "put"}]
+    unknown_selected = [r for r in selected_all if r["option_type"] not in {"call", "put"}]
     price, price_kind = None, None
+    price_conflict = False
     for field in ("underlying_last_price", "underlying_closing_price"):
-        values = [number(r.get(field)) for r in asset_rows]
-        price = next((v for v in values if v is not None and v >= 0), None)
-        if price is not None:
+        values = [number(r.get(field)) for r in asset_rows if r["option_type"] in {"call", "put"}]
+        prices = {v for v in values if v is not None and v >= 0}
+        if len(prices) > 1:
+            price_conflict = True
+        elif prices:
+            price = prices.pop()
             price_kind = "last" if field == "underlying_last_price" else "closing"
             break
     groups = {}
@@ -151,9 +188,10 @@ def analyze_strikes(contracts: list[dict], selected_key: str | None = None, expi
         "underlyings": assets, "expiries": expiries,
         "spot_price": price, "spot_price_kind": price_kind, "atm_strike": atm,
         "strikes": strikes, "peaks": peaks,
-        "summaries": {"market": trade_summary(rows, unknown_count), "underlying": trade_summary(asset_rows, len(unknown_asset)), "selection": trade_summary(selected, len(unknown_selected))},
+        "summaries": {"market": trade_summary(all_rows), "underlying": trade_summary(asset_rows), "selection": trade_summary(selected_all)},
         "quality": {
             "contract_count": len(rows), "selected_contract_count": len(selected), "unknown_type_count": unknown_count,
+            "spot_price_conflict": price_conflict,
             "invalid_strike_count": sum(number(r.get("strike_price")) is None or number(r.get("strike_price")) <= 0 for r in selected),
             "oi": metric([current_oi(r) for r in selected]), "change": metric([oi_change(r) for r in selected]),
         },

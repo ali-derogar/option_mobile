@@ -902,51 +902,25 @@ class Storage:
                 ).astimezone(timezone.utc)
                 start = start.replace(tzinfo=None)
                 end = start + timedelta(days=1)
-                is_current_market_day = snapshot_date == self.snapshot_date_for(self.now())
-                fetched_count = 0
-                if is_current_market_day:
-                    fetched_count = session.scalar(
-                        select(func.count(ClientTypeStats.id)).where(
-                            ClientTypeStats.fetched_at >= start,
-                            ClientTypeStats.fetched_at < end,
-                        )
-                    ) or 0
-                rec_date_count = session.scalar(
-                    select(func.count(ClientTypeStats.id)).where(
-                        ClientTypeStats.rec_date == api_date
-                    )
+                # A history import fetched today still belongs to its explicit
+                # record date. Only undated current responses may use the
+                # capture day. Include legacy text dates for normalization.
+                stmt = stmt.where(
+                    (ClientTypeStats.rec_date == api_date)
+                    | (func.typeof(ClientTypeStats.rec_date) == "text")
+                    | ((ClientTypeStats.fetched_at >= start) & (ClientTypeStats.fetched_at < end))
                 )
-                if fetched_count:
-                    stmt = stmt.where(
-                        ClientTypeStats.fetched_at >= start,
-                        ClientTypeStats.fetched_at < end,
-                    )
-                    prefer_fetched_at = True
-                elif rec_date_count:
-                    stmt = stmt.where(ClientTypeStats.rec_date == api_date)
-                    prefer_fetched_at = False
-                else:
-                    legacy_rows = session.scalars(
-                        select(ClientTypeStats).order_by(ClientTypeStats.ins_code)
-                    ).all()
-                    legacy_df = pd.DataFrame([self._client_type_to_dict(r) for r in legacy_rows])
-                    if not legacy_df.empty and "rec_date" in legacy_df.columns:
-                        legacy_df = legacy_df[
-                            legacy_df["rec_date"].map(self._coerce_rec_date) == api_date
-                        ]
-                        if not legacy_df.empty:
-                            return self._latest_client_type_rows(legacy_df)
-                    stmt = stmt.where(
-                        ClientTypeStats.fetched_at >= start,
-                        ClientTypeStats.fetched_at < end,
-                    )
-                    prefer_fetched_at = True
+                prefer_fetched_at = True
             else:
                 prefer_fetched_at = False
-            rows = session.scalars(stmt.order_by(ClientTypeStats.ins_code)).all()
+            rows = session.scalars(stmt.order_by(ClientTypeStats.ins_code, ClientTypeStats.id)).all()
             if not rows:
                 return pd.DataFrame()
             df = pd.DataFrame([self._client_type_to_dict(r) for r in rows])
+            if snapshot_date:
+                recorded = df["rec_date"].map(self._coerce_rec_date)
+                captured = df["fetched_at"].map(self.snapshot_date_for)
+                df = df[recorded.eq(api_date) | (recorded.isna() & captured.eq(snapshot_date))]
             return self._latest_client_type_rows(df, prefer_fetched_at=prefer_fetched_at)
 
     def get_open_interest_history_df(
@@ -1209,9 +1183,11 @@ def _normalize_lookup_text(value: Any) -> str:
 def _clean_numeric_text(value: str) -> str:
     return (
         value.strip()
+        .translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
         .replace(",", "")
         .replace("٬", "")
         .replace("،", "")
+        .replace("٫", ".")
         .replace(" ", "")
     )
 

@@ -682,11 +682,9 @@ def open_interest_history(request: Request) -> JSONResponse:
     date = _query_value(request, "date")
     _parse_snapshot_date(date)
     try:
-        exact_ins_code = int(_clean_numeric_text(ins_code))
-    except ValueError as exc:
+        exact_ins_code = _path_ins_code(ins_code)
+    except HTTPException as exc:
         raise HTTPException(400, "invalid ins_code") from exc
-    if exact_ins_code <= 0:
-        raise HTTPException(400, "invalid ins_code")
     df = storage.get_open_interest_history_df(ins_code=exact_ins_code, through_date=date)
     return _json({"ins_code": str(exact_ins_code), "date": date, "history": _df_to_records(df)})
 

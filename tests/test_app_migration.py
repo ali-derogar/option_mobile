@@ -49,3 +49,21 @@ def test_restore_legacy_database_chooses_candidate_with_data(tmp_path: Path) -> 
     app_module._restore_legacy_database_if_needed(current, [empty_legacy, populated_legacy])
 
     assert app_module._database_score(current) == 2
+
+
+def test_restore_legacy_database_includes_committed_wal_data(tmp_path: Path) -> None:
+    current = tmp_path / "new" / "options.db"
+    legacy = tmp_path / "old" / "options.db"
+    _write_db(legacy, rows=1)
+    # Keep the connection open so committed rows remain in the WAL rather than
+    # being checkpointed into the main file on close.
+    db = sqlite3.connect(legacy)
+    try:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA wal_autocheckpoint=0")
+        db.execute("INSERT INTO contracts DEFAULT VALUES")
+        db.commit()
+        app_module._restore_legacy_database_if_needed(current, [legacy])
+        assert app_module._database_score(current) == 2
+    finally:
+        db.close()

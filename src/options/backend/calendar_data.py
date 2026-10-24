@@ -53,10 +53,9 @@ def is_jalali_leap_year(year: int) -> bool:
         leap_j += 1
     if jump - n < 6:
         n = n - jump + ((jump + 4) // 33) * 33
-    leap = ((n + 1) % 33 - 1) % 4
-    if leap == -1:
-        leap = 4
-    return leap == 0
+    # Python's floor modulo already keeps `leap` in 0..3 (the -1 branch in the
+    # original JavaScript port is unreachable here).
+    return ((n + 1) % 33 - 1) % 4 == 0
 
 
 def jalali_month_length(year: int, month: int) -> int:
@@ -73,8 +72,12 @@ def valid_jalali_date(year: int, month: int, day: int) -> bool:
 
 def gregorian_to_jalali(gy: int, gm: int, gd: int) -> tuple[int, int, int]:
     gdm = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
-    jy = 0 if gy <= 1600 else 979
-    gy -= 621 if gy <= 1600 else 1600
+    if gy > 1600 or (gy == 1600 and gm > 3):
+        jy = 979
+        gy -= 1600
+    else:
+        jy = 0
+        gy -= 621
     gy2 = gy + 1 if gm > 2 else gy
     days = (
         (365 * gy)
@@ -236,6 +239,8 @@ def format_calendar_events(calendar_data: Dict[str, Any], year: int, month: int,
         jalali_year = _api_int(event.get("jalali_year"), year)
         jalali_month = _api_int(event.get("jalali_month"), month)
         jalali_day = _api_int(event.get("jalali_day"))
+        if (jalali_year, jalali_month) != (year, month) or not valid_jalali_date(year, month, jalali_day):
+            continue
         gregorian_year = _api_int(event.get("gregorian_year"))
         gregorian_month = _api_int(event.get("gregorian_month"))
         gregorian_day = _api_int(event.get("gregorian_day"))
@@ -260,10 +265,16 @@ def format_calendar_events(calendar_data: Dict[str, Any], year: int, month: int,
             holidays.append(formatted_event)
 
     events_by_day: Dict[int, List[Dict[str, Any]]] = {}
+    month_prefix = f"{year}-{month:02d}-"
     for event in events:
+        jalali_date = event["jalali_date"]
+        if not jalali_date.startswith(month_prefix):
+            continue
         try:
-            event_day = int(event["jalali_date"].split("-")[2])
+            event_day = int(jalali_date.split("-")[2])
         except (ValueError, IndexError):
+            continue
+        if event_day <= 0:
             continue
         events_by_day.setdefault(event_day, []).append(event)
 
@@ -272,7 +283,7 @@ def format_calendar_events(calendar_data: Dict[str, Any], year: int, month: int,
         if not isinstance(day_info, dict):
             continue
         day_number = _api_int(day_info.get("index_in_base1") or day_info.get("day"))
-        if not day_number:
+        if not valid_jalali_date(year, month, day_number):
             continue
         day_events = events_by_day.get(day_number, [])
         days.append({

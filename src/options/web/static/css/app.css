@@ -725,6 +725,14 @@ select:focus-visible {
   min-width: 0;
 }
 
+.analysis-scope-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.9;
+}
+
 .analysis-conclusion {
   grid-column: 1 / -1;
   border: 1px solid var(--border);
@@ -1025,7 +1033,7 @@ select:focus-visible {
   display: inline-block;
   width: 0.65rem;
   height: 0.65rem;
-  margin-left: 0.35rem;
+  margin-inline-end: 0.35rem;
   border-radius: 50%;
   background: var(--line-color);
   vertical-align: -0.08rem;
@@ -3314,8 +3322,8 @@ body[data-view="underlying"] .mobile-list-title strong {
   box-shadow: 0 0 0 4px var(--accent-glow);
 }
 
-.mobile-data-card.signal-positive,
-.mobile-data-card.signal-negative,
+/* Keep the green/red signal accents from the earlier rules; only neutral
+   cards and underlying cards get the thin border in this refresh. */
 .mobile-data-card.signal-neutral,
 .mobile-underlying-card {
   border-right: 1px solid var(--border);
@@ -5056,6 +5064,7 @@ html[data-theme="dark"] .filters select {
 .sentiment-value-put strong, .sentiment-put { color: var(--purple); }
 .sentiment-value [data-exact-value] { cursor: help; }
 .sentiment-value [data-exact-value]:is(:hover, :focus)::after { content: attr(data-exact-value); position: absolute; z-index: 5; inset-inline-start: 0; top: 100%; max-width: 250px; width: max-content; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-1); color: var(--text); font-size: 11px; box-shadow: 0 4px 18px #0003; }
+.sentiment-value-put [data-exact-value]:is(:hover, :focus)::after { inset-inline-start: auto; inset-inline-end: 0; }
 .sentiment-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 11px; margin: 10px 0; color: var(--text-muted); }
 .sentiment-call::before, .sentiment-put::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-inline-end: 6px; border-radius: 3px; background: currentColor; }
 .sentiment-chart-scroll { width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; direction: ltr; -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }

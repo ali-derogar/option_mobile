@@ -10,6 +10,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 
 import toga
@@ -49,7 +50,7 @@ def _database_score(path: Path) -> int:
     if not path.exists() or path.stat().st_size == 0:
         return 0
     try:
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as db:
             total = 0
             for table in USER_DATA_TABLES:
                 exists = db.execute(
@@ -91,7 +92,17 @@ def _restore_legacy_database_if_needed(database_path: Path, candidates: list[Pat
             f"{database_path.stem}.empty-before-migration-{int(time.time())}{database_path.suffix}"
         )
         shutil.copy2(database_path, backup)
-    shutil.copy2(legacy, database_path)
+    # Copy through SQLite so committed WAL pages are included. Publish a fully
+    # closed backup atomically, preserving the destination if backup fails.
+    descriptor, temporary = tempfile.mkstemp(prefix=".options-migration-", suffix=".db", dir=database_path.parent)
+    os.close(descriptor)
+    try:
+        with closing(sqlite3.connect(f"{legacy.resolve().as_uri()}?mode=ro", uri=True)) as source:
+            with closing(sqlite3.connect(temporary)) as destination:
+                source.backup(destination)
+        os.replace(temporary, database_path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 class OptionsApp(toga.App):

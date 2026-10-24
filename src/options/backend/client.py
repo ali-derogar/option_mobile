@@ -212,10 +212,14 @@ class TsetmcClient:
 
                 if response.status_code in (401, 403):
                     self._token = None
-                    headers = self._auth_headers()
                     if attempt < self.max_retries - 1:
+                        headers = self._auth_headers()
                         time.sleep(self.retry_delay)
                         continue
+                    raise TsetmcAPIError(
+                        f"احراز هویت در TSETMC ناموفق بود ({response.status_code}).",
+                        code=response.status_code,
+                    )
 
                 if response.status_code >= 500:
                     if attempt < self.max_retries - 1:

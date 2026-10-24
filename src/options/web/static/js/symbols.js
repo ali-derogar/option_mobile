@@ -9,6 +9,11 @@
   let stopped = false;
   const el = (id) => document.getElementById(id);
   const number = (value) => value == null ? "—" : value.toLocaleString("fa-IR", { maximumFractionDigits: 0 });
+  const persianDate = (value) => {
+    const parsed = new Date(`${value}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? String(value)
+      : new Intl.DateTimeFormat("fa-IR-u-ca-persian", { dateStyle: "long" }).format(parsed);
+  };
   const normalize = (value) => String(value || "").replace(/ي/g, "ی").replace(/ك/g, "ک").replace(/[\u200c\u064b-\u065f\s]/g, "").toLowerCase();
   const dirty = () => state.selected.size !== state.saved.size || [...state.selected].some((code) => !state.saved.has(code));
   const selectionDisabled = (row) => state.saving || (!row.available && !state.saved.has(row.ins_code) && !state.selected.has(row.ins_code));
@@ -77,7 +82,7 @@
         volume.append(heading, value);
         if (field === "underlying_trade_volume" && row.market_date) {
           const marketDate = document.createElement("small");
-          marketDate.textContent = `تاریخ معامله: ${row.market_date}`;
+          marketDate.textContent = `تاریخ معامله: ${persianDate(row.market_date)}`;
           volume.append(marketDate);
         }
         label.append(volume);
@@ -200,6 +205,10 @@
     stopped = true;
     catalogRequestId += 1;
     clearTimeout(pollTimer);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) clearTimeout(pollTimer);
+    else if (!stopped && state.loaded) pollCatalog();
   });
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) return;

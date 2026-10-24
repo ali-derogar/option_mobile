@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from options.backend.analysis.sentiment import compute_intrinsic_value, compute_moneyness
+from options.backend.analysis.sentiment import compute_intrinsic_value, compute_moneyness, detect_option_type
 from options.backend.config import (
     TSETMC_PUBLIC_CLIENT_TYPE_WORKERS,
     TSETMC_REQUEST_TIMEOUT,
@@ -114,7 +114,10 @@ def fetch_public_client_type_for_date(ins_code: int, api_date: str) -> Optional[
         if not isinstance(row, dict):
             continue
         if _to_int(row.get("recDate")) == rec_date:
-            return normalize_public_client_type(row)
+            returned_code = _to_int(row.get("insCode"))
+            if returned_code not in (None, 0, ins_code):
+                continue
+            return normalize_public_client_type({**row, "insCode": ins_code})
     return None
 
 
@@ -139,6 +142,11 @@ def _normalize_historical_option(
     )
     strike_price = _to_float(parsed.get("strike_price"))
     option_type = parsed["option_type"]
+    underlying_code = _to_int(underlying.get("insCode"))
+    same_underlying = not underlying_code or _to_int(meta.get("underlying_ins_code")) in (None, 0, underlying_code)
+    underlying_symbol = underlying.get("lVal18AFC") or parsed["underlying_symbol"]
+    underlying_name = underlying.get("lVal30") or underlying_symbol
+    contract_size = _to_float(meta.get("contract_size"))
 
     return {
         "ins_code": ins_code,
@@ -151,11 +159,11 @@ def _normalize_historical_option(
         "buy_open_positions": None,
         "sell_open_positions": None,
         "yesterday_open_positions": None,
-        "contract_size": meta.get("contract_size") or 1000,
+        "contract_size": contract_size if contract_size is not None and contract_size > 0 else None,
         "strike_price": strike_price,
-        "underlying_ins_code": meta.get("underlying_ins_code") or _to_int(underlying.get("insCode")),
-        "underlying_symbol": meta.get("underlying_symbol") or parsed["underlying_symbol"],
-        "underlying_short_name": meta.get("underlying_short_name") or parsed["underlying_symbol"],
+        "underlying_ins_code": underlying_code or _to_int(meta.get("underlying_ins_code")),
+        "underlying_symbol": underlying_symbol,
+        "underlying_short_name": (meta.get("underlying_short_name") if same_underlying else None) or underlying_name,
         "underlying_last_price": _to_float(underlying.get("pDrCotVal")),
         "underlying_closing_price": _to_float(underlying.get("pClosing")),
         "moneyness": compute_moneyness(option_type, strike_price, underlying_price),
@@ -182,15 +190,11 @@ def _normalize_historical_option(
 def _parse_option_name(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     name = str(row.get("lVal30") or "")
     symbol = str(row.get("lVal18AFC") or "")
-    option_type = None
-    if "اختيارخ" in name or "اختیارخ" in name or symbol.startswith("ض"):
-        option_type = "call"
-    elif "اختيارف" in name or "اختیارف" in name or symbol.startswith("ط"):
-        option_type = "put"
+    option_type = detect_option_type({"symbol": symbol, "long_name": name})
     if not option_type:
         return None
 
-    match = re.search(r"اخت[يی]ار[خف]\s+(.+?)\s*-\s*([\d.,٬،\s]+)\s*-\s*([\d/]+)\s*$", name)
+    match = re.search(r"اخت[يی]ار\s*(?:خر[يی]د|فروش|[خف])\s+(.+?)\s*-\s*([\d.,٬،٫\s]+)\s*-\s*([\d/]+)\s*$", name)
     if not match:
         return None
     underlying_symbol, strike_price, expiry = match.groups()
@@ -204,11 +208,14 @@ def _parse_option_name(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def _build_underlying_lookup(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     lookup: Dict[str, Dict[str, Any]] = {}
+    # Exact trading symbols take precedence over another instrument's long
+    # name, regardless of the order returned by the history endpoint.
     for row in rows:
         symbol = _normalize_text(row.get("lVal18AFC"))
-        name = _normalize_text(row.get("lVal30"))
         if symbol:
             lookup.setdefault(symbol, row)
+    for row in rows:
+        name = _normalize_text(row.get("lVal30"))
         if name:
             lookup.setdefault(name, row)
     return lookup
@@ -294,10 +301,9 @@ def _is_jalali_leap_year(year: int) -> bool:
         leap_j += 1
     if jump - n < 6:
         n = n - jump + ((jump + 4) // 33) * 33
-    leap = ((n + 1) % 33 - 1) % 4
-    if leap == -1:
-        leap = 4
-    return leap == 0
+    # Python's floor modulo already keeps the value in 0..3 (the -1 branch in
+    # the original JavaScript port is unreachable here).
+    return ((n + 1) % 33 - 1) % 4 == 0
 
 
 def _jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple[int, int, int]:

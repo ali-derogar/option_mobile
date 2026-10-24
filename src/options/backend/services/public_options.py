@@ -11,11 +11,13 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from math import isfinite
 import re
+import threading
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
 
-from options.backend.analysis.sentiment import compute_intrinsic_value, compute_moneyness
+from options.backend.analysis.sentiment import compute_intrinsic_value, compute_moneyness, detect_option_type
 from options.backend.config import (
     TSETMC_PUBLIC_CLIENT_TYPE_WORKERS,
     TSETMC_REQUEST_TIMEOUT,
@@ -146,12 +148,29 @@ def fetch_public_client_type_current(ins_code: int) -> Optional[Dict[str, Any]]:
     return normalize_public_client_type({**row, "insCode": ins_code})
 
 
-def fetch_public_client_type_current_many(ins_codes: List[int]) -> List[Dict[str, Any]]:
+def fetch_public_client_type_current_many(
+    ins_codes: List[int],
+    delay: float = 0.0,
+) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     workers = max(1, TSETMC_PUBLIC_CLIENT_TYPE_WORKERS)
+    next_slot = time.monotonic()
+    slot_lock = threading.Lock()
+
+    def paced_fetch(ins_code: int) -> Optional[Dict[str, Any]]:
+        nonlocal next_slot
+        if delay > 0:
+            with slot_lock:
+                now = time.monotonic()
+                wait = next_slot - now
+                next_slot = max(now, next_slot) + delay
+            if wait > 0:
+                time.sleep(wait)
+        return fetch_public_client_type_current(ins_code)
+
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(fetch_public_client_type_current, ins_code): ins_code
+            executor.submit(paced_fetch, ins_code): ins_code
             for ins_code in ins_codes
         }
         for future in as_completed(futures):
@@ -260,6 +279,9 @@ def _merge_public_instrument_info(
 ) -> Dict[str, Any]:
     if not instrument_info:
         return contract
+    returned_code = _to_int(instrument_info.get("insCode", instrument_info.get("InsCode")))
+    if returned_code not in (None, 0, _to_int(contract.get("ins_code"))):
+        return contract
 
     enriched = dict(contract)
     symbol = _first_text(
@@ -282,22 +304,22 @@ def _merge_public_instrument_info(
         parsed = _parse_option_long_name(long_name)
         if parsed.get("strike_price") is not None:
             enriched["strike_price"] = parsed["strike_price"]
-            underlying_price = _first_present_number(
-                enriched.get("underlying_last_price"),
-                enriched.get("underlying_closing_price"),
-            )
-            enriched["moneyness"] = compute_moneyness(
-                enriched.get("option_type"),
-                enriched.get("strike_price"),
-                underlying_price,
-            )
-            enriched["intrinsic_value"] = compute_intrinsic_value(
-                enriched.get("option_type"),
-                enriched.get("strike_price"),
-                underlying_price,
-            )
         if parsed.get("end_date") is not None:
             enriched["end_date"] = parsed["end_date"]
+
+    # The authenticated instrument list can omit the option entirely. Resolve
+    # its type after applying direct metadata, then recalculate related fields
+    # even when the long name does not contain a parseable strike.
+    enriched["option_type"] = detect_option_type(enriched)
+    underlying_price = _first_present_number(
+        enriched.get("underlying_last_price"), enriched.get("underlying_closing_price"),
+    )
+    enriched["moneyness"] = compute_moneyness(
+        enriched["option_type"], enriched.get("strike_price"), underlying_price,
+    )
+    enriched["intrinsic_value"] = compute_intrinsic_value(
+        enriched["option_type"], enriched.get("strike_price"), underlying_price,
+    )
 
     enriched["instrument_id"] = _first_text(
         instrument_info.get("instrumentID"),
@@ -318,7 +340,7 @@ def _merge_public_instrument_info(
 
 def _parse_option_long_name(value: str) -> Dict[str, Any]:
     text = _clean_numeric_text(value)
-    match = re.search(r"-(\d+)-(\d{4}/?\d{2}/?\d{2}|\d{6})", text)
+    match = re.search(r"-(\d+(?:\.\d+)?)-((?:\d{4}|\d{2})/\d{1,2}/\d{1,2}|\d{8}|\d{6})$", text)
     if not match:
         return {}
     return {
@@ -403,10 +425,9 @@ def _is_jalali_leap_year(year: int) -> bool:
         leap_j += 1
     if jump - n < 6:
         n = n - jump + ((jump + 4) // 33) * 33
-    leap = ((n + 1) % 33 - 1) % 4
-    if leap == -1:
-        leap = 4
-    return leap == 0
+    # Python's floor modulo already keeps the value in 0..3 (the -1 branch in
+    # the original JavaScript port is unreachable here).
+    return ((n + 1) % 33 - 1) % 4 == 0
 
 
 def _jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple[int, int, int]:
