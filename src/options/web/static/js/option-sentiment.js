@@ -183,7 +183,7 @@ window.OptionSentiment = (() => {
     warning.classList.toggle("hidden", !warning.textContent);
     element("sentimentSummaries").innerHTML = summaryHtml("market", "کل بازار", data.summaries.market, `${dateLabel} · همه دارایی‌ها و همه سررسیدها`)
       + summaryHtml("underlying", "دارایی پایه", data.summaries.underlying, `${assetName} · همه سررسیدها`)
-      + summaryHtml("selection", "انتخاب فعلی", data.summaries.selection, `${assetName} · ${model.expiry === "all" ? "همه سررسیدها" : fmtDate(model.expiry)}`);
+      + (model.expiry !== "all" ? summaryHtml("selection", "انتخاب فعلی", data.summaries.selection, `${assetName} · ${fmtDate(model.expiry)}`) : "");
     const priceText = `قیمت دارایی پایه${data.spot_price_kind === "closing" ? " (پایانی)" : ""}: ${fmtNum(data.spot_price)} ریال · نزدیک‌ترین قیمت اعمال (ATM): ${fmtNum(data.atm_strike)} ریال`;
     model.root.querySelectorAll(".sentiment-price-label").forEach((el) => { el.textContent = priceText; });
     text("sentimentChangeCoverage", coverage(data.quality.change));
