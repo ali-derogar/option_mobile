@@ -87,6 +87,28 @@ def client_type_payload(**overrides):
     return payload
 
 
+@pytest.mark.parametrize("symbol", ["", "   ", None])
+def test_blank_underlying_symbols_do_not_merge_independent_snapshot_batches(storage, symbol):
+    storage.now = lambda: datetime(2026, 10, 20, 8, tzinfo=timezone.utc)
+    storage.insert_contract_snapshot([contract_payload(underlying_ins_code=None,
+        underlying_symbol=symbol, underlying_short_name="دارایی اول")], "2026-10-20")
+    storage.now = lambda: datetime(2026, 10, 20, 9, tzinfo=timezone.utc)
+    storage.insert_contract_snapshot([contract_payload(ins_code=1002, underlying_ins_code=None,
+        underlying_symbol=symbol, underlying_short_name="دارایی دوم")], "2026-10-20")
+    assert storage.get_contract_snapshot_df("2026-10-20")["ins_code"].tolist() == [1001, 1002]
+
+
+def test_legacy_zero_underlying_codes_do_not_erase_other_assets_snapshots(storage):
+    storage.now = lambda: datetime(2026, 10, 20, 8, tzinfo=timezone.utc)
+    storage.insert_contract_snapshot([contract_payload(underlying_symbol="خودرو")], "2026-10-20")
+    storage.now = lambda: datetime(2026, 10, 20, 9, tzinfo=timezone.utc)
+    storage.insert_contract_snapshot([contract_payload(ins_code=1002, underlying_symbol="اهرم")], "2026-10-20")
+    with storage.session() as session:
+        session.query(ContractSnapshot).update({"underlying_ins_code": 0})
+        session.commit()
+    assert storage.get_contract_snapshot_df("2026-10-20")["ins_code"].tolist() == [1001, 1002]
+
+
 def test_upsert_contracts_inserts_updates_and_skips_missing_ins_code(storage: Storage) -> None:
     assert storage.upsert_contracts(
         [

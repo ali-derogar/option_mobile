@@ -31,6 +31,7 @@ const state = {
   dataRequestId: 0,
   items: [],
   filtered: [],
+  optionFilterOptions: null,
   sortKey: null,
   sortDir: 1,
   selectedInsCode: null,
@@ -559,7 +560,15 @@ function renderSummary(summary) {
   setText("statBuyOi", fmtNum(s.contract_count));
   setText("statSellOi", fmtNum(s.call_count));
   setText("statNaturalFlow", fmtNum(s.put_count));
-  setText("statLegalFlow", fmtNum(s.total_trade_volume));
+  setText("statLegalFlow", fmtNum(aggregateValue(s, "total_trade_volume")));
+  const volumeCoverage = s.coverage?.total_trade_volume;
+  const coverageLabel = document.getElementById("statVolumeCoverage");
+  if (coverageLabel) {
+    coverageLabel.textContent = volumeCoverage?.overflow ? "مقدار خارج از محدوده محاسبه"
+      : volumeCoverage?.complete === false && volumeCoverage.total > 0
+        ? `داده ناقص: ${fmtNum(volumeCoverage.known)} از ${fmtNum(volumeCoverage.total)} قرارداد` : "";
+    coverageLabel.classList.toggle("hidden", !coverageLabel.textContent);
+  }
   setText("lastUpdate", s.last_update
     ? `تاریخ داده: ${state.selectedDate ? fmtDate(state.selectedDate) : "آخرین"} · بروزرسانی: ${fmtDate(s.last_update)}`
     : "بدون داده");
@@ -612,7 +621,7 @@ function updateDatePickerButton() {
     return;
   }
   const { jy, jm, jd } = selectedJalaliDate();
-  button.textContent = `${jd.toLocaleString("fa-IR")} ${PERSIAN_MONTHS[jm - 1]} ${jy.toLocaleString("fa-IR")}`;
+  button.textContent = `${jd.toLocaleString("fa-IR")} ${PERSIAN_MONTHS[jm - 1]} ${jy.toLocaleString("fa-IR", { useGrouping: false })}`;
 }
 
 async function loadCalendarMonth(year, month) {
@@ -663,7 +672,7 @@ async function renderDatePicker() {
   const view = state.calendarView || selectedJalaliDate();
   const requestId = ++state.calendarRequestId;
   const viewKey = `${view.jy}-${view.jm}`;
-  title.textContent = `${PERSIAN_MONTHS[view.jm - 1]} ${view.jy.toLocaleString("fa-IR")}`;
+  title.textContent = `${PERSIAN_MONTHS[view.jm - 1]} ${view.jy.toLocaleString("fa-IR", { useGrouping: false })}`;
   grid.innerHTML = `<span class="date-picker-loading">در حال دریافت تقویم...</span>`;
   foot.textContent = "روزهای تعطیل با رنگ قرمز مشخص شده‌اند";
 
@@ -779,6 +788,8 @@ async function changeSelectedDate(date) {
     analysisVisible: state.analysisVisible,
     items: state.items,
     filtered: state.filtered,
+    filters: { ...state.filters },
+    optionFilterOptions: state.optionFilterOptions,
     statusText: document.getElementById("lastUpdate")?.textContent || "",
   };
   state.selectedDate = date;
@@ -815,6 +826,9 @@ async function changeSelectedDate(date) {
     state.analysisVisible = previous.analysisVisible;
     state.items = previous.items;
     state.filtered = previous.filtered;
+    state.filters = previous.filters;
+    state.optionFilterOptions = previous.optionFilterOptions;
+    populateOptionFilters();
     renderSummary(previous.summary);
     syncDateToUrl();
     updateDatePickerButton();
@@ -859,6 +873,7 @@ async function loadUnderlyingContracts(search = "") {
   state.items = data.items || [];
   applyCachedClientTypes(state.items);
   state.underlying = data.underlying || null;
+  state.optionFilterOptions = data.filter_options || null;
   populateOptionFilters();
   applyFilterAndSort();
   loadClientTypesForRows(state.items);
@@ -967,8 +982,8 @@ function applyFilterAndSort() {
     const key = state.sortKey;
     const dir = state.sortDir;
     state.filtered.sort((a, b) => {
-      const av = state.view === "underlying" && key === "buy_open_positions" ? openInterestValue(a) : a[key];
-      const bv = state.view === "underlying" && key === "buy_open_positions" ? openInterestValue(b) : b[key];
+      const av = state.view === "underlying" && key === "buy_open_positions" ? openInterestValue(a) : aggregateValue(a, key);
+      const bv = state.view === "underlying" && key === "buy_open_positions" ? openInterestValue(b) : aggregateValue(b, key);
       if (av == null && bv == null) return 0;
       if (av == null) return 1;
       if (bv == null) return -1;
@@ -1226,9 +1241,11 @@ function renderTable() {
   if (!state.filtered.length) {
     wrap.classList.add("hidden");
     mobileList.innerHTML = "";
+    const hasFiltersOrSearch = state.items.length > 0 || Boolean(currentSearch());
+    document.getElementById("btnEmptyRefresh")?.classList.toggle("hidden", noSymbols || hasFiltersOrSearch);
     setEmptyMessage(
-      noSymbols ? "هنوز نمادی انتخاب نکرده‌اید" : state.items.length ? "نتیجه‌ای با این فیلترها پیدا نشد" : "داده‌ای موجود نیست",
-      noSymbols ? "از ویرایش نمادها، سهم‌های موردنظر را انتخاب و ذخیره کنید" : state.items.length ? "فیلترها را پاک کنید یا عبارت جستجو را تغییر دهید" : "برای دریافت قراردادهای نمادهای انتخابی، به‌روزرسانی را بزنید"
+      noSymbols ? "هنوز نمادی انتخاب نکرده‌اید" : hasFiltersOrSearch ? "نتیجه‌ای با این فیلترها پیدا نشد" : "داده‌ای موجود نیست",
+      noSymbols ? "از ویرایش نمادها، سهم‌های موردنظر را انتخاب و ذخیره کنید" : hasFiltersOrSearch ? "فیلترها را پاک کنید یا عبارت جستجو را تغییر دهید" : "برای دریافت قراردادهای نمادهای انتخابی، به‌روزرسانی را بزنید"
     );
     empty.classList.remove("hidden");
     head.innerHTML = "";
@@ -1251,7 +1268,7 @@ function renderTable() {
       const selected = getRowKey(row) === state.selectedRowKey ? "selected" : "";
       const cells = config.columns
         .map((c) => {
-          const val = state.view === "underlying" && c.key === "buy_open_positions" ? openInterestValue(row) : row[c.key];
+          const val = state.view === "underlying" && c.key === "buy_open_positions" ? openInterestValue(row) : aggregateValue(row, c.key);
           let cls = "";
           if (c.fmt === "flow" && val != null) {
             cls = val > 0 ? "cell-positive" : val < 0 ? "cell-negative" : "";
@@ -1314,9 +1331,11 @@ function formatMobileValue(value, kind = "text") {
 }
 
 function activityLabel(row) {
-  const volume = numericValue(row.trade_volume);
-  const count = numericValue(row.contract_count);
+  const volume = asFiniteNumber(aggregateValue(row, "trade_volume"));
+  const count = asFiniteNumber(row.contract_count);
+  if (count == null || count < 0) return "تعداد قرارداد نامشخص";
   if (!count) return "بدون قرارداد";
+  if (volume == null || volume < 0) return "حجم معاملات نامشخص";
   if (volume >= 1000000) return "بسیار فعال";
   if (volume >= 100000) return "فعال";
   if (volume > 0) return "کم‌معامله";
@@ -1383,7 +1402,7 @@ function renderMobileCards() {
             mobileMetric("اختیار خرید", row.call_count, "num", "metric-call"),
             mobileMetric("اختیار فروش", row.put_count, "num", "metric-put"),
             mobileMetric("سررسید", row.nearest_end_date, "date"),
-            mobileMetric("حجم", row.trade_volume, "compact", "metric-volume"),
+            mobileMetric("حجم", aggregateValue(row, "trade_volume"), "compact", "metric-volume"),
           ].join("")
         : [
             mobileMetric("اعمال", row.strike_price, "num"),
@@ -1665,7 +1684,7 @@ function renderUnderlyingDetail(row) {
         ${mobileMetric("قرارداد", row.contract_count, "num")}
         ${mobileMetric("اختیار خرید", row.call_count, "num")}
         ${mobileMetric("اختیار فروش", row.put_count, "num")}
-        ${mobileMetric("حجم", row.trade_volume, "num")}
+        ${mobileMetric("حجم", aggregateValue(row, "trade_volume"), "num")}
       </div>
       <button type="button" class="btn btn-primary detail-contracts-button" id="openUnderlyingContracts">
         جزئیات قراردادها
@@ -1677,7 +1696,7 @@ function renderUnderlyingDetail(row) {
       .filter((k) => row[k] != null)
       .map(
         (k) =>
-          `<div class="detail-row"><span>${escapeHtml(DETAIL_LABELS[k] || k)}</span><span>${escapeHtml(formatDetailValue(k, row[k]))}</span></div>`
+          `<div class="detail-row"><span>${escapeHtml(DETAIL_LABELS[k] || k)}</span><span>${escapeHtml(formatDetailValue(k, aggregateValue(row, k)))}</span></div>`
       );
     if (rows.length) {
       html += `<div class="detail-section-title">${escapeHtml(title)}</div><div class="detail-grid">${rows.join("")}</div>`;
@@ -1787,7 +1806,8 @@ function populateOptionFilters() {
     "expiryFilter",
     "همه سررسیدها",
     state.filters.expiry,
-    [...new Set(state.items.map((row) => row.end_date).filter(Boolean).map(String))].sort(),
+    state.optionFilterOptions?.expiries
+      || [...new Set(state.items.map((row) => row.end_date).filter(Boolean).map(String))].sort(),
     fmtDate
   );
   state.filters.expiry = document.getElementById("expiryFilter")?.value || "all";
@@ -1796,8 +1816,9 @@ function populateOptionFilters() {
     "strikeFilter",
     "همه اعمال‌ها",
     state.filters.strike,
-    [...new Set(state.items.map((row) => row.strike_price).filter((value) => value != null).map(String))]
-      .sort((a, b) => Number(a) - Number(b)),
+    state.optionFilterOptions?.strike_prices
+      || [...new Set(state.items.map((row) => row.strike_price).filter((value) => value != null).map(String))]
+        .sort((a, b) => Number(a) - Number(b)),
     fmtNum
   );
   state.filters.strike = document.getElementById("strikeFilter")?.value || "all";
@@ -1855,6 +1876,10 @@ function emptyAnalysisModel() {
 
 function numericValue(value) {
   return asFiniteNumber(value) ?? 0;
+}
+
+function aggregateValue(row, key) {
+  return row?.coverage?.[key]?.complete === false ? null : row?.[key];
 }
 
 function openInterestValue(row) {

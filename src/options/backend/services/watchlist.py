@@ -6,10 +6,12 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from math import isfinite
 from typing import Any
 
 import requests
+
+from options.backend.analysis.numeric import finite_sum
+from options.backend.analysis.option_sentiment import identity, number
 
 from options.backend.config import (
     TSETMC_PUBLIC_CLIENT_TYPE_WORKERS,
@@ -38,25 +40,33 @@ def fetch_underlying_volume(ins_code: int) -> tuple[float | None, str | None]:
     info = payload.get("closingPriceInfo") if isinstance(payload, dict) else None
     if not isinstance(info, dict):
         raise ValueError("missing closing price information")
-    raw = info.get("qTotTran5J")
-    volume = float(raw) if raw is not None and not isinstance(raw, bool) else None
-    if volume is not None and (not isfinite(volume) or volume < 0):
+    returned_code = info.get("insCode")
+    if returned_code not in (None, "", 0, "0") and identity(returned_code) != str(ins_code):
+        raise ValueError("closing price instrument does not match request")
+    volume = number(info.get("qTotTran5J"))
+    if volume is not None and volume < 0:
         volume = None
-    market_date = str(info.get("dEven") or "")
+    market_date = identity(info.get("dEven"))
+    try:
+        if len(market_date) != 8:
+            raise ValueError("invalid market date")
+        datetime.strptime(market_date, "%Y%m%d")
+    except ValueError:
+        market_date = ""
     return volume, market_date or None
 
 
 def build_catalog(contracts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Aggregate each contract once, including call/put pairs repeated upstream."""
     grouped: dict[int, dict[str, Any]] = {}
-    seen: set[int] = set()
-    for contract in contracts:
+    volumes: dict[int, list[float | None]] = {}
+    by_code = {row["ins_code"]: row for row in contracts if row.get("ins_code")}
+    for contract in by_code.values():
         code = contract.get("underlying_ins_code")
         contract_code = contract.get("ins_code")
         symbol = str(contract.get("underlying_symbol") or "").strip()
-        if not code or not contract_code or not symbol or contract_code in seen:
+        if not code or not contract_code or not symbol:
             continue
-        seen.add(contract_code)
         item = grouped.setdefault(code, {
             "ins_code": code,
             "symbol": symbol,
@@ -65,9 +75,11 @@ def build_catalog(contracts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "underlying_trade_volume": None,
             "market_date": None,
         })
-        volume = contract.get("trade_volume")
-        if volume is not None and isfinite(volume) and volume >= 0:
-            item["options_trade_volume"] = (item["options_trade_volume"] or 0) + volume
+        volume = number(contract.get("trade_volume"))
+        volumes.setdefault(code, []).append(volume if volume is not None and volume >= 0 else None)
+    for code, item in grouped.items():
+        values = volumes[code]
+        item["options_trade_volume"] = finite_sum(values) if all(value is not None for value in values) else None
     return list(grouped.values())
 
 
@@ -82,7 +94,7 @@ def fetch_catalog() -> tuple[list[dict[str, Any]], int]:
             row = futures[future]
             try:
                 row["underlying_trade_volume"], row["market_date"] = future.result()
-                if row["underlying_trade_volume"] is None:
+                if row["underlying_trade_volume"] is None or row["options_trade_volume"] is None:
                     failures += 1
             except (requests.RequestException, ValueError, TypeError):
                 failures += 1

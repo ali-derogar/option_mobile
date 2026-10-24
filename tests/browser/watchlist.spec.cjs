@@ -23,8 +23,8 @@ function underlying(symbol = "خودرو") {
   return { underlying_key: "2001", underlying_ins_code: "2001", underlying_symbol: symbol, available: true, data_status: "ready", contract_count: 1 };
 }
 
-async function fixture(t, view = "symbols", { pauseClock = false } = {}) {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+async function fixture(t, view = "symbols", { pauseClock = false, timezoneId = "UTC" } = {}) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, timezoneId });
   t.after(() => context.close());
   const page = await context.newPage();
   if (pauseClock) {
@@ -53,7 +53,7 @@ async function fixture(t, view = "symbols", { pauseClock = false } = {}) {
       case "/api/underlyings/catalog": {
         state.catalogCalls += 1;
         const items = state.catalogHandler ? await state.catalogHandler(state.catalogCalls) : state.items;
-        return json({ items, refresh: { running: false } });
+        return json({ items, fetched_at: state.catalogFetchedAt || null, refresh: { running: false } });
       }
       case "/api/underlyings/catalog/refresh": return json({ status: "started" });
       case "/api/refresh/status":
@@ -372,10 +372,14 @@ test("the date picker remains usable and marks unavailable holiday information",
   await state.open();
   await page.locator("#datePickerButton").click();
   await expect(page.locator("#datePickerFoot")).toContainText("اطلاعات تعطیلات در دسترس نیست");
+  await expect(page.locator("#datePickerTitle")).toContainText("۱۴۰۵");
+  await expect(page.locator("#datePickerTitle")).not.toContainText("٬");
   await expect(page.locator(".date-picker-day")).toHaveCount(30);
   await expect(page.locator('.date-picker-day[data-date="2026-10-21"]')).toBeEnabled();
   await page.locator('.date-picker-day[data-date="2026-10-21"]').click();
   await expect(page).toHaveURL(/date=2026-10-21/);
+  await expect(page.locator("#datePickerButton")).toContainText("۱۴۰۵");
+  await expect(page.locator("#datePickerButton")).not.toContainText("٬");
 });
 
 test("holiday information recovers after a temporary calendar outage without reloading the page", async (t) => {
@@ -420,4 +424,42 @@ test("calendar events from another month cannot mark the current month as a holi
   const day = page.locator('.date-picker-day[data-date="2026-10-21"]');
   await expect(day).not.toHaveClass(/is-holiday/);
   await expect(day).not.toHaveAttribute("title", /رویداد ماه دیگر/);
+});
+
+test("catalogue dates accept compact market dates and always show Tehran capture time", async (t) => {
+  const { page, state } = await fixture(t, "symbols", {timezoneId: "America/New_York"});
+  state.items[0].market_date = "20261021";
+  state.catalogFetchedAt = "2026-10-21T08:00:00Z";
+  await state.open();
+  await expect(page.locator(".symbol-volume small").filter({hasText: "تاریخ معامله"})).toContainText("۱۴۰۵");
+  await expect(page.locator(".symbol-volume small").filter({hasText: "تاریخ معامله"})).not.toContainText("20261021");
+  const expected = await page.evaluate(() => new Date("2026-10-21T08:00:00Z").toLocaleString("fa-IR", {timeZone: "Asia/Tehran"}));
+  await expect(page.locator("#catalogStatus")).toContainText(expected);
+});
+
+test("unknown trading volume is not labelled as no trades", async (t) => {
+  const { page, state } = await fixture(t, "dashboard");
+  await state.open();
+  const result = await page.evaluate(() => ({
+    unknownVolume: activityLabel({contract_count: 2, trade_volume: null}),
+    unknownCount: activityLabel({contract_count: null, trade_volume: 0}),
+    zero: activityLabel({contract_count: 2, trade_volume: 0}),
+  }));
+  assert.match(result.unknownVolume, /نامشخص/);
+  assert.match(result.unknownCount, /نامشخص/);
+  assert.equal(result.zero, "بدون معامله");
+});
+
+
+test("partial aggregate coverage is visible and consistent in summary and cards", async (t) => {
+  const { page, state } = await fixture(t, "dashboard");
+  const coverage = {known: 1, total: 2, complete: false};
+  state.summary = {...state.summary, contract_count: 2, total_trade_volume: 50, coverage: {total_trade_volume: coverage}};
+  state.underlyingsHandler = () => [{...underlying(), contract_count: 2, trade_volume: 50, coverage: {trade_volume: coverage}}];
+  await state.open();
+  await expect(page.locator("#statLegalFlow")).toHaveText("—");
+  await expect(page.locator("#statVolumeCoverage")).toContainText("داده ناقص");
+  await page.locator(".mobile-underlying-card").click();
+  await expect(page.locator(".mobile-underlying-card .metric-volume strong")).toHaveText("—");
+  await expect(page.locator(".mobile-underlying-card .mobile-card-note")).toContainText("نامشخص");
 });

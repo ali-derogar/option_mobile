@@ -76,7 +76,7 @@ def _store_public_option_fallback(
     logger.info("Fetching public option market watch from TSETMC CDN...")
     progress(stage="public_options", message="در حال دریافت آپشن‌ها از CDN رسمی TSETMC")
     rows = fetch_public_option_market_watch()
-    contracts = normalize_public_option_pairs(rows)
+    contracts = list({row["ins_code"]: row for row in normalize_public_option_pairs(rows)}.values())
     if underlying_ins_codes is not None:
         contracts = [c for c in contracts if c.get("underlying_ins_code") in underlying_ins_codes]
     if limit is not None:
@@ -233,6 +233,7 @@ def run_pipeline(
         opt = normalize_option(row)
         if opt["ins_code"]:
             normalized_options.append(opt)
+    normalized_options = list({row["ins_code"]: row for row in normalized_options}.values())
 
     if underlying_ins_codes is not None:
         normalized_options = [o for o in normalized_options if o.get("underlying_ins_code") in underlying_ins_codes]

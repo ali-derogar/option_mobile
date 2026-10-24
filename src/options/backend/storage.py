@@ -785,9 +785,9 @@ class Storage:
             # the latest complete batch for each underlying, rather than
             # discarding other assets whenever one asset is refreshed.
             asset_key = func.coalesce(
-                cast(ContractSnapshot.underlying_ins_code, String),
-                ContractSnapshot.underlying_symbol,
-                ContractSnapshot.underlying_short_name,
+                cast(func.nullif(ContractSnapshot.underlying_ins_code, 0), String),
+                func.nullif(func.trim(ContractSnapshot.underlying_symbol), ""),
+                func.nullif(func.trim(ContractSnapshot.underlying_short_name), ""),
                 cast(ContractSnapshot.ins_code, String),
             )
             latest_batches = (

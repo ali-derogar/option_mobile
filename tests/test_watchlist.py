@@ -152,6 +152,38 @@ def test_underlying_volume_normalizes_public_response(monkeypatch, volume, expec
     assert watchlist.fetch_underlying_volume(2001) == (expected, "20261021")
 
 
+def test_underlying_volume_rejects_an_explicit_different_instrument(monkeypatch):
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.get.return_value.json.return_value = {"closingPriceInfo": {
+        "insCode": "2002", "qTotTran5J": 999, "dEven": 20261021,
+    }}
+    monkeypatch.setattr(watchlist.requests, "Session", lambda: session)
+    with pytest.raises(ValueError):
+        watchlist.fetch_underlying_volume(2001)
+
+
+@pytest.mark.parametrize("market_date", [0, "20260230", "not-a-date"])
+def test_catalog_does_not_publish_invalid_trade_dates(monkeypatch, market_date):
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.get.return_value.json.return_value = {"closingPriceInfo": {
+        "insCode": "0", "qTotTran5J": "۱۲٬۳۴۵", "dEven": market_date,
+    }}
+    monkeypatch.setattr(watchlist.requests, "Session", lambda: session)
+    assert watchlist.fetch_underlying_volume(2001) == (12345, None)
+
+
+def test_catalog_total_volume_requires_every_unique_contract_to_have_a_value():
+    rows = watchlist.build_catalog([contract(), contract(1002, volume=None)])
+    assert rows[0]["options_trade_volume"] is None
+
+
+def test_catalog_uses_the_same_last_duplicate_values_as_the_main_pipeline():
+    rows = watchlist.build_catalog([contract(volume=100), contract(volume=200)])
+    assert rows[0]["options_trade_volume"] == 200
+
+
 def test_failed_catalog_refresh_preserves_previous_data(storage, monkeypatch):
     storage.replace_underlying_catalog([catalog_row()])
     storage.replace_watchlist([2001])

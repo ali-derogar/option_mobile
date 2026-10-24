@@ -35,6 +35,34 @@ class FakeStorage:
         return "2025-06-14"
 
 
+def test_no_date_reads_use_the_latest_snapshot_instead_of_mixing_capture_days(tmp_path):
+    from options.backend.storage import Storage
+    storage = Storage(tmp_path / "dated.db")
+    rows = contracts_df().to_dict(orient="records")
+    rows[1]["trade_volume"] = 999
+    storage.upsert_contracts(rows)
+    storage.insert_contract_snapshot(rows, snapshot_date="2026-10-19")
+    storage.insert_contract_snapshot(rows[:1], snapshot_date="2026-10-20")
+    try:
+        assert get_merged_contracts(storage)["ins_code"].tolist() == [1001]
+        summary = get_summary(storage)
+        assert summary["contract_count"] == 1
+        assert summary["total_trade_volume"] == 100
+    finally:
+        storage.engine.dispose()
+
+
+def test_summary_counts_and_totals_come_from_the_same_contract_read():
+    class ChangingStorage(FakeStorage):
+        reads = 0
+        def get_contracts_df(self, snapshot_date=None):
+            self.reads += 1
+            return self.contracts.iloc[:1].copy() if self.reads == 1 else self.contracts.copy()
+    summary = get_summary(ChangingStorage(contracts_df()))
+    assert summary["contract_count"] == 1
+    assert summary["total_trade_volume"] == 100
+
+
 def contracts_df() -> pd.DataFrame:
     now = datetime(2025, 6, 14, 9, 30, tzinfo=timezone.utc)
     return pd.DataFrame(
@@ -230,6 +258,15 @@ def test_get_underlying_contracts_filters_by_key_and_persian_query() -> None:
     assert {row["ins_code"] for row in result["items"]} == {"1001", "1002"}
 
 
+def test_empty_contract_search_preserves_asset_metadata_and_available_filters():
+    result = get_underlying_contracts(FakeStorage(contracts_df()), "2001", q="no matches")
+    assert result["items"] == []
+    assert result["underlying"]["underlying_symbol"] == "خودرو"
+    assert result["filter_options"] == {
+        "expiries": ["20250630", "20250731"], "strike_prices": ["1000", "1300"],
+    }
+
+
 def test_get_underlying_contracts_serializes_numpy_scalars_in_underlying_metadata() -> None:
     contracts = contracts_df().astype({"underlying_last_price": object, "underlying_closing_price": object})
     contracts.loc[:, "underlying_last_price"] = np.int64(1200)
@@ -391,6 +428,19 @@ def test_api_aggregates_ignore_infinite_numeric_values() -> None:
     assert summary["total_open_interest"] == pytest.approx(22.0)
     json.dumps(underlyings, allow_nan=False)
     json.dumps(summary, allow_nan=False)
+
+
+def test_aggregate_coverage_marks_partial_volume_and_oi_without_losing_known_subtotals():
+    df = contracts_df()
+    df.loc[0, ["trade_volume", "buy_open_positions", "sell_open_positions"]] = None
+    storage = FakeStorage(df)
+    summary = get_summary(storage)
+    item = get_underlyings(storage)["items"][0]
+    assert summary["total_trade_volume"] == 50
+    assert summary["coverage"]["total_trade_volume"] == {"known": 1, "total": 2, "complete": False}
+    assert summary["coverage"]["total_open_interest"]["complete"] is False
+    assert item["coverage"]["trade_volume"]["complete"] is False
+    assert item["coverage"]["trade_value"]["complete"] is True
 
 
 def test_api_aggregates_accept_grouped_numeric_strings() -> None:

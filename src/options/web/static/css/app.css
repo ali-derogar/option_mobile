@@ -733,6 +733,13 @@ select:focus-visible {
   line-height: 1.9;
 }
 
+.stat-coverage {
+  color: var(--amber);
+  font-size: 0.7rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
 .analysis-conclusion {
   grid-column: 1 / -1;
   border: 1px solid var(--border);

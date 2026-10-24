@@ -850,6 +850,50 @@ test("daily conclusions include ATM contracts while the strike buckets keep thei
   await expect(page.locator(".analysis-scope-note")).toContainText("ATM");
 });
 
+
+test("an empty contract search does not clear expiry and strike filters", async (t) => {
+  const { page } = await fixture(t);
+  const rows = [
+    {ins_code: "1", symbol: "ضخود۱", option_type: "call", end_date: 20261209, strike_price: 1000},
+    {ins_code: "2", symbol: "ضخود۲", option_type: "call", end_date: 20270113, strike_price: 1200},
+  ];
+  await page.route("http://options.test/api/underlyings/2001/contracts**", route => {
+    const query = new URL(route.request().url()).searchParams.get("q");
+    return route.fulfill({json: {underlying: {underlying_key: "2001", underlying_symbol: "خودرو"},
+      items: query ? [] : rows, filter_options: {expiries: ["20261209", "20270113"], strike_prices: ["1000", "1200"]}}});
+  });
+  await page.locator("#contextAnalysisButton").click();
+  await page.evaluate(() => reloadActiveData());
+  await page.locator("#expiryFilter").selectOption("20261209");
+  await page.locator("#strikeFilter").selectOption("1000");
+  await page.locator("#searchInput").fill("no matches");
+  await page.clock.fastForward(300);
+  await expect(page.locator("#emptyState")).toBeVisible();
+  await expect(page.locator("#emptyTitle")).toContainText("نتیجه‌ای");
+  await expect(page.locator("#emptyHint")).toContainText("جستجو");
+  await expect(page.locator("#btnEmptyRefresh")).toBeHidden();
+  await expect(page.locator("#expiryFilter")).toHaveValue("20261209");
+  await expect(page.locator("#strikeFilter")).toHaveValue("1000");
+});
+
+
+test("a failed date change restores the original filter selections and choices", async (t) => {
+  const { page } = await fixture(t);
+  await page.locator("#contextAnalysisButton").click();
+  await page.locator("#expiryFilter").selectOption("20261209");
+  await page.locator("#strikeFilter").selectOption("1000");
+  await page.route("http://options.test/api/underlyings/2001/contracts**", route => route.fulfill({json: {
+    underlying: {underlying_key: "2001", underlying_symbol: "خودرو"},
+    items: [{ins_code: "2", symbol: "ضخود۲", end_date: 20270113, strike_price: 1200}],
+    filter_options: {expiries: ["20270113"], strike_prices: ["1200"]},
+  }}));
+  await page.route("http://options.test/api/dates", route => route.fulfill({status: 503, json: {detail: "unavailable"}}));
+  assert.equal(await page.evaluate(() => changeSelectedDate("2026-10-20")), false);
+  await expect(page.locator("#expiryFilter")).toHaveValue("20261209");
+  await expect(page.locator("#strikeFilter")).toHaveValue("1000");
+  await expect(page.locator(".mobile-option-card .mobile-card-head strong")).toHaveText("ضخود");
+});
+
 test("partial client volumes are not presented as a complete bucket total", async (t) => {
   const { page } = await fixture(t);
   const result = await page.evaluate(() => {

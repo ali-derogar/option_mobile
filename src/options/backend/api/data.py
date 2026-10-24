@@ -62,11 +62,12 @@ def get_merged_contracts(
     snapshot_date: Optional[str] = None,
     underlying_ins_codes: Optional[set[int]] = None,
 ) -> pd.DataFrame:
-    contracts = storage.get_contracts_df(snapshot_date=snapshot_date)
+    effective_date = snapshot_date or storage.get_latest_snapshot_date()
+    contracts = storage.get_contracts_df(snapshot_date=effective_date)
     contracts = filter_underlying_codes(contracts, underlying_ins_codes)
     if contracts.empty:
         return contracts
-    client_type = storage.get_latest_client_type_df(snapshot_date=snapshot_date or storage.get_latest_snapshot_date())
+    client_type = storage.get_latest_client_type_df(snapshot_date=effective_date)
     if client_type.empty:
         return contracts
     if "ins_code" not in contracts.columns or "ins_code" not in client_type.columns:
@@ -251,6 +252,22 @@ def _first_present(series: pd.Series) -> Any:
     return None
 
 
+def _aggregate_coverage(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+    """Describe which contracts contribute to each displayed subtotal."""
+    records = df.to_dict(orient="records")
+    coverage = {}
+    for field in ("trade_volume", "trade_value", "buy_open_positions", "sell_open_positions",
+                  "natural_money_flow", "legal_money_flow", "open_interest"):
+        values = [current_open_interest(row) if field == "open_interest" else _to_finite_float(row.get(field))
+                  for row in records]
+        known = [value for value in values if value is not None and ("flow" in field or value >= 0)]
+        overflow = bool(known) and finite_sum(known) is None
+        coverage[field] = {"known": len(known), "total": len(records),
+                           "complete": bool(records) and len(known) == len(records) and not overflow,
+                           **({"overflow": True} if overflow else {})}
+    return coverage
+
+
 def get_underlyings(
     storage: Storage,
     q: Optional[str] = None,
@@ -297,6 +314,7 @@ def get_underlyings(
                 "trade_volume": _sum_or_none(group.get("trade_volume", pd.Series(dtype=float))),
                 "trade_value": _sum_or_none(group.get("trade_value", pd.Series(dtype=float))),
                 "open_interest": _sum_open_interest_frame(group),
+                "coverage": _aggregate_coverage(group),
                 "natural_money_flow": _sum_or_none(group.get("natural_money_flow", pd.Series(dtype=float))),
                 "legal_money_flow": _sum_or_none(group.get("legal_money_flow", pd.Series(dtype=float))),
                 "updated_at": _serialize_value(_first_present(group.get("updated_at", pd.Series(dtype=object)))),
@@ -315,7 +333,8 @@ def get_underlying_contracts(
 ) -> Dict[str, Any]:
     merged = get_merged_contracts(storage, snapshot_date=snapshot_date)
     if merged.empty:
-        return {"items": [], "total": 0, "underlying": None}
+        return {"items": [], "total": 0, "underlying": None,
+                "filter_options": {"expiries": [], "strike_prices": []}}
 
     df = _attach_underlying_keys(merged)
     target_key = _lookup_underlying_key(underlying_key)
@@ -328,8 +347,14 @@ def get_underlying_contracts(
         if not symbol_matches.empty:
             target_key = str(symbol_matches.iloc[0]["underlying_key"])
     df = df[df["underlying_key"] == target_key]
-    if q:
-        df = df[_text_mask(df, ("symbol", "short_name", "long_name"), q)]
+
+    def filter_values(column: str, *, positive: bool = False) -> list[str]:
+        values = [_to_finite_float(value) for value in df.get(column, pd.Series(dtype=object))]
+        return [_code_to_string(value) for value in sorted({value for value in values
+                if value is not None and (value > 0 if positive else value >= 0)})]
+
+    filter_options = {"expiries": filter_values("end_date", positive=True),
+                      "strike_prices": filter_values("strike_price")}
 
     underlying = None
     if not df.empty:
@@ -348,7 +373,10 @@ def get_underlying_contracts(
                 _first_present(df.get("underlying_closing_price", pd.Series(dtype=object)))
             ),
         }
-    return {"items": _df_to_records(df), "total": len(df), "underlying": underlying}
+    if q:
+        df = df[_text_mask(df, ("symbol", "short_name", "long_name"), q)]
+    return {"items": _df_to_records(df), "total": len(df), "underlying": underlying,
+            "filter_options": filter_options}
 
 
 def _lookup_underlying_key(value: Any) -> str:
@@ -383,7 +411,7 @@ def get_summary(
     underlying_ins_codes: Optional[set[int]] = None,
 ) -> Dict[str, Any]:
     merged = get_merged_contracts(storage, snapshot_date=snapshot_date, underlying_ins_codes=underlying_ins_codes)
-    contracts = filter_underlying_codes(storage.get_contracts_df(snapshot_date=snapshot_date), underlying_ins_codes)
+    contracts = merged
     last_update = None
     if not contracts.empty and "updated_at" in contracts.columns:
         last_update = contracts["updated_at"].max()
@@ -401,6 +429,12 @@ def get_summary(
         "total_sell_oi": None,
         "total_open_interest": None,
     }
+    coverage = _aggregate_coverage(merged)
+    summary["coverage"] = {f"total_{target}": coverage[source] for target, source in (
+        ("trade_volume", "trade_volume"), ("trade_value", "trade_value"),
+        ("natural_flow", "natural_money_flow"), ("legal_flow", "legal_money_flow"),
+        ("buy_oi", "buy_open_positions"), ("sell_oi", "sell_open_positions"), ("open_interest", "open_interest"),
+    )}
     if not merged.empty:
         if "natural_money_flow" in merged.columns:
             summary["total_natural_flow"] = _sum_or_none(merged["natural_money_flow"])

@@ -5,9 +5,40 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from options.backend.client import TsetmcAPIError
 from options.backend.pipeline import run_pipeline
 from options.backend.storage import Storage
+
+
+@pytest.mark.parametrize("public", [True, False])
+def test_duplicate_contracts_do_not_consume_the_refresh_limit(tmp_path, monkeypatch, public):
+    from options.backend import pipeline
+    storage = Storage(tmp_path / "deduplicated.db")
+    monkeypatch.setattr(pipeline, "Storage", lambda: storage)
+    monkeypatch.setattr(pipeline, "_fetch_direct_instrument_info", lambda codes: {})
+    if public:
+        monkeypatch.setattr(pipeline, "validate_credentials", MagicMock(side_effect=ValueError("not configured")))
+        monkeypatch.setattr(pipeline, "fetch_public_option_market_watch", lambda: [
+            {"insCode_C": code, "oP_C": oi, "uaInsCode": 2001, "endDate": 20261209}
+            for code, oi in [(101, 1), (101, 2), (102, 3)]
+        ])
+    else:
+        monkeypatch.setattr(pipeline, "validate_credentials", lambda: None)
+        client = MagicMock()
+        client.call.side_effect = lambda endpoint, body=None: [
+            {"InsCode": code, "BuyOP": oi, "UAInsCode": 2001, "EndDate": 20261209}
+            for code, oi in [(101, 1), (101, 2), (102, 3)]
+        ] if endpoint == "option" else []
+        monkeypatch.setattr(pipeline, "TsetmcClient", lambda: client)
+    try:
+        result = pipeline.run_pipeline(limit=2, skip_client_type=True, delay_between_calls=0)
+        assert storage.get_contracts_df()["ins_code"].tolist() == [101, 102]
+        assert storage.get_contracts_df().iloc[0]["buy_open_positions"] == 2
+        assert result["options"] == result["open_interest"] == 2
+    finally:
+        storage.engine.dispose()
 
 
 def test_pipeline_with_mock_api() -> None:

@@ -10,9 +10,14 @@
   const el = (id) => document.getElementById(id);
   const number = (value) => value == null ? "—" : value.toLocaleString("fa-IR", { maximumFractionDigits: 0 });
   const persianDate = (value) => {
-    const parsed = new Date(`${value}T00:00:00`);
-    return Number.isNaN(parsed.getTime()) ? String(value)
-      : new Intl.DateTimeFormat("fa-IR-u-ca-persian", { dateStyle: "long" }).format(parsed);
+    const normalized = String(value ?? "").trim()
+      .replace(/[۰-۹٠-٩]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩".indexOf(digit) % 10));
+    const match = normalized.match(/^(\d{4})-?(\d{2})-?(\d{2})$/);
+    if (!match) return "نامشخص";
+    const [year, month, day] = match.slice(1).map(Number);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) return "نامشخص";
+    return new Intl.DateTimeFormat("fa-IR-u-ca-persian", { dateStyle: "long", timeZone: "UTC" }).format(parsed);
   };
   const normalize = (value) => String(value || "").replace(/ي/g, "ی").replace(/ك/g, "ک").replace(/[\u200c\u064b-\u065f\s]/g, "").toLowerCase();
   const dirty = () => state.selected.size !== state.saved.size || [...state.selected].some((code) => !state.saved.has(code));
@@ -80,9 +85,9 @@
         const value = document.createElement("strong");
         value.textContent = number(row[field]);
         volume.append(heading, value);
-        if (field === "underlying_trade_volume" && row.market_date) {
+        if (field === "underlying_trade_volume") {
           const marketDate = document.createElement("small");
-          marketDate.textContent = `تاریخ معامله: ${persianDate(row.market_date)}`;
+          marketDate.textContent = `تاریخ معامله: ${row.market_date ? persianDate(row.market_date) : "نامشخص"}`;
           volume.append(marketDate);
         }
         label.append(volume);
@@ -115,7 +120,7 @@
     state.catalogSignature = signature;
     state.refreshing = Boolean(catalog.refresh?.running);
     state.marketRefreshing = Boolean(refresh.running);
-    const fetched = catalog.fetched_at ? new Date(catalog.fetched_at).toLocaleString("fa-IR") : "";
+    const fetched = catalog.fetched_at ? new Date(catalog.fetched_at).toLocaleString("fa-IR", { timeZone: "Asia/Tehran" }) : "";
     message("catalogStatus", state.refreshing ? "در حال دریافت نمادها و حجم معاملات..."
       : catalog.refresh?.last_error || `${fetched ? `آخرین دریافت فهرست: ${fetched}` : "فهرست هنوز دریافت نشده است."}${catalog.refresh?.volume_failures ? " · حجم برخی دارایی‌ها در دسترس نیست." : ""}`, Boolean(catalog.refresh?.last_error));
     if (changed) render();
