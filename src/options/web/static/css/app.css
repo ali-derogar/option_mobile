@@ -3386,6 +3386,55 @@ body[data-view="underlying"] #strikeFilter {
   font-weight: 400;
 }
 
+.sentiment-chart-explanation {
+  margin-top: 12px;
+}
+
+.sentiment-help-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 13px;
+  text-align: start;
+  cursor: pointer;
+  transition: background var(--motion), border-color var(--motion);
+}
+
+.sentiment-help-toggle[aria-expanded="true"] {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.sentiment-help-chevron {
+  flex-shrink: 0;
+  transition: transform var(--motion);
+}
+
+.sentiment-help-toggle[aria-expanded="true"] .sentiment-help-chevron {
+  transform: rotate(180deg);
+}
+
+.sentiment-help-copy {
+  margin: 8px 0 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 2;
+  overflow-wrap: anywhere;
+}
+
 .sentiment-chart-details {
   margin-top: 12px;
   border-top: 1px solid var(--border);

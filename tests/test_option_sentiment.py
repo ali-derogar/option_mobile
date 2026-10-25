@@ -820,3 +820,44 @@ def test_failed_legacy_history_repair_preserves_the_previous_snapshot(storage, m
     job.run(storage, DAY)
     assert job.status()['last_error']
     assert storage.get_option_sentiment_snapshot(DAY) == original
+
+
+def test_inferred_non_trading_zeros_do_not_count_as_observed_cash_for_active_contracts():
+    rows = [contract(str(i + 1), strike_price=1000 + i, trade_volume=0 if i < 29 else 30,
+                     trade_value=0 if i < 29 else 100_000_000) for i in range(72)]
+    zero_codes = {str(i + 1) for i in range(29)}
+    value = analyze_participant_flow(rows, [], known_zero_codes=zero_codes)['audiences']['natural']['value']
+    assert value['coverage']['known'] == 29
+    assert value['coverage']['total'] == 72
+    assert value['traded_coverage']['known'] == 0
+    assert value['traded_coverage']['total'] == 43
+    assert not value['traded_coverage']['complete']
+
+
+@pytest.mark.parametrize('cash_source', ['local', 'same_day_history'])
+def test_volume_only_live_data_does_not_hide_valid_same_day_cash(storage, monkeypatch, cash_source):
+    class Clock:
+        @staticmethod
+        def now(tz):
+            return datetime(2026, 10, 21, 12, tzinfo=tz)
+    monkeypatch.setattr(service, 'datetime', Clock)
+    monkeypatch.setattr(service, 'fetch_market_date', lambda: DAY)
+    row = contract(trade_volume=30, trade_date=DAY)
+    code = int(row['ins_code'])
+    storage.replace_option_sentiment_snapshot(DAY, [row], STAMP, 'public_cdn')
+    live = {'ins_code': code, 'natural_buy_volume': 20, 'natural_sell_volume': 10,
+            'legal_buy_volume': 10, 'legal_sell_volume': 20}
+    cash = {**live, 'rec_date': 20261021, 'natural_buy_value': 80_000_000, 'natural_sell_value': 30_000_000,
+            'legal_buy_value': 20_000_000, 'legal_sell_value': 70_000_000}
+    if cash_source == 'local':
+        storage.insert_client_type_stats([cash])
+    history = MagicMock(return_value=[cash] if cash_source == 'same_day_history' else [])
+    monkeypatch.setattr(service, 'fetch_public_client_type_current_many', lambda *a, **k: [live])
+    monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many', history)
+    result = service.get_flow_payload(storage, '2001', 'all', DAY)['audiences']['natural']
+    assert result['value']['strikes'][0]['call_flow'] == 50_000_000
+    assert result['volume']['strikes'][0]['call_flow'] == 10
+    if cash_source == 'local':
+        history.assert_not_called()
+    else:
+        history.assert_called_once_with([code], '20261021', timeout=8)

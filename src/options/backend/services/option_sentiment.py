@@ -33,6 +33,10 @@ NUMERIC_FIELDS = (
     "strike_price", "underlying_last_price", "underlying_closing_price", "buy_open_positions",
     "sell_open_positions", "yesterday_open_positions", "trade_value", "trade_volume", "contract_size",
 )
+PARTICIPANT_FIELDS = {
+    measure: tuple(f"{group}_{side}_{measure}" for side in ("buy", "sell") for group in ("natural", "legal"))
+    for measure in ("value", "volume")
+}
 
 
 def fetch_market_date() -> str:
@@ -206,7 +210,7 @@ def _align_participant_cash(participant: dict, contract: dict) -> dict:
     when both buy and sell totals independently reconcile to market turnover;
     never estimate a group's transaction value using the last price.
     """
-    fields = [f"{group}_{side}_value" for side in ("buy", "sell") for group in ("natural", "legal")]
+    fields = PARTICIPANT_FIELDS["value"]
     values = [number(participant.get(field)) for field in fields]
     expected = number(contract.get("trade_value"))
     size = number(contract.get("contract_size"))
@@ -222,7 +226,7 @@ def _align_participant_cash(participant: dict, contract: dict) -> dict:
 
 def _align_participant_volume(participant: dict, contract: dict) -> dict:
     """Only use group volumes that reconcile to this market observation."""
-    fields = [f"{group}_{side}_volume" for side in ("buy", "sell") for group in ("natural", "legal")]
+    fields = PARTICIPANT_FIELDS["volume"]
     values = [number(participant.get(field)) for field in fields]
     expected = number(contract.get("trade_volume"))
     matched = False
@@ -232,6 +236,18 @@ def _align_participant_volume(participant: dict, contract: dict) -> dict:
     return {**participant, **{field: value if matched else None for field, value in zip(fields, values)}}
 
 
+def _merge_participant_data(previous: dict, incoming: dict, contract: dict) -> dict:
+    previous = _align_participant_volume(_align_participant_cash(previous, contract), contract)
+    incoming = _align_participant_volume(_align_participant_cash(incoming, contract), contract)
+    result = {**previous, **incoming}
+    for fields in PARTICIPANT_FIELDS.values():
+        # Keep all buy/sell and natural/legal values of a measure together.
+        # A live volume-only row must not erase valid same-day cash records.
+        source = incoming if all(incoming[field] is not None for field in fields) else previous
+        result.update({field: source[field] for field in fields})
+    return result
+
+
 def get_flow_payload(storage: Storage, key: str | None, expiry: str, data_date: str) -> dict:
     snapshot = storage.get_option_sentiment_snapshot(data_date)
     contracts = snapshot["contracts"] if snapshot else storage.get_contract_snapshot_df(data_date).to_dict(orient="records")
@@ -239,15 +255,24 @@ def get_flow_payload(storage: Storage, key: str | None, expiry: str, data_date: 
     rows = [r for r in scope["selection"] if r["option_type"] in {"call", "put"}
             and (number(r.get("strike_price")) or 0) > 0]
     codes = {identity(r["ins_code"]) for r in rows}
+    by_code = {identity(r["ins_code"]): r for r in rows}
     local = storage.get_latest_client_type_df(snapshot_date=data_date)
-    participants = {identity(r.get("ins_code")): r for r in local.to_dict(orient="records")
+    participants = {identity(r.get("ins_code")): _merge_participant_data({}, r, by_code[identity(r.get("ins_code"))]) for r in local.to_dict(orient="records")
                     if identity(r.get("ins_code")) in codes}
+    api_date = data_date.replace("-", "")
+
+    def merge_remote(remote):
+        for row in remote:
+            code = identity(row.get("ins_code"))
+            if code in codes and identity(row.get("rec_date")) == api_date:
+                participants[code] = _merge_participant_data(participants.get(code, {}), row, by_code[code])
     # Use the explicit trading date even in latest mode. An undated current
     # response could otherwise put today's flows beside yesterday's market.
     known_zero_codes = {identity(r["ins_code"]) for r in rows
                         if (r.get("trade_date") == data_date or not snapshot or snapshot.get("source") == "public_history")
                         and number(r.get("trade_volume")) == 0 and number(r.get("trade_value")) == 0}
     needed = sorted({int(r["ins_code"]) for r in rows if identity(r["ins_code"]) not in known_zero_codes})
+    current = False
     if needed:
         try:
             current = data_date == datetime.now(MARKET_TZ).date().isoformat() and fetch_market_date() == data_date
@@ -255,6 +280,7 @@ def get_flow_payload(storage: Storage, key: str | None, expiry: str, data_date: 
                 remote = fetch_public_client_type_current_many(needed, timeout=8)
                 if fetch_market_date() != data_date:
                     remote = []
+                    current = False
                 volumes = {identity(r['ins_code']): number(r.get('trade_volume')) for r in rows}
                 validated = []
                 for row in remote:
@@ -272,17 +298,18 @@ def get_flow_payload(storage: Storage, key: str | None, expiry: str, data_date: 
                 remote = validated
             else:
                 remote = fetch_public_client_type_for_date_many(needed, data_date.replace("-", ""), timeout=8)
-            for row in remote:
-                code = identity(row.get("ins_code"))
-                if code in codes and identity(row.get("rec_date")) == data_date.replace("-", ""):
-                    # Keep buy and sell values from the same observation.
-                    participants[code] = row
+            merge_remote(remote)
         except Exception:
             logger.info("Participant flow fetch failed; using same-date local records", exc_info=True)
-    by_code = {identity(r["ins_code"]): r for r in rows}
-    participants = [_align_participant_volume(_align_participant_cash(row, by_code[code]), by_code[code])
-                    for code, row in participants.items()]
-    result = analyze_participant_flow(rows, participants, known_zero_codes=known_zero_codes)
+        if current:
+            cash_needed = [code for code in needed if any(participants.get(str(code), {}).get(field) is None
+                                                        for field in PARTICIPANT_FIELDS["value"])]
+            if cash_needed:
+                try:
+                    merge_remote(fetch_public_client_type_for_date_many(cash_needed, api_date, timeout=8))
+                except Exception:
+                    logger.info("Same-date participant cash unavailable; keeping verified values", exc_info=True)
+    result = analyze_participant_flow(rows, list(participants.values()), known_zero_codes=known_zero_codes)
     if snapshot and not snapshot.get("market_complete", True):
         for audience in result["audiences"].values():
             for measure in audience.values():

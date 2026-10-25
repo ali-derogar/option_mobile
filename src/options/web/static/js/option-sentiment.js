@@ -35,6 +35,17 @@ window.OptionSentiment = (() => {
     </div>`;
   }
 
+  function chartExplanation(suffix, title, copy) {
+    const id = `sentiment${suffix}Explanation`;
+    return `<div class="sentiment-chart-explanation">
+      <button type="button" class="sentiment-help-toggle" data-chart-help aria-expanded="false" aria-controls="${id}" aria-label="این نمودار چه کمکی می‌کند؟ ${title}">
+        <span>این نمودار چه کمکی می‌کند؟</span>
+        <svg class="sentiment-help-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <p class="sentiment-help-copy" id="${id}" hidden>${escapeHtml(copy)}</p>
+    </div>`;
+  }
+
   async function requestApi(path, options = {}, timeout = 15000, controller = new AbortController()) {
     model.controllers.add(controller);
     const timer = setTimeout(() => controller.abort(), timeout);
@@ -120,6 +131,7 @@ window.OptionSentiment = (() => {
         <details class="sentiment-chart-details"><summary>بیشترین موقعیت‌ها</summary>
           <div class="sentiment-peaks" id="sentimentPeaks"></div>
         </details>
+        ${chartExplanation("Oi", "موقعیت باز", "کمک می‌کند قیمت‌های اعمالی را پیدا کنید که بیشترین موقعیت باز کال یا پوت را دارند. ستون بلندتر یعنی قراردادهای بسته‌نشده بیشتر؛ این عدد به‌تنهایی جهت قیمت را مشخص نمی‌کند.")}
       </section>
       <section class="sentiment-chart-panel" aria-labelledby="sentimentChangeTitle">
         <h3 id="sentimentChangeTitle">تغییر موقعیت باز</h3>
@@ -131,6 +143,7 @@ window.OptionSentiment = (() => {
           <div class="sentiment-chart-wrap"><canvas id="sentimentChangeChart" role="img" aria-label="تغییر موقعیت باز نسبت به روز معاملاتی قبل"></canvas></div>
         </div><div class="sentiment-y-axis" id="sentimentChangeAxis" aria-hidden="true"></div></div>
         ${chartFooter("Change")}
+        ${chartExplanation("Change", "تغییر موقعیت باز", "کمک می‌کند تغییر تمرکز موقعیت‌ها را نسبت به روز معاملاتی قبل دنبال کنید. ستون مثبت یعنی تعداد قراردادهای باز بیشتر شده و ستون منفی یعنی کمتر شده است.")}
       </section>
       <section class="sentiment-chart-panel" aria-labelledby="sentimentFlowTitle">
         <h3 id="sentimentFlowTitle">خالص خرید</h3>
@@ -147,6 +160,7 @@ window.OptionSentiment = (() => {
           <div class="sentiment-chart-wrap"><canvas id="sentimentFlowChart" role="img" aria-label="خالص خرید کال و پوت بر اساس قیمت اعمال"></canvas></div>
         </div><div class="sentiment-y-axis" id="sentimentFlowAxis" aria-hidden="true"></div></div>
         ${chartFooter("Flow")}
+        ${chartExplanation("Flow", "خالص خرید", "نشان می‌دهد حقیقی‌ها یا حقوقی‌ها در کدام قیمت‌های اعمال خریدار یا فروشنده خالص بوده‌اند. مثبت یعنی خرید بیشتر و منفی یعنی فروش بیشتر؛ مقیاس را از «قرارداد» یا «تومان» انتخاب کنید.")}
       </section>
       <section class="sentiment-chart-panel" aria-labelledby="sentimentHeatmapTitle">
         <div class="sentiment-panel-heading">
@@ -157,11 +171,19 @@ window.OptionSentiment = (() => {
         <div class="sentiment-heatmap-scroll" id="sentimentHeatmap" tabindex="0" role="region" aria-label="ارزش معاملات بر اساس قیمت اعمال و سررسید"></div>
         <div class="sentiment-heatmap-scale" aria-label="شدت فعالیت از کم به زیاد"><span>کم</span>${[0, 1, 2, 3, 4].map(level => `<i data-heat-level="${level}"></i>`).join("")}<span>زیاد</span></div>
         <p class="sentiment-heatmap-detail" id="sentimentHeatmapDetail" role="status" aria-live="polite"></p>
+        ${chartExplanation("Heatmap", "نقشه فعالیت معاملات", "کمک می‌کند بفهمید ارزش معاملات بیشتر روی کدام قیمت اعمال و سررسید متمرکز شده است. خانه پررنگ‌تر یعنی ارزش بیشتر؛ با لمس آن، مبلغ دقیق را می‌بینید.")}
       </section>`;
     element("sentimentUnderlying").addEventListener("change", (event) => { model.key = event.target.value; load(); });
     element("sentimentExpiry").addEventListener("change", (event) => { model.expiry = event.target.value; load(); });
     element("sentimentDate").addEventListener("change", (event) => { model.date = event.target.value; load(); });
     element("sentimentRefresh").addEventListener("click", refresh);
+    model.root.querySelectorAll("[data-chart-help]").forEach(button => {
+      button.addEventListener("click", () => {
+        const expanded = button.getAttribute("aria-expanded") === "true";
+        button.setAttribute("aria-expanded", String(!expanded));
+        element(button.getAttribute("aria-controls")).hidden = expanded;
+      });
+    });
     element("sentimentFlowAudience").value = model.flowAudience;
     element("sentimentFlowAudience").addEventListener("change", (event) => {
       model.flowAudience = event.target.value;

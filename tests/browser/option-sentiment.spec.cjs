@@ -130,6 +130,49 @@ function flowPayload(params) {
     audiences: { natural: measures(1), legal: measures(-1) } };
 }
 
+test("each sentiment chart has a concise independent explanation usable by touch and keyboard", async (t) => {
+  const {page, open} = await fixture(t, 320);
+  await open();
+  const help = page.locator('[data-chart-help]');
+  await expect(help).toHaveCount(4);
+  const expected = [
+    ['Oi', 'جهت قیمت را مشخص نمی‌کند'],
+    ['Change', 'روز معاملاتی قبل'],
+    ['Flow', 'خریدار یا فروشنده خالص'],
+    ['Heatmap', 'ارزش معاملات بیشتر'],
+  ];
+  for (const [suffix, meaning] of expected) {
+    const copy = page.locator(`#sentiment${suffix}Explanation`);
+    const button = page.locator(`[aria-controls="sentiment${suffix}Explanation"]`);
+    await expect(copy).toBeHidden();
+    await expect(button).toHaveAttribute('aria-expanded', 'false');
+    await button.tap();
+    await expect(button).toHaveAttribute('aria-expanded', 'true');
+    await expect(copy).toBeVisible();
+    await expect(copy).toContainText(meaning);
+    assert.ok((await copy.textContent()).trim().split(/\s+/).length <= 40);
+  }
+  const first = help.first();
+  await first.focus();
+  await page.keyboard.press('Space');
+  await expect(page.locator('#sentimentOiExplanation')).toBeHidden();
+  await expect(page.locator('#sentimentFlowExplanation')).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#sentimentOiExplanation')).toBeVisible();
+  await page.locator('#sentimentExpiry').selectOption('20270113');
+  await expect(page.locator('#sentimentStatus')).toHaveText('تحلیل آماده است.');
+  await expect(page.locator('.sentiment-help-copy:visible')).toHaveCount(4);
+  for (const width of [320, 360, 390, 430, 1280]) {
+    await page.setViewportSize({width, height: 844});
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate(value => applyTheme(value), theme);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      assert.ok((await help.evaluateAll(els => els.map(el => el.getBoundingClientRect().height))).every(height => height >= 48));
+      await expect(page.locator('.sentiment-help-copy:visible')).toHaveCount(4);
+    }
+  }
+});
+
 test("participant flow from another snapshot of the same trading day is rejected", async (t) => {
   const {page, state, open} = await fixture(t);
   const newerStamp = '2026-10-22T08:05:00+00:00';
@@ -241,6 +284,41 @@ test("participant flow missing and partial values stay absent while confirmed ze
   await page.locator('#sentimentFlowAudience').selectOption('legal');
   await expect(page.locator('#sentimentFlowEmpty')).toContainText('داده کامل خرید و فروش');
   assert.equal(await page.evaluate(() => Chart.getChart('sentimentFlowChart') == null), true);
+});
+
+test("Toman mode reports unavailable cash instead of treating 29 inactive contracts as a zero flow", async (t) => {
+  const {page, state, open} = await fixture(t, 320);
+  let published = false;
+  state.flowHandler = params => {
+    const result = flowPayload(params);
+    if (!published) {
+      for (const audience of Object.values(result.audiences)) {
+        audience.value.coverage = metric(null, 29, 72);
+        audience.value.traded_coverage = metric(null, 0, 43);
+        audience.value.strikes = [
+          {strike_price: 1000, call_flow: 0, put_flow: 0, coverage: {call_flow: metric(0, 29, 29), put_flow: metric(0, 0, 0)}},
+          {strike_price: 1200, call_flow: null, put_flow: null, coverage: {call_flow: metric(null, 0, 22), put_flow: metric(null, 0, 21)}},
+        ];
+      }
+    }
+    return result;
+  };
+  await open();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  await page.locator('#sentimentFlowMeasure').selectOption('value');
+  await expect(page.locator('#sentimentFlowEmpty')).toContainText('ارزش خرید و فروش');
+  await expect(page.locator('#sentimentFlowEmpty')).not.toContainText('صفر است');
+  await expect(page.locator('#sentimentFlowStatus')).toBeEmpty();
+  await expect(page.locator('#sentimentFlowRetry')).toBeVisible();
+  await page.locator('#sentimentFlowShowVolume').click();
+  await expect(page.locator('#sentimentFlowMeasure')).toHaveValue('volume');
+  assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [20, -10]);
+  await page.locator('#sentimentFlowMeasure').selectOption('value');
+  published = true;
+  await page.locator('#sentimentFlowRetry').click();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [2000000, -1000000]);
+  await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
 });
 
 test("activity heatmap filters types and expiries, exposes exact values and preserves missing cells", async (t) => {

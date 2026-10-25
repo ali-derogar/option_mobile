@@ -169,6 +169,10 @@ def analyze_participant_flow(rows: list[dict], participants: list[dict], *, know
         if row["option_type"] in {"call", "put"} and strike is not None and strike > 0:
             groups.setdefault(strike, []).append(row)
 
+    def known_zero(row):
+        return ((known_zero_codes is None or identity(row.get("ins_code")) in known_zero_codes)
+                and number(row.get("trade_volume")) == 0 and number(row.get("trade_value")) == 0)
+
     def net(row, audience, measure):
         participant = by_code.get(identity(row.get("ins_code")), {})
         buy, sell = (number(participant.get(f"{audience}_{side}_{measure}")) for side in ("buy", "sell"))
@@ -176,7 +180,7 @@ def analyze_participant_flow(rows: list[dict], participants: list[dict], *, know
             return finite_sum([buy, -sell])
         # A confirmed non-trading contract has zero flow; missing trade data
         # or a zero price alone cannot establish that no trade occurred.
-        if (known_zero_codes is None or identity(row.get("ins_code")) in known_zero_codes) and number(row.get("trade_volume")) == 0 and number(row.get("trade_value")) == 0:
+        if known_zero(row):
             return 0.0
         return None
 
@@ -186,6 +190,7 @@ def analyze_participant_flow(rows: list[dict], participants: list[dict], *, know
             info["value"] = None
         return info
 
+    traded_rows = [r for group in groups.values() for r in group if not known_zero(r)]
     audiences = {}
     for audience in ("natural", "legal"):
         audiences[audience] = {}
@@ -199,7 +204,8 @@ def analyze_participant_flow(rows: list[dict], participants: list[dict], *, know
                     item["coverage"][f"{side}_flow"] = info
                 strikes.append(item)
             audiences[audience][measure] = {"strikes": strikes, "coverage": complete_metric([
-                net(r, audience, measure) for group in groups.values() for r in group])}
+                net(r, audience, measure) for group in groups.values() for r in group]),
+                "traded_coverage": complete_metric([net(r, audience, measure) for r in traded_rows])}
     return {"audiences": audiences}
 
 
