@@ -1,0 +1,138 @@
+{
+  "source_url": "https://cdn.tsetmc.com/api/Instrument/GetInstrumentOptionMarketWatch/0",
+  "received_at": "2026-10-25T07:39:51.840236+00:00",
+  "market_date": "2026-10-25",
+  "rows": [
+    {
+      "uaInsCode": "17914401175772326",
+      "lval30_UA": "اهرم",
+      "strikePrice": 30000,
+      "endDate": "20261118",
+      "contractSize": 1000,
+      "pDrCotVal_UA": 70022,
+      "pClosing_UA": 70202,
+      "insCode_C": "56954662775448971",
+      "lVal18AFC_C": "ضهرم8024",
+      "lVal30_C": "اختيارخ اهرم-30000-1405/08/27",
+      "oP_C": 7654,
+      "yesterdayOP_C": 7668,
+      "qTotCap_C": 11297741000.0,
+      "qTotTran5J_C": 272,
+      "insCode_P": "65838086018848080",
+      "lVal18AFC_P": "طهرم8024",
+      "lVal30_P": "اختيارف اهرم-30000-1405/08/27",
+      "oP_P": 23971,
+      "yesterdayOP_P": 22447,
+      "qTotCap_P": 124008000.0,
+      "qTotTran5J_P": 3360
+    },
+    {
+      "uaInsCode": "17914401175772326",
+      "lval30_UA": "اهرم",
+      "strikePrice": 34000,
+      "endDate": "20261118",
+      "contractSize": 1000,
+      "pDrCotVal_UA": 70022,
+      "pClosing_UA": 70202,
+      "insCode_C": "18665926887967158",
+      "lVal18AFC_C": "ضهرم8025",
+      "lVal30_C": "اختيارخ اهرم-34000-1405/08/27",
+      "oP_C": 2271,
+      "yesterdayOP_C": 2270,
+      "qTotCap_C": 992973000.0,
+      "qTotTran5J_C": 25,
+      "insCode_P": "8284359812363652",
+      "lVal18AFC_P": "طهرم8025",
+      "lVal30_P": "اختيارف اهرم-34000-1405/08/27",
+      "oP_P": 3693,
+      "yesterdayOP_P": 3601,
+      "qTotCap_P": 13188000.0,
+      "qTotTran5J_P": 157
+    },
+    {
+      "uaInsCode": "17914401175772326",
+      "lval30_UA": "اهرم",
+      "strikePrice": 46000,
+      "endDate": "20261216",
+      "contractSize": 1000,
+      "pDrCotVal_UA": 70022,
+      "pClosing_UA": 70202,
+      "insCode_C": "70160331666811226",
+      "lVal18AFC_C": "ضهرم9024",
+      "lVal30_C": "اختيارخ اهرم-46000-1405/09/25",
+      "oP_C": 3060,
+      "yesterdayOP_C": 2655,
+      "qTotCap_C": 20805065000.0,
+      "qTotTran5J_C": 780,
+      "insCode_P": "57633476576138071",
+      "lVal18AFC_P": "طهرم9024",
+      "lVal30_P": "اختيارف اهرم-46000-1405/09/25",
+      "oP_P": 829,
+      "yesterdayOP_P": 813,
+      "qTotCap_P": 10320000.0,
+      "qTotTran5J_P": 26
+    }
+  ],
+  "expected": {
+    "all": {
+      "strikes": [
+        {
+          "strike_price": 30000,
+          "call_oi": 7654,
+          "call_change": -14,
+          "put_oi": 23971,
+          "put_change": 1524
+        },
+        {
+          "strike_price": 34000,
+          "call_oi": 2271,
+          "call_change": 1,
+          "put_oi": 3693,
+          "put_change": 92
+        },
+        {
+          "strike_price": 46000,
+          "call_oi": 3060,
+          "call_change": 405,
+          "put_oi": 829,
+          "put_change": 16
+        }
+      ],
+      "call_value": 33095779000.0,
+      "put_value": 147516000.0
+    },
+    "20261118": {
+      "strikes": [
+        {
+          "strike_price": 30000,
+          "call_oi": 7654,
+          "call_change": -14,
+          "put_oi": 23971,
+          "put_change": 1524
+        },
+        {
+          "strike_price": 34000,
+          "call_oi": 2271,
+          "call_change": 1,
+          "put_oi": 3693,
+          "put_change": 92
+        }
+      ],
+      "call_value": 12290714000.0,
+      "put_value": 137196000.0
+    },
+    "20261216": {
+      "strikes": [
+        {
+          "strike_price": 46000,
+          "call_oi": 3060,
+          "call_change": 405,
+          "put_oi": 829,
+          "put_change": 16
+        }
+      ],
+      "call_value": 20805065000.0,
+      "put_value": 10320000.0
+    }
+  }
+}

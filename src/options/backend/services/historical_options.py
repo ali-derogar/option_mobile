@@ -78,12 +78,14 @@ def fetch_instruments_history_in_day(api_date: str) -> List[Dict[str, Any]]:
 def fetch_public_client_type_for_date_many(
     ins_codes: List[int],
     api_date: str,
+    *, timeout: float | None = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     workers = max(1, TSETMC_PUBLIC_CLIENT_TYPE_WORKERS)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(fetch_public_client_type_for_date, ins_code, api_date): ins_code
+            executor.submit(fetch_public_client_type_for_date, ins_code, api_date,
+                            **({"timeout": timeout} if timeout is not None else {})): ins_code
             for ins_code in ins_codes
         }
         for future in as_completed(futures):
@@ -96,11 +98,11 @@ def fetch_public_client_type_for_date_many(
     return rows
 
 
-def fetch_public_client_type_for_date(ins_code: int, api_date: str) -> Optional[Dict[str, Any]]:
+def fetch_public_client_type_for_date(ins_code: int, api_date: str, *, timeout: float | None = None) -> Optional[Dict[str, Any]]:
     session = _session()
     response = session.get(
         CLIENT_TYPE_HISTORY_URL.format(ins_code=ins_code),
-        timeout=TSETMC_REQUEST_TIMEOUT,
+        timeout=min(timeout, TSETMC_REQUEST_TIMEOUT) if timeout is not None else TSETMC_REQUEST_TIMEOUT,
     )
     response.raise_for_status()
     payload = response.json()

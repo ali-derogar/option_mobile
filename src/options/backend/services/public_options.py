@@ -29,6 +29,8 @@ OPTION_MARKET_WATCH_URL = "https://cdn.tsetmc.com/api/Instrument/GetInstrumentOp
 INSTRUMENT_INFO_URL = "https://cdn.tsetmc.com/api/Instrument/GetInstrumentInfo/{ins_code}"
 CLIENT_TYPE_CURRENT_URL = "https://cdn.tsetmc.com/api/ClientType/GetClientType/{ins_code}/1/0"
 CLIENT_TYPE_HISTORY_URL = "https://cdn.tsetmc.com/api/ClientType/GetClientTypeHistory/{ins_code}"
+LIVE_MARKET_WATCH_URL = "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch"
+CLOSING_PRICE_INFO_URL = "https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceInfo/{ins_code}"
 
 
 def fetch_public_option_market_watch() -> List[Dict[str, Any]]:
@@ -53,6 +55,41 @@ def normalize_public_option_pairs(rows: List[Dict[str, Any]]) -> List[Dict[str, 
         if put:
             contracts.append(put)
     return contracts
+
+
+def fetch_public_live_quotes(ins_codes: list[int], data_date: str) -> dict[int, dict]:
+    """Current activity with a dated quote check; the option-chain feed can lag.
+
+    MarketWatch's compact qtj/qtc/pdv/pcl fields contain the live values. Its
+    similarly named long fields are zero-filled placeholders, not fallbacks.
+    """
+    params = {"market": 0, "withBestLimits": "false", "hEven": 0, "RefID": 0,
+              **{f"paperTypes[{i}]": i + 1 for i in range(9)}}
+    with _session() as session:
+        response = session.get(LIVE_MARKET_WATCH_URL, params=params, timeout=TSETMC_REQUEST_TIMEOUT)
+        response.raise_for_status()
+        raw = response.json().get("marketwatch", [])
+        quotes = {
+            _to_int(r.get("insCode")): {
+                "trade_volume": _to_float(r.get("qtj")), "trade_value": _to_float(r.get("qtc")),
+                "last_price": _to_float(r.get("pdv")), "closing_price": _to_float(r.get("pcl")),
+            } for r in raw if isinstance(r, dict) and _to_int(r.get("insCode"))
+        }
+        candidates = [code for code in ins_codes if code in quotes and quotes[code]["trade_volume"] is not None]
+        if not candidates:
+            raise ValueError("empty live option quotes")
+        active = [code for code in candidates if quotes[code]["trade_volume"] > 0]
+        probe = min(active or candidates, key=lambda code: quotes[code]["trade_volume"])
+        response = session.get(CLOSING_PRICE_INFO_URL.format(ins_code=probe), timeout=min(TSETMC_REQUEST_TIMEOUT, 10))
+        response.raise_for_status()
+        dated = response.json().get("closingPriceInfo", {})
+        day = _to_int(dated.get("dEven")) or _to_int(dated.get("finalLastDate"))
+        if day != int(data_date.replace("-", "")):
+            raise ValueError("live quote date mismatch")
+        if any(quotes[probe][field] != _to_float(dated.get(source))
+               for field, source in (("trade_volume", "qTotTran5J"), ("trade_value", "qTotCap"))):
+            raise ValueError("live market and dated quote disagree")
+    return quotes
 
 
 def fetch_public_instrument_info(ins_code: int) -> Optional[Dict[str, Any]]:
@@ -131,10 +168,10 @@ def fetch_public_client_type_latest(ins_code: int) -> Optional[Dict[str, Any]]:
     return normalize_public_client_type(latest)
 
 
-def fetch_public_client_type_current(ins_code: int) -> Optional[Dict[str, Any]]:
+def fetch_public_client_type_current(ins_code: int, *, timeout: float | None = None) -> Optional[Dict[str, Any]]:
     session = _session()
     url = CLIENT_TYPE_CURRENT_URL.format(ins_code=ins_code)
-    response = session.get(url, timeout=TSETMC_REQUEST_TIMEOUT)
+    response = session.get(url, timeout=min(timeout, TSETMC_REQUEST_TIMEOUT) if timeout is not None else TSETMC_REQUEST_TIMEOUT)
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, dict):
@@ -151,6 +188,7 @@ def fetch_public_client_type_current(ins_code: int) -> Optional[Dict[str, Any]]:
 def fetch_public_client_type_current_many(
     ins_codes: List[int],
     delay: float = 0.0,
+    *, timeout: float | None = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     workers = max(1, TSETMC_PUBLIC_CLIENT_TYPE_WORKERS)
@@ -166,7 +204,7 @@ def fetch_public_client_type_current_many(
                 next_slot = max(now, next_slot) + delay
             if wait > 0:
                 time.sleep(wait)
-        return fetch_public_client_type_current(ins_code)
+        return fetch_public_client_type_current(ins_code, **({"timeout": timeout} if timeout is not None else {}))
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {

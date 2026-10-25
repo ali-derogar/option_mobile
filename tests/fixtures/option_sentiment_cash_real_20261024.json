@@ -1,0 +1,20 @@
+{
+  "quote_source": "https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceDaily/38438940539354722/20261024",
+  "participant_source": "https://cdn.tsetmc.com/api/ClientType/GetClientTypeHistory/38438940539354722/20261024",
+  "ins_code": "38438940539354722",
+  "contract_size": 1000,
+  "trade_volume": 7377,
+  "trade_value": 1875979000,
+  "participant": {
+    "natural_buy_volume": 5604,
+    "natural_sell_volume": 5060,
+    "legal_buy_volume": 1773,
+    "legal_sell_volume": 2317,
+    "natural_buy_value": 1425491,
+    "natural_sell_value": 1283213,
+    "legal_buy_value": 450488,
+    "legal_sell_value": 592766
+  },
+  "expected_natural_net_rial": 142278000,
+  "expected_natural_net_contracts": 544
+}

@@ -687,7 +687,9 @@ input::placeholder {
 
 .filters select,
 .filters input,
-.sentiment-filters select {
+.sentiment-filters select,
+.sentiment-panel-heading select,
+.sentiment-flow-controls select {
   min-width: 0;
   width: 100%;
   min-height: 48px;
@@ -699,7 +701,10 @@ input::placeholder {
   font-size: 13px;
 }
 
-.filters select {
+.filters select,
+.sentiment-filters select,
+.sentiment-panel-heading select,
+.sentiment-flow-controls select {
   appearance: none;
   direction: rtl;
   padding-left: 32px;
@@ -710,7 +715,10 @@ input::placeholder {
   text-overflow: ellipsis;
 }
 
-.filters select option {
+.filters select option,
+.sentiment-filters select option,
+.sentiment-panel-heading select option,
+.sentiment-flow-controls select option {
   color: var(--text);
   background: var(--surface);
 }
@@ -2733,22 +2741,27 @@ body[data-view="underlying"] #strikeFilter {
   grid-column: 1 / -1;
   min-width: 0;
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 
 .sentiment-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
   align-items: end;
 }
 
 .sentiment-filters label {
   display: grid;
-  gap: 7px;
-  flex: 1 1 150px;
+  gap: 4px;
+  min-width: 0;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.sentiment-filters label:first-child,
+.sentiment-filters > .btn {
+  grid-column: 1 / -1;
 }
 
 .sentiment-filters select {
@@ -2782,6 +2795,11 @@ body[data-view="underlying"] #strikeFilter {
   overflow-wrap: anywhere;
 }
 
+.sentiment-status:empty,
+.sentiment-coverage:empty {
+  display: none;
+}
+
 .sentiment-error {
   color: var(--red);
 }
@@ -2798,7 +2816,7 @@ body[data-view="underlying"] #strikeFilter {
 .sentiment-value-block {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px;
+  padding: 12px;
   min-width: 0;
   background: var(--surface-soft);
 }
@@ -2818,11 +2836,164 @@ body[data-view="underlying"] #strikeFilter {
   color: var(--text);
 }
 
+.sentiment-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.sentiment-panel-heading h3 {
+  margin: 0;
+}
+
+.sentiment-panel-heading select {
+  flex: 0 0 auto;
+  width: auto;
+  max-width: 48%;
+  min-height: 48px;
+  padding-inline: 12px 32px;
+}
+
+.sentiment-flow-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sentiment-flow-controls select {
+  min-width: 0;
+  min-height: 48px;
+}
+
+.sentiment-heatmap-scroll {
+  max-height: 380px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.sentiment-heatmap-table {
+  border-collapse: separate;
+  border-spacing: 4px;
+  width: 100%;
+  font-size: 12px;
+}
+
+.sentiment-heatmap-table th {
+  min-width: 88px;
+  height: 48px;
+  padding: 8px;
+  font-weight: 400;
+  color: var(--text-muted);
+  background: var(--surface);
+  white-space: nowrap;
+}
+
+.sentiment-heatmap-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.sentiment-heatmap-table th:first-child {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+}
+
+.sentiment-heatmap-table thead th:first-child {
+  z-index: 3;
+}
+
+.sentiment-heatmap-table td {
+  padding: 0;
+  min-width: 88px;
+}
+
+.sentiment-heatmap-table button {
+  width: 100%;
+  min-width: 88px;
+  min-height: 48px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: border-color var(--motion) var(--ease);
+}
+
+[data-heat-level="0"] {
+  background: var(--surface-soft);
+  color: var(--text-muted);
+}
+
+[data-heat-level="1"] {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+[data-heat-level="2"] {
+  background: var(--accent-border);
+  color: var(--text);
+}
+
+[data-heat-level="3"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+[data-heat-level="4"] {
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
+
+.sentiment-heatmap-table button[aria-pressed="true"] {
+  border-color: currentColor;
+}
+
+.sentiment-heatmap-table button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.sentiment-heatmap-scale {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  margin-top: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.sentiment-heatmap-scale i {
+  width: 16px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.sentiment-heatmap-detail {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.9;
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.sentiment-heatmap-detail:empty {
+  display: none;
+}
+
 .sentiment-value-scope {
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.9;
-  margin: 4px 0 12px;
+  margin: 0 0 8px;
   overflow-wrap: anywhere;
 }
 
@@ -2830,10 +3001,10 @@ body[data-view="underlying"] #strikeFilter {
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.9;
-  margin: 12px 0;
+  margin: 0;
   overflow-wrap: anywhere;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -2851,13 +3022,46 @@ body[data-view="underlying"] #strikeFilter {
 .sentiment-value-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 8px;
+}
+
+.sentiment-value-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sentiment-value-heading h3 {
+  margin-bottom: 4px;
+}
+
+.sentiment-value-unit {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sentiment-value-grid > .sentiment-value {
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.sentiment-value-totals {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
 .sentiment-value {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -2868,7 +3072,7 @@ body[data-view="underlying"] #strikeFilter {
 
 .sentiment-value strong {
   color: var(--text);
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.8;
   overflow-wrap: anywhere;
   position: relative;
@@ -2879,6 +3083,10 @@ body[data-view="underlying"] #strikeFilter {
   color: var(--amber);
 }
 
+.sentiment-value small:empty {
+  display: none;
+}
+
 .sentiment-value-call strong,
 .sentiment-call {
   color: var(--accent-strong);
@@ -2887,6 +3095,12 @@ body[data-view="underlying"] #strikeFilter {
 .sentiment-value-put strong,
 .sentiment-put {
   color: var(--purple);
+}
+
+.sentiment-value-total strong,
+.sentiment-value-ratio strong {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
 }
 
 .sentiment-value [data-exact-value] {
@@ -2911,7 +3125,7 @@ body[data-view="underlying"] #strikeFilter {
   overflow-wrap: anywhere;
 }
 
-.sentiment-value-put [data-exact-value]:is(:hover, :focus)::after {
+.sentiment-value-grid > .sentiment-value:nth-child(even) [data-exact-value]:is(:hover, :focus)::after {
   inset-inline-start: auto;
   inset-inline-end: 0;
 }
@@ -2959,15 +3173,16 @@ body[data-view="underlying"] #strikeFilter {
 }
 
 .sentiment-chart-stage {
+  --sentiment-axis-width: 46px;
   position: relative;
   min-width: 0;
-  padding-left: 48px;
+  padding-left: calc(var(--sentiment-axis-width) + 2px);
 }
 
 .sentiment-y-axis {
   position: absolute;
   inset: 0 auto 0 0;
-  width: 46px;
+  width: var(--sentiment-axis-width);
   pointer-events: none;
 }
 
@@ -3047,18 +3262,9 @@ body[data-view="underlying"] #strikeFilter {
 
 .sentiment-oi-modes {
   min-width: 0;
-  margin: 16px 0;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-soft);
-}
-
-.sentiment-oi-modes legend {
-  padding: 0 8px;
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 700;
+  margin: 12px 0;
+  padding: 0;
+  border: 0;
 }
 
 .sentiment-oi-mode-grid {
@@ -3073,8 +3279,8 @@ body[data-view="underlying"] #strikeFilter {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 64px;
-  padding: 8px 12px;
+  min-height: 48px;
+  padding: 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
@@ -3091,14 +3297,6 @@ body[data-view="underlying"] #strikeFilter {
   background: var(--purple-bg);
 }
 
-.sentiment-oi-mode.sentiment-position-amber:has(input:checked) {
-  background: var(--amber-bg);
-}
-
-.sentiment-oi-mode.sentiment-position-red:has(input:checked) {
-  background: var(--red-bg);
-}
-
 .sentiment-oi-mode-copy {
   display: grid;
   gap: 4px;
@@ -3109,11 +3307,6 @@ body[data-view="underlying"] #strikeFilter {
 .sentiment-oi-mode-copy strong {
   font-size: 13px;
   overflow-wrap: anywhere;
-}
-
-.sentiment-oi-mode-copy small {
-  color: var(--text-muted);
-  font-size: 12px;
 }
 
 .sentiment-oi-mode:has(input:focus-visible) {
@@ -3139,14 +3332,6 @@ body[data-view="underlying"] #strikeFilter {
   color: var(--purple);
 }
 
-.sentiment-position-amber {
-  color: var(--amber);
-}
-
-.sentiment-position-red {
-  color: var(--red);
-}
-
 .sentiment-position-legend::before {
   content: "";
   display: inline-block;
@@ -3157,36 +3342,13 @@ body[data-view="underlying"] #strikeFilter {
   background: currentColor;
 }
 
-.sentiment-oi-mode-hint {
-  margin: 8px 0 0;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.9;
-  overflow-wrap: anywhere;
-}
-
-.sentiment-oi-mode-selection {
-  margin: 8px 0 0;
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.9;
-  overflow-wrap: anywhere;
-}
-
-.sentiment-oi-mode-note {
-  margin: 12px 0 0;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.9;
-  overflow-wrap: anywhere;
-}
-
 .sentiment-price-label > div {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: 4px;
-  padding: 8px 10px;
+  padding: 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-soft);
@@ -3235,8 +3397,7 @@ body[data-view="underlying"] #strikeFilter {
   color: var(--accent-strong);
   font-size: 12px;
   cursor: pointer;
-  padding: 12px 0;
-  border-top: 1px solid var(--border);
+  padding: 8px 0;
 }
 
 .sentiment-peaks > div {

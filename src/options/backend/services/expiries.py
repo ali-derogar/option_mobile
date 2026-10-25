@@ -55,10 +55,8 @@ def _expiry_row(contract: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _warning(missing: int, invalid_dates: int) -> str | None:
+def _warning(invalid_dates: int) -> str | None:
     warnings = []
-    if missing:
-        warnings.append(f"مشخصات تکمیلی {missing} قرارداد دریافت نشد؛ از اطلاعات معتبر خوراک بازار استفاده شد.")
     if invalid_dates:
         warnings.append(f"{invalid_dates} قرارداد با تاریخ سررسید نامعتبر کنار گذاشته شد.")
     return " ".join(warnings) or None
@@ -86,7 +84,7 @@ def fetch_expiry_contracts(
 
     def snapshot() -> ExpirySnapshot:
         return ExpirySnapshot(
-            list(rows_by_code.values()), _warning(len(missing), len(invalid_codes)), received_at,
+            list(rows_by_code.values()), _warning(len(invalid_codes)), received_at,
         )
 
     def publish() -> None:

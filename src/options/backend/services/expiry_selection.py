@@ -70,10 +70,10 @@ def _pricing_current(received_at: str | None, today: date) -> bool:
         return False
 
 
-def _public_warning(warning: str | None) -> str | None:
-    """Hide the metadata fallback notice, including in previously saved snapshots."""
+def public_warning(warning: str | None) -> str | None:
+    """Remove internal fallback diagnostics while keeping data-quality warnings."""
     return re.sub(
-        r"مشخصات تکمیلی \d+ قرارداد دریافت نشد؛ از اطلاعات معتبر خوراک بازار استفاده شد\.\s*",
+        r"مشخصات تکمیلی \d+ قرارداد دریافت نشد؛ (?:از )?اطلاعات معتبر خوراک بازار استفاده شد\.\s*",
         "", warning or "",
     ).strip() or None
 
@@ -172,5 +172,5 @@ def select_expiries(
             {"ins_code": code, "symbol": symbol}
             for code, symbol in sorted(underlyings.items(), key=lambda item: (item[1], int(item[0])))
         ],
-        "warning": _public_warning(snapshot.warning),
+        "warning": public_warning(snapshot.warning),
     }

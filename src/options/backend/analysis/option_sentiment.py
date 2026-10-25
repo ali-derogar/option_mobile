@@ -118,7 +118,7 @@ def trade_summary(rows: list[dict]) -> dict:
     return {"call": calls, "put": puts, "total": total, "call_put_ratio": ratio, "ratio_state": ratio_state}
 
 
-def analyze_strikes(contracts: list[dict], selected_key: str | None = None, expiry: str = "all") -> dict:
+def contract_scope(contracts: list[dict], selected_key: str | None = None, expiry: str = "all") -> dict:
     by_code = {}
     for row in contracts:
         code = identity(row.get("ins_code"))
@@ -126,8 +126,6 @@ def analyze_strikes(contracts: list[dict], selected_key: str | None = None, expi
             by_code[code] = {**row, "ins_code": code, "option_type": detect_option_type(row)}
     all_rows = list(by_code.values())
     _resolve_underlying_keys(all_rows)
-    unknown_count = sum(r["option_type"] not in {"call", "put"} for r in by_code.values())
-    rows = [r for r in by_code.values() if r["option_type"] in {"call", "put"}]
     assets = {}
     for row in all_rows:
         key = row["_underlying_key"]
@@ -144,6 +142,73 @@ def analyze_strikes(contracts: list[dict], selected_key: str | None = None, expi
     expiries = sorted({contract_expiry(r) for r in asset_rows if contract_expiry(r)})
     expiry = expiry if expiry in expiries else "all"
     selected_all = [r for r in asset_rows if expiry == "all" or identity(r.get("end_date")) == expiry]
+    return {"market": all_rows, "underlying": asset_rows, "selection": selected_all,
+            "underlying_key": selected_key, "expiry": expiry, "underlyings": assets, "expiries": expiries}
+
+
+def activity_matrix(rows: list[dict]) -> dict:
+    groups = {}
+    for row in rows:
+        strike, expiry = number(row.get("strike_price")), contract_expiry(row)
+        if strike is not None and strike > 0 and expiry:
+            groups.setdefault((strike, expiry), []).append(row)
+    cells = []
+    for (strike, expiry), group in sorted(groups.items()):
+        summary = trade_summary(group)
+        cells.append({"strike_price": strike, "expiry": expiry,
+                      **{name: summary[name] for name in ("call", "put", "total")}})
+    return {"strikes": sorted({strike for strike, _ in groups}),
+            "expiries": sorted({expiry for _, expiry in groups}), "cells": cells}
+
+
+def analyze_participant_flow(rows: list[dict], participants: list[dict], *, known_zero_codes: set[str] | None = None) -> dict:
+    by_code = {identity(r.get("ins_code")): r for r in participants}
+    groups = {}
+    for row in rows:
+        strike = number(row.get("strike_price"))
+        if row["option_type"] in {"call", "put"} and strike is not None and strike > 0:
+            groups.setdefault(strike, []).append(row)
+
+    def net(row, audience, measure):
+        participant = by_code.get(identity(row.get("ins_code")), {})
+        buy, sell = (number(participant.get(f"{audience}_{side}_{measure}")) for side in ("buy", "sell"))
+        if buy is not None and sell is not None and buy >= 0 and sell >= 0:
+            return finite_sum([buy, -sell])
+        # A confirmed non-trading contract has zero flow; missing trade data
+        # or a zero price alone cannot establish that no trade occurred.
+        if (known_zero_codes is None or identity(row.get("ins_code")) in known_zero_codes) and number(row.get("trade_volume")) == 0 and number(row.get("trade_value")) == 0:
+            return 0.0
+        return None
+
+    def complete_metric(values):
+        info = metric(values)
+        if not info["complete"]:
+            info["value"] = None
+        return info
+
+    audiences = {}
+    for audience in ("natural", "legal"):
+        audiences[audience] = {}
+        for measure in ("value", "volume"):
+            strikes = []
+            for strike, group in sorted(groups.items()):
+                item = {"strike_price": strike, "coverage": {}}
+                for side in ("call", "put"):
+                    info = complete_metric([net(r, audience, measure) for r in group if r["option_type"] == side])
+                    item[f"{side}_flow"] = info["value"]
+                    item["coverage"][f"{side}_flow"] = info
+                strikes.append(item)
+            audiences[audience][measure] = {"strikes": strikes, "coverage": complete_metric([
+                net(r, audience, measure) for group in groups.values() for r in group])}
+    return {"audiences": audiences}
+
+
+def analyze_strikes(contracts: list[dict], selected_key: str | None = None, expiry: str = "all") -> dict:
+    scope = contract_scope(contracts, selected_key, expiry)
+    all_rows, asset_rows, selected_all = (scope[k] for k in ("market", "underlying", "selection"))
+    selected_key, expiry, assets, expiries = (scope[k] for k in ("underlying_key", "expiry", "underlyings", "expiries"))
+    rows = [r for r in all_rows if r["option_type"] in {"call", "put"}]
+    unknown_count = len(all_rows) - len(rows)
     selected = [r for r in selected_all if r["option_type"] in {"call", "put"}]
     unknown_selected = [r for r in selected_all if r["option_type"] not in {"call", "put"}]
     price, price_kind = None, None
@@ -188,6 +253,7 @@ def analyze_strikes(contracts: list[dict], selected_key: str | None = None, expi
         "underlyings": assets, "expiries": expiries,
         "spot_price": price, "spot_price_kind": price_kind, "atm_strike": atm,
         "strikes": strikes, "peaks": peaks,
+        "activity": activity_matrix(selected_all),
         "summaries": {"market": trade_summary(all_rows), "underlying": trade_summary(asset_rows), "selection": trade_summary(selected_all)},
         "quality": {
             "contract_count": len(rows), "selected_contract_count": len(selected), "unknown_type_count": unknown_count,

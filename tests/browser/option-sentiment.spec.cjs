@@ -29,6 +29,13 @@ function payload(params, changes = {}) {
     dates: ["2026-10-20", "2026-10-21"], data_date: params.get("date") || "2026-10-21", received_at: "2026-10-22T08:00:00+00:00",
     source: historical ? "public_history" : "public_cdn", spot_price: 1100, spot_price_kind: "last", atm_strike: 1000,
     strikes, peaks: { call: { strike_price: 1000, ...metric(100) }, put: { strike_price: 1000, ...metric(40) } },
+    activity: {
+      strikes: [1000, 1200], expiries: expiry === 'all' ? expiries : [expiry],
+      cells: [1000, 1200].flatMap((strike, i) => (expiry === 'all' ? expiries : [expiry]).map((end, j) => ({
+        strike_price: strike, expiry: end, call: metric((i + 1) * (j + 1) * 10_000_000),
+        put: metric((i + 1) * 4_000_000), total: metric((i + 1) * ((j + 1) * 10_000_000 + 4_000_000)),
+      }))),
+    },
     summaries: { market: summary(20_000_000_000, 10_000_000_000), underlying: summary(100_000_000, 50_000_000), selection: summary(selected, selected / 2) },
     quality: { oi: metric(historical ? null : 160, historical ? 0 : 4, 4), change: metric(historical ? null : 10, historical ? 0 : 4, 4), unknown_type_count: 0, invalid_strike_count: 0 },
     cached: true, warning: historical ? "موقعیت باز تاریخی موجود نیست." : null, refresh: { running: false, last_error: null }, ...changes,
@@ -41,7 +48,7 @@ async function fixture(t, width = 390) {
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
   await page.clock.install({ time: new Date("2026-10-22T10:00:00Z") });
-  const state = { errors: [], requests: [], posts: [], clientTypeRequests: [], refreshStatus: "cached" };
+  const state = { errors: [], requests: [], posts: [], flowRequests: [], clientTypeRequests: [], refreshStatus: "cached" };
   page.on("pageerror", (error) => state.errors.push(error.message));
   await page.route("http://options.test/**", async (route) => {
     const url = new URL(route.request().url());
@@ -55,6 +62,14 @@ async function fixture(t, width = 390) {
       state.requests.push(new URLSearchParams(url.searchParams));
       if (state.failRead) return route.fulfill({ status: 503, json: { detail: "خطا در دریافت تحلیل" } });
       return json(state.handler ? await state.handler(url.searchParams) : payload(url.searchParams));
+    }
+    if (url.pathname === "/api/option-sentiment/flow") {
+      state.flowRequests.push(new URLSearchParams(url.searchParams));
+      if (state.failFlow) return route.fulfill({ status: 503, json: { detail: 'unavailable' } });
+      return json(state.flowHandler ? await state.flowHandler(url.searchParams) : {
+        underlying_key: url.searchParams.get('underlying_key'), expiry: url.searchParams.get('expiry'),
+        data_date: url.searchParams.get('date'), received_at: '2026-10-22T08:00:00+00:00', audiences: {},
+      });
     }
     if (url.pathname === "/api/option-sentiment/refresh") {
       state.posts.push(route.request().postDataJSON());
@@ -93,6 +108,303 @@ async function fixture(t, width = 390) {
   return { page, state, open };
 }
 
+function flowPayload(params) {
+  const audience = (sign) => ({ coverage: metric(0, 4, 4), strikes: [
+    { strike_price: 1000, call_flow: sign * 20_000_000, put_flow: sign * -5_000_000,
+      coverage: { call_flow: metric(sign * 20_000_000), put_flow: metric(sign * -5_000_000) } },
+    { strike_price: 1200, call_flow: sign * -10_000_000, put_flow: 0,
+      coverage: { call_flow: metric(sign * -10_000_000), put_flow: metric(0) } },
+  ] });
+  const measures = sign => {
+    const value = audience(sign), volume = structuredClone(value);
+    volume.strikes.forEach(row => {
+      for (const kind of ['call', 'put']) {
+        row[`${kind}_flow`] /= 1_000_000;
+        row.coverage[`${kind}_flow`].value /= 1_000_000;
+      }
+    });
+    return {value, volume};
+  };
+  return { underlying_key: params.get('underlying_key'), expiry: params.get('expiry'), data_date: params.get('date'),
+    received_at: '2026-10-22T08:00:00+00:00',
+    audiences: { natural: measures(1), legal: measures(-1) } };
+}
+
+test("participant flow from another snapshot of the same trading day is rejected", async (t) => {
+  const {page, state, open} = await fixture(t);
+  const newerStamp = '2026-10-22T08:05:00+00:00';
+  state.flowHandler = params => ({...flowPayload(params), received_at: newerStamp});
+  await open();
+  await expect(page.locator('#sentimentFlowRetry')).toBeVisible();
+  assert.equal(await page.evaluate(() => Chart.getChart('sentimentFlowChart') == null), true);
+  assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 2);
+  state.handler = params => payload(params, {received_at: newerStamp});
+  const previousReads = state.requests.length;
+  await page.locator('#sentimentFlowRetry').click();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  assert.equal(state.requests.length, previousReads + 1);
+  await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
+});
+
+test("participant flow uses signed Toman values, switches groups without refetching and preserves other charts", async (t) => {
+  const { page, state, open } = await fixture(t, 360);
+  state.flowHandler = flowPayload;
+  await open();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets.map(d => d.data.map(p => p.y))), [[20, -10], [-5, 0]]);
+  await expect(page.locator('#sentimentFlowUnit')).toContainText('قرارداد');
+  await page.locator('#sentimentFlowChart').scrollIntoViewIfNeeded();
+  const bar = await page.evaluate(() => {
+    const chart = Chart.getChart('sentimentFlowChart'), point = chart.getDatasetMeta(0).data[0];
+    return {x: point.x, y: (point.y + point.base) / 2};
+  });
+  await page.locator('#sentimentFlowChart').tap({position: bar});
+  await expect.poll(() => page.evaluate(() => Chart.getChart('sentimentFlowChart').tooltip.dataPoints?.length > 0)).toBeTruthy();
+  await page.locator('#sentimentFlowMeasure').selectOption('value');
+  assert.deepEqual([...state.flowRequests[0]], [['underlying_key', '2001'], ['expiry', 'all'], ['date', '2026-10-21']]);
+  const chartData = () => page.evaluate(() => {
+    const chart = Chart.getChart('sentimentFlowChart');
+    return { values: chart.data.datasets.map(d => d.data.map(p => p.y)),
+      labels: chart.data.datasets.map(d => d.label), stacked: chart.options.scales.y.stacked,
+      tooltip: chart.options.plugins.tooltip.callbacks.label({ dataset: chart.data.datasets[1], parsed: { y: -500000 } }) };
+  });
+  assert.deepEqual(await chartData(), {values: [[2000000, -1000000], [-500000, 0]], labels: ['کال', 'پوت'], stacked: false, tooltip: 'پوت: ‎−۵۰۰٬۰۰۰ تومان'});
+  const originalCharts = await page.evaluate(() => ['sentimentOiChart', 'sentimentChangeChart'].map(id => Chart.getChart(id).id));
+  await page.locator('#sentimentFlowAudience').selectOption('legal');
+  assert.deepEqual((await chartData()).values, [[-2000000, 1000000], [500000, 0]]);
+  assert.equal(state.flowRequests.length, 1);
+  assert.deepEqual(await page.evaluate(() => ['sentimentOiChart', 'sentimentChangeChart'].map(id => Chart.getChart(id).id)), originalCharts);
+  await page.evaluate(() => applyTheme('dark'));
+  assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 3);
+  await selectOiModes(page, ['کال']);
+  assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 3);
+  await page.getByRole('tab', {name: 'حقیقی', exact: true}).click();
+  assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 0);
+  await open();
+  await expect.poll(() => page.evaluate(() => Object.keys(Chart.instances).length)).toBe(3);
+  await expect(page.locator('#sentimentFlowAudience')).toHaveValue('legal');
+  assert.equal(state.flowRequests.length, 1);
+});
+
+test("late participant flow cannot mix scopes and historical requests retain their explicit date", async (t) => {
+  const { page, state, open } = await fixture(t);
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  state.flowHandler = params => params.get('underlying_key') === '2001' ? pending : flowPayload(params);
+  await open();
+  await expect(page.locator('#sentimentFlowStatus')).toContainText('در حال دریافت');
+  await page.locator('#sentimentUnderlying').selectOption('2002');
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  release(flowPayload(new URLSearchParams({underlying_key: '2001', expiry: 'all', date: '2026-10-21'})));
+  await page.waitForTimeout(50);
+  await expect(page.locator('#sentimentUnderlying')).toHaveValue('2002');
+  await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
+  await page.locator('#sentimentDate').selectOption('2026-10-20');
+  await expect.poll(() => state.flowRequests.at(-1).get('date')).toBe('2026-10-20');
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  await expect(page.locator('#sentimentDate')).toHaveValue('2026-10-20');
+});
+
+test("participant flow failure retries independently and rejects a mismatched response date", async (t) => {
+  const { page, state, open } = await fixture(t);
+  state.failFlow = true;
+  await open();
+  await expect(page.locator('#sentimentFlowRetry')).toBeVisible();
+  await expect(page.locator('#sentimentStatus')).toHaveText('تحلیل آماده است.');
+  assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 2);
+  state.failFlow = false;
+  state.flowHandler = params => ({...flowPayload(params), data_date: '2026-10-20'});
+  await page.locator('#sentimentFlowRetry').click();
+  await expect(page.locator('#sentimentFlowRetry')).toBeVisible();
+  assert.equal(await page.evaluate(() => Chart.getChart('sentimentFlowChart') == null), true);
+  state.flowHandler = flowPayload;
+  await page.locator('#sentimentFlowRetry').click();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
+});
+
+test("participant flow missing and partial values stay absent while confirmed zero stays zero", async (t) => {
+  const { page, state, open } = await fixture(t);
+  state.flowHandler = params => {
+    const result = flowPayload(params), natural = result.audiences.natural.value;
+    natural.strikes[0].call_flow = null;
+    natural.strikes[0].coverage.call_flow = metric(null, 1, 2);
+    natural.coverage = metric(null, 4, 5);
+    result.audiences.legal.value.strikes = [];
+    return result;
+  };
+  await open();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  await page.locator('#sentimentFlowMeasure').selectOption('value');
+  assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [null, -1000000]);
+  await expect(page.locator('#sentimentFlowStatus')).toContainText('داده ناقص: ۴ از ۵');
+  await page.locator('#sentimentFlowAudience').selectOption('legal');
+  await expect(page.locator('#sentimentFlowEmpty')).toContainText('داده کامل خرید و فروش');
+  assert.equal(await page.evaluate(() => Chart.getChart('sentimentFlowChart') == null), true);
+});
+
+test("activity heatmap filters types and expiries, exposes exact values and preserves missing cells", async (t) => {
+  const { page, state, open } = await fixture(t, 320);
+  state.handler = params => {
+    const result = payload(params);
+    result.activity.cells[0].put = metric(null, 0, 1);
+    result.activity.cells[0].total = metric(10000000, 1, 2);
+    result.activity.cells = result.activity.cells.filter(cell => !(cell.strike_price === 1200 && cell.expiry === '20270113'));
+    return result;
+  };
+  await open();
+  const cells = page.locator('[data-heat-cell]');
+  await expect(cells).toHaveCount(4);
+  await expect(cells.nth(0)).toHaveText('—');
+  await expect(cells.nth(3)).toBeDisabled();
+  await page.locator('#sentimentHeatmapType').selectOption('call');
+  await expect(cells.nth(0)).not.toHaveText('—');
+  await cells.nth(0).click();
+  await expect(page.locator('#sentimentHeatmapDetail')).toContainText('۱٬۰۰۰٬۰۰۰ تومان');
+  await expect(cells.nth(0)).toHaveAttribute('aria-pressed', 'true');
+  await cells.nth(1).focus();
+  await page.keyboard.press('Enter');
+  await expect(cells.nth(1)).toHaveAttribute('aria-pressed', 'true');
+  await page.locator('#sentimentHeatmapType').selectOption('put');
+  await expect(cells.nth(0)).toHaveText('—');
+  await cells.nth(0).click();
+  await expect(page.locator('#sentimentHeatmapDetail')).toContainText('داده ناقص');
+  await page.locator('#sentimentExpiry').selectOption('20261209');
+  await expect(page.locator('.sentiment-heatmap-table thead th')).toHaveCount(2);
+  await expect(cells).toHaveCount(2);
+});
+
+test("new sentiment charts fit mobile and desktop in both themes with internal heatmap scrolling", async (t) => {
+  const { page, state, open } = await fixture(t, 320);
+  state.flowHandler = flowPayload;
+  await open();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  for (const width of [320, 360, 390, 430, 1280]) {
+    await page.setViewportSize({width, height: 844});
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate(value => applyTheme(value), theme);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${width}/${theme}`);
+      const sizes = await page.locator('#sentimentFlowAudience, #sentimentFlowMeasure, #sentimentHeatmapType, [data-heat-cell]').evaluateAll(els => els.map(el => el.getBoundingClientRect().height));
+      assert.ok(sizes.every(height => height >= 48));
+      assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 3);
+    }
+  }
+  await page.setViewportSize({width: 320, height: 844});
+  assert.ok(await page.locator('#sentimentHeatmap').evaluate(el => el.scrollWidth > el.clientWidth));
+});
+
+test("a stalled participant request times out without blocking charts and can be retried", async (t) => {
+  const {page, state, open} = await fixture(t);
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  state.flowHandler = () => pending;
+  await open();
+  await expect(page.locator('#sentimentFlowStatus')).toContainText('در حال دریافت');
+  await page.clock.fastForward(90001);
+  await expect(page.locator('#sentimentFlowRetry')).toBeVisible();
+  assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 2);
+  release(flowPayload(state.flowRequests[0]));
+  state.flowHandler = flowPayload;
+  await page.locator('#sentimentFlowRetry').click();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
+});
+
+test("legacy activity with an unverified trading date waits for fresh data", async (t) => {
+  const {page, state, open} = await fixture(t);
+  state.handler = params => {
+    const result = payload(params);
+    result.activity.date_verified = false;
+    return result;
+  };
+  await open();
+  await expect(page.locator('#sentimentHeatmap')).toContainText('در انتظار دریافت داده به‌روز');
+  await expect(page.locator('[data-heat-cell]')).toHaveCount(0);
+  await expect(page.locator('.sentiment-heatmap-scale')).toBeHidden();
+});
+
+test("opening legacy historical activity automatically repairs the cache once", async (t) => {
+  const {page, state, open} = await fixture(t);
+  let repaired = false;
+  state.handler = params => {
+    const result = payload(params);
+    if (params.get('date') === '2026-10-20') result.activity.date_verified = repaired;
+    return result;
+  };
+  state.postHandler = () => {
+    if (state.posts.at(-1).date === '2026-10-20') repaired = true;
+    return {status: 'cached'};
+  };
+  await open();
+  await page.locator('#sentimentDate').selectOption('2026-10-20');
+  await expect.poll(() => repaired).toBeTruthy();
+  await expect(page.locator('#sentimentHeatmap .sentiment-heatmap-table')).toBeVisible();
+  await expect(page.locator('#sentimentDate')).toHaveValue('2026-10-20');
+  assert.equal(state.posts.filter(post => post.date === '2026-10-20').length, 1);
+  await page.getByRole('tab', {name: 'حقیقی', exact: true}).click();
+  await open();
+  assert.equal(state.posts.filter(post => post.date === '2026-10-20').length, 1);
+});
+
+test("an interrupted historical repair preserves figures and recovers with one manual retry", async (t) => {
+  const {page, state, open} = await fixture(t);
+  let repaired = false;
+  state.handler = params => {
+    const result = payload(params);
+    if (params.get('date') === '2026-10-20') result.activity.date_verified = repaired;
+    return result;
+  };
+  await open();
+  state.failPost = true;
+  await page.locator('#sentimentDate').selectOption('2026-10-20');
+  await expect(page.locator('#sentimentStatus')).toContainText('خطا');
+  const figures = await page.locator('#sentimentSummaries').textContent();
+  const postCount = state.posts.length;
+  await page.clock.fastForward(15000);
+  await expect(page.locator('#sentimentRefresh')).toBeEnabled();
+  assert.equal(state.posts.length, postCount);
+  assert.equal(await page.locator('#sentimentSummaries').textContent(), figures);
+  await expect(page.locator('#sentimentDate')).toHaveValue('2026-10-20');
+  state.failPost = false;
+  state.postHandler = () => {
+    if (state.posts.at(-1).date === '2026-10-20') repaired = true;
+    return {status: 'cached'};
+  };
+  await page.locator('#sentimentRefresh').click();
+  await expect(page.locator('#sentimentHeatmap .sentiment-heatmap-table')).toBeVisible();
+  await expect(page.locator('#sentimentStatus')).toHaveText('تحلیل آماده است.');
+  assert.equal(state.posts.length, postCount + 1);
+  await expect(page.locator('#sentimentDate')).toHaveValue('2026-10-20');
+});
+
+test("repeated asset, expiry, theme and tab changes keep chart counts bounded", async (t) => {
+  const {page, state, open} = await fixture(t, 320);
+  state.flowHandler = flowPayload;
+  await open();
+  for (let i = 0; i < 20; i += 1) {
+    const key = i % 2 ? '2001' : '2002';
+    await page.locator('#sentimentUnderlying').selectOption(key);
+    await expect(page.locator('[data-sentiment-summary="underlying"] .sentiment-value-scope')).toContainText(key === '2001' ? 'خودرو' : 'بساما');
+    await page.locator('#sentimentExpiry').selectOption(i % 3 ? '20270113' : 'all');
+    await expect(page.locator('#sentimentStatus')).toHaveText('تحلیل آماده است.');
+    await expect.poll(() => page.evaluate(() => Object.keys(Chart.instances).length)).toBe(3);
+    await page.evaluate(theme => applyTheme(theme), i % 2 ? 'light' : 'dark');
+    await expect.poll(() => page.evaluate(() => Object.keys(Chart.instances).length)).toBe(3);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    if (i % 5 === 0) {
+      await page.getByRole('tab', {name: 'حقیقی', exact: true}).click();
+      assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 0);
+      await open();
+      await expect.poll(() => page.evaluate(() => Object.keys(Chart.instances).length)).toBe(3);
+    }
+  }
+  await page.getByRole('tab', {name: 'حقیقی', exact: true}).click();
+  const reads = state.flowRequests.length;
+  await page.clock.fastForward(15000);
+  assert.equal(state.flowRequests.length, reads);
+  assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 0);
+});
+
 test("isolated filters, distinct summary scopes, numeric price positions and signed bars", async (t) => {
   const { page, state, open } = await fixture(t);
   await page.evaluate(() => { state.filters.type = "call"; state.filters.strike = "1000"; state.filters.expiry = "20261209"; });
@@ -117,29 +429,73 @@ test("isolated filters, distinct summary scopes, numeric price positions and sig
   await expect(page.locator("#typeFilter")).toBeHidden();
 });
 
+test("turnover summaries show call and put once without rounding the ratio inputs", async (t) => {
+  const { page, state, open } = await fixture(t, 320);
+  state.handler = (params) => {
+    const result = payload(params);
+    result.underlyings[0].symbol = "خساپا";
+    result.summaries.market = summary(13_942_100_000_000, 3_144_300_000_000);
+    result.summaries.underlying = summary(86_580_000_000, 254_692_004);
+    return result;
+  };
+  await open();
+  const labels = ["ارزش معاملات کال", "ارزش معاملات پوت"];
+  for (const [scope, call, put, total, ratio] of [
+    ["market", "۱٬۳۹۴٫۲۱", "۳۱۴٫۴۳", "۱٬۷۰۸٫۶۴", "۴٫۴۳"],
+    ["underlying", "۸٫۶۶", "۰٫۰۳", "۸٫۶۸", "۳۳۹٫۹۴"],
+  ]) {
+    const card = page.locator(`[data-sentiment-summary="${scope}"]`);
+    assert.deepEqual(await card.locator('.sentiment-value-grid > .sentiment-value > span').allTextContents(), labels);
+    await expect(card.locator('.sentiment-value-call strong')).toHaveText(call);
+    await expect(card.locator('.sentiment-value-put strong')).toHaveText(put);
+    await expect(card.locator('.sentiment-value-total strong')).toHaveText(total);
+    await expect(card.locator('.sentiment-value-ratio strong')).toHaveText(ratio);
+    await expect(card.locator('.sentiment-value-unit')).toHaveText('میلیارد تومان');
+  }
+  await expect(page.locator('[data-sentiment-summary="underlying"] .sentiment-value-scope')).toContainText('خساپا');
+  await page.locator('#sentimentExpiry').selectOption('20261209');
+  const selection = page.locator('[data-sentiment-summary="selection"]');
+  await expect(selection.locator('.sentiment-value-grid > .sentiment-value')).toHaveCount(2);
+  await expect(selection.locator('.sentiment-value-total strong')).toHaveText('۶');
+  await expect(selection.locator('.sentiment-value-unit')).toHaveText('میلیون تومان');
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+});
+
+test("call and put turnover preserve missing data, known zero and partial coverage", async (t) => {
+  const { page, state, open } = await fixture(t);
+  state.handler = (params) => payload(params, { summaries: {
+    ...payload(params).summaries,
+    market: { call: metric(null, 0, 2), put: metric(0, 2, 2), total: metric(0, 2, 4), call_put_ratio: null, ratio_state: 'unavailable' },
+  } });
+  await open();
+  const card = page.locator('[data-sentiment-summary="market"]');
+  await expect(card.locator('.sentiment-value-call strong')).toHaveText('—');
+  await expect(card.locator('.sentiment-value-call small')).toHaveText('داده ناقص: ۰ از ۲ قرارداد');
+  await expect(card.locator('.sentiment-value-put strong')).toHaveText('۰');
+  await expect(card.locator('.sentiment-value-unit')).toHaveText('میلیون تومان');
+  await expect(card.locator('.sentiment-value-total small')).toHaveText('داده ناقص: ۲ از ۴ قرارداد');
+  await expect(card.locator('.sentiment-value-ratio strong')).toHaveText('—');
+});
+
 async function selectOiModes(page, selected) {
-  for (const label of ["خرید کال", "فروش کال", "خرید پوت", "فروش پوت"]) {
+  for (const label of ["کال", "پوت"]) {
     await page.getByRole("checkbox", { name: label, exact: true }).setChecked(selected.includes(label));
   }
 }
 
-test("four position modes support every individual selection and all 16 combinations", async (t) => {
+test("call and put position filters support all four selection combinations", async (t) => {
   const { page, state, open } = await fixture(t, 360);
   await open();
   const modes = [
-    { label: "خرید کال", values: [100, 20], color: "accent" },
-    { label: "فروش کال", values: [100, 20], color: "amber" },
-    { label: "خرید پوت", values: [40, 10], color: "purple" },
-    { label: "فروش پوت", values: [40, 10], color: "red" },
+    { label: "کال", values: [100, 20], color: "accent" },
+    { label: "پوت", values: [40, 10], color: "purple" },
   ];
-  await expect(page.locator("[data-oi-mode]")).toHaveCount(4);
-  await expect(page.locator(".sentiment-oi-mode-note")).toBeVisible();
-  await expect(page.locator(".sentiment-oi-mode-note")).toContainText("با هم جمع نمی‌شوند");
+  await expect(page.locator("[data-oi-mode]")).toHaveCount(2);
   await expect(page.locator("[data-oi-filter], #sentimentOiClear")).toHaveCount(0);
   const changeId = await page.evaluate(() => Chart.getChart("sentimentChangeChart").id);
   const summaries = await page.locator("#sentimentSummaries").textContent();
   const requestCount = state.requests.length;
-  for (let mask = 0; mask < 16; mask += 1) {
+  for (let mask = 0; mask < 4; mask += 1) {
     for (const [index, mode] of modes.entries()) {
       await page.getByRole("checkbox", { name: mode.label, exact: true }).setChecked(Boolean(mask & (1 << index)));
     }
@@ -168,27 +524,26 @@ test("four position modes support every individual selection and all 16 combinat
 test("position combinations survive refresh, theme and tab changes", async (t) => {
   const { page, open } = await fixture(t);
   await open();
-  await selectOiModes(page, ["خرید کال"]);
+  await selectOiModes(page, ["کال"]);
   const selection = async () => page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label));
-  assert.deepEqual(await selection(), ["خرید کال"]);
+  assert.deepEqual(await selection(), ["کال"]);
   await page.evaluate(() => applyTheme("dark"));
   await page.locator("#sentimentRefresh").click();
   await expect(page.locator("#sentimentStatus")).toHaveText("تحلیل آماده است.");
   await page.locator("#sentimentExpiry").selectOption("20261209");
-  await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toContainText("۴ میلیون");
+  await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toHaveText("۴");
+  await expect(page.locator('[data-sentiment-summary="selection"] .sentiment-value-unit')).toHaveText("میلیون تومان");
   await page.getByRole("tab", { name: "حقیقی", exact: true }).click();
   await open();
-  assert.deepEqual(await selection(), ["خرید کال"]);
-  await expect(page.getByRole("checkbox", { name: "خرید کال", exact: true })).toBeChecked();
-  for (const label of ["فروش کال", "خرید پوت", "فروش پوت"]) {
-    await expect(page.getByRole("checkbox", { name: label, exact: true })).not.toBeChecked();
-  }
+  assert.deepEqual(await selection(), ["کال"]);
+  await expect(page.getByRole("checkbox", { name: "کال", exact: true })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "پوت", exact: true })).not.toBeChecked();
 });
 
 test("restoring the page keeps cached charts and position controls usable when dashboard reads fail", async (t) => {
   const { page, state, open } = await fixture(t);
   await open();
-  await selectOiModes(page, ["خرید کال"]);
+  await selectOiModes(page, ["کال"]);
   const figures = await page.locator("#sentimentSummaries").textContent();
   state.failDashboardRead = true;
   state.failRead = true;
@@ -200,8 +555,8 @@ test("restoring the page keeps cached charts and position controls usable when d
   await expect.poll(() => page.evaluate(() => Object.keys(Chart.instances).length)).toBe(2);
   await expect(page.locator("#sentimentStatus")).toContainText("خطا");
   assert.equal(await page.locator("#sentimentSummaries").textContent(), figures);
-  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["خرید کال"]);
-  await page.getByRole("checkbox", { name: "خرید کال", exact: true }).uncheck();
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["کال"]);
+  await page.getByRole("checkbox", { name: "کال", exact: true }).uncheck();
   assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart")?.data.datasets.map((dataset) => dataset.label) ?? []), []);
   await expect(page.locator("#sentimentOiEmpty")).toContainText("حداقل یک حالت");
   await expect(page.locator("#sentimentRefresh")).toBeEnabled();
@@ -210,7 +565,7 @@ test("restoring the page keeps cached charts and position controls usable when d
 test("restoring the page ignores a pending response from the previous visit and preserves selected modes", async (t) => {
   const { page, state, open } = await fixture(t);
   await open();
-  await selectOiModes(page, ["خرید کال"]);
+  await selectOiModes(page, ["کال"]);
   let release;
   const pending = new Promise((resolve) => { release = resolve; });
   state.handler = (params) => params.get("expiry") === "20261209" ? pending : payload(params);
@@ -225,9 +580,10 @@ test("restoring the page ignores a pending response from the previous visit and 
   release(payload(new URLSearchParams({ expiry: "20261209" })));
   await page.waitForTimeout(100);
   await expect(page.locator("#sentimentExpiry")).toHaveValue("all");
-  await expect(page.locator('[data-sentiment-summary="underlying"] strong').first()).toContainText("۱۰ میلیون");
+  await expect(page.locator('[data-sentiment-summary="underlying"] strong').first()).toHaveText("۱۰");
+  await expect(page.locator('[data-sentiment-summary="underlying"] .sentiment-value-unit')).toHaveText("میلیون تومان");
   await expect(page.locator('[data-sentiment-summary="selection"]')).toHaveCount(0);
-  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["خرید کال"]);
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["کال"]);
   assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 2);
   assert.equal(state.posts.length, 2);
 });
@@ -262,18 +618,15 @@ test("missing call OI stays missing instead of turning into zero when only the p
     return result;
   };
   await open();
-  await selectOiModes(page, ["خرید پوت"]);
+  await selectOiModes(page, ["پوت"]);
   await expect(page.locator("#sentimentOiCoverage")).toHaveText("داده ناقص: ۲ از ۴ قرارداد");
   assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.data.map((point) => point.y))), [[40, 10]]);
   const tooltip = await page.evaluate(() => {
     const chart = Chart.getChart("sentimentOiChart");
     return chart.options.plugins.tooltip.callbacks.label({ datasetIndex: 0, dataIndex: 0, dataset: chart.data.datasets[0], parsed: { x: 1000, y: 40 } });
   });
-  assert.match(tooltip, /خرید پوت: ۴۰ قرارداد · داده ناقص: ۱ از ۲ قرارداد/);
-  await page.getByRole("checkbox", { name: "فروش پوت", exact: true }).check();
-  await expect(page.locator("#sentimentOiCoverage")).toHaveText("داده ناقص: ۲ از ۴ قرارداد");
-  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.data.map((point) => point.y))), [[40, 10], [40, 10]]);
-  await selectOiModes(page, ["خرید کال"]);
+  assert.match(tooltip, /پوت: ۴۰ قرارداد · داده ناقص: ۱ از ۲ قرارداد/);
+  await selectOiModes(page, ["کال"]);
   await expect(page.locator("#sentimentOiCoverage")).toHaveText("داده ناقص: ۰ از ۲ قرارداد");
   await expect(page.locator("#sentimentOiEmpty")).toContainText("موجود نیست");
   assert.equal(await page.evaluate(() => Chart.getChart("sentimentOiChart") == null), true);
@@ -284,13 +637,16 @@ test("expiry, asset and historical filters update all sections without closing a
   await open();
   await page.locator("#sentimentExpiry").selectOption("20261209");
   await expect(page.locator("[data-sentiment-summary]")).toHaveCount(3);
-  await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toContainText("۴ میلیون");
-  await expect(page.locator('[data-sentiment-summary="underlying"] strong').first()).toContainText("۱۰ میلیون");
+  await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toHaveText("۴");
+  await expect(page.locator('[data-sentiment-summary="selection"] .sentiment-value-unit')).toHaveText("میلیون تومان");
+  await expect(page.locator('[data-sentiment-summary="underlying"] strong').first()).toHaveText("۱۰");
+  await expect(page.locator('[data-sentiment-summary="underlying"] .sentiment-value-unit')).toHaveText("میلیون تومان");
   await page.locator("#sentimentExpiry").selectOption("all");
   await expect(page.locator("[data-sentiment-summary]")).toHaveCount(2);
   await expect(page.locator('[data-sentiment-summary="selection"]')).toHaveCount(0);
   await page.locator("#sentimentExpiry").selectOption("20261209");
-  await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toContainText("۴ میلیون");
+  await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toHaveText("۴");
+  await expect(page.locator('[data-sentiment-summary="selection"] .sentiment-value-unit')).toHaveText("میلیون تومان");
   await page.locator("#sentimentUnderlying").selectOption("2002");
   await expect(page.locator("#sentimentExpiry")).toHaveValue("all");
   await expect(page.locator('[data-sentiment-summary="underlying"]')).toContainText("بساما");
@@ -339,7 +695,8 @@ test("a late historical response cannot restore an older date or mix summary sco
   const { page, state, open } = await fixture(t);
   await open();
   await page.locator("#sentimentExpiry").selectOption("20261209");
-  await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toContainText("۴ میلیون");
+  await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toHaveText("۴");
+  await expect(page.locator('[data-sentiment-summary="selection"] .sentiment-value-unit')).toHaveText("میلیون تومان");
   let release;
   const pending = new Promise((resolve) => { release = resolve; });
   state.handler = (params) => {
@@ -353,9 +710,12 @@ test("a late historical response cannot restore an older date or mix summary sco
   await page.locator("#sentimentDate").selectOption("2026-10-20");
   await expect.poll(() => state.requests.at(-1).get("date")).toBe("2026-10-20");
   await page.locator("#sentimentDate").selectOption("2026-10-21");
-  await expect(page.locator('[data-sentiment-summary="market"] strong').first()).toContainText("۴ میلیارد");
-  await expect(page.locator('[data-sentiment-summary="underlying"] strong').first()).toContainText("۲۰ میلیون");
-  await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toContainText("۸ میلیون");
+  await expect(page.locator('[data-sentiment-summary="market"] strong').first()).toHaveText("۴");
+  await expect(page.locator('[data-sentiment-summary="market"] .sentiment-value-unit')).toHaveText("میلیارد تومان");
+  await expect(page.locator('[data-sentiment-summary="underlying"] strong').first()).toHaveText("۲۰");
+  await expect(page.locator('[data-sentiment-summary="underlying"] .sentiment-value-unit')).toHaveText("میلیون تومان");
+  await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toHaveText("۸");
+  await expect(page.locator('[data-sentiment-summary="selection"] .sentiment-value-unit')).toHaveText("میلیون تومان");
   const figures = await page.locator("#sentimentSummaries").textContent();
   const metadata = await page.locator("#sentimentMeta").textContent();
   release(payload(new URLSearchParams({ underlying_key: "2001", date: "2026-10-20" })));
@@ -425,6 +785,14 @@ test("mobile charts keep compact axes fixed, recenter on touch and adapt when re
   assert.equal(before.x, after.x);
   await expect(axis.locator("span")).not.toHaveCount(0);
   await expect(axis).toContainText("میلیون");
+  const labelBounds = await axis.evaluate((el) => {
+    const bounds = el.getBoundingClientRect();
+    return [...el.children].map((label) => {
+      const rect = label.getBoundingClientRect();
+      return { text: label.textContent, fits: rect.left >= bounds.left && rect.right <= bounds.right };
+    });
+  });
+  assert.deepEqual(labelBounds.filter((label) => !label.fits), [], "Million-unit labels must fit the fixed y axis");
   await expect(page.locator("#sentimentOiHint")).toContainText("افقی بکشید");
   await page.locator('[data-center-chart="sentimentOiChart"]').tap();
   assert.ok(await scroller.evaluate((el) => el.scrollLeft > 0));

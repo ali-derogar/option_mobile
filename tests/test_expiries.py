@@ -82,7 +82,8 @@ def test_invalid_expiry(value):
     assert not expiries.valid_expiry(value)
 
 
-def test_fetch_includes_both_sides_farabo_zero_volume_and_deduplicates(monkeypatch):
+def test_fetch_includes_both_sides_farabo_zero_volume_and_deduplicates(monkeypatch, caplog):
+    caplog.set_level("INFO", logger=expiries.__name__)
     feed = [market_row(), market_row(), market_row(
         24139063101391669, insCode_P="67241904692647336", lVal18AFC_P="طبساما922",
         uaInsCode="41625340598198551", lval30_UA="بساما",
@@ -96,7 +97,8 @@ def test_fetch_includes_both_sides_farabo_zero_volume_and_deduplicates(monkeypat
     assert {row["option_type"] for row in rows} == {"call", "put"}
     assert {row["underlying_symbol"] for row in rows} == {"خودرو", "بساما"}
     assert len(info.call_args.args[0]) == 3
-    assert warning and "3" in warning
+    assert warning is None
+    assert "metadata unavailable for 3 expiry contracts" in caplog.text
 
 
 def test_metadata_correction_happens_for_entire_market_before_limiting(storage, monkeypatch):
@@ -117,13 +119,15 @@ def test_metadata_correction_happens_for_entire_market_before_limiting(storage, 
     assert snapshot["items"][0]["strike_price"] == 26000
 
 
-def test_metadata_outage_uses_valid_feed_with_warning(monkeypatch):
+def test_metadata_outage_uses_valid_feed_and_only_logs_diagnostics(monkeypatch, caplog):
+    caplog.set_level("INFO", logger=expiries.__name__)
     monkeypatch.setattr(expiries, "fetch_public_option_market_watch", lambda: [market_row()])
     monkeypatch.setattr(expiries, "fetch_public_instrument_info_many", MagicMock(side_effect=requests.ConnectionError()))
     snapshot = expiries.fetch_expiry_contracts()
     rows, warning = snapshot.rows, snapshot.warning
     assert rows[0]["end_date"] == 20261022
-    assert warning
+    assert warning is None
+    assert "metadata unavailable for 1 expiry contracts" in caplog.text
 
 
 def test_invalid_dates_are_discarded_with_warning(monkeypatch):
@@ -485,7 +489,7 @@ def test_feed_and_each_metadata_result_are_published_in_order(monkeypatch):
     assert [len(event[0].rows) for event in progress] == [1, 2, 2]
     assert all(event[2] == 2 for event in progress)
     assert len(rows) == 2
-    assert "1" in warning and "نامعتبر" not in warning
+    assert warning is None
 
 
 def test_api_displays_incremental_corrections_before_refresh_completion(api_client, storage, monkeypatch):
@@ -1000,7 +1004,8 @@ def test_metadata_correction_updates_rank_and_filter_before_final_commit(api_cli
     assert complete["market_received_at"] == corrected["market_received_at"]
 
 
-def test_null_instrument_info_preserves_feed_and_reports_missing_metadata(monkeypatch):
+def test_null_instrument_info_preserves_feed_and_logs_missing_metadata(monkeypatch, caplog):
+    caplog.set_level("INFO", logger=expiries.__name__)
     monkeypatch.setattr(expiries, "fetch_public_option_market_watch", lambda: [market_row()])
     response = MagicMock()
     response.json.return_value = {"instrumentInfo": None}
@@ -1010,8 +1015,8 @@ def test_null_instrument_info_preserves_feed_and_reports_missing_metadata(monkey
     snapshot = expiries.fetch_expiry_contracts()
     assert snapshot.rows[0]["end_date"] == 20261022
     assert snapshot.rows[0]["strike_price"] == 1000
-    assert snapshot.warning is not None
-    assert "1" in snapshot.warning and "مشخصات تکمیلی" in snapshot.warning
+    assert snapshot.warning is None
+    assert "metadata unavailable for 1 expiry contracts" in caplog.text
 
 
 def test_database_failure_discards_preview_and_allows_a_later_success(api_client, storage, monkeypatch):

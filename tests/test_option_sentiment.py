@@ -12,7 +12,7 @@ from sqlalchemy import event
 from starlette.testclient import TestClient
 
 from options import app as app_module
-from options.backend.analysis.option_sentiment import analyze_strikes
+from options.backend.analysis.option_sentiment import analyze_participant_flow, analyze_strikes, contract_scope
 from options.backend.api import main
 from options.backend.services import option_sentiment as service
 from options.backend.services import historical_options
@@ -257,6 +257,8 @@ def test_market_date_requires_both_exchanges_and_actual_date(monkeypatch):
 
 
 def test_live_acquisition_reuses_normalization_corrects_metadata_and_keeps_zero_volume(monkeypatch):
+    monkeypatch.setattr(service, "fetch_public_live_quotes", lambda codes, day: {
+        code: {"trade_value": 0, "trade_volume": 0} for code in codes})
     feed = [{"insCode_C": "12345678901234567", "insCode_P": "67241904692647336", "uaInsCode": "41625340598198551",
              "lval30_UA": "بساما", "endDate": 20270113, "strikePrice": 1000, "oP_C": 10, "oP_P": 0,
              "yesterdayOP_C": 20, "yesterdayOP_P": 0, "qTotCap_C": 100, "qTotCap_P": 0, "qTotTran5J_P": 0}]
@@ -269,6 +271,66 @@ def test_live_acquisition_reuses_normalization_corrects_metadata_and_keeps_zero_
     assert result["contracts"][0]["ins_code"] == "12345678901234567"
     assert result["contracts"][1]["buy_open_positions"] == 0
     assert result["data_date"] == DAY
+
+
+@pytest.mark.parametrize("metadata_outage", [False, True])
+def test_missing_supplementary_metadata_is_logged_without_a_public_warning(monkeypatch, caplog, metadata_outage):
+    monkeypatch.setattr(service, "fetch_public_live_quotes", lambda codes, day: {
+        code: {"trade_value": 0, "trade_volume": 0} for code in codes})
+    caplog.set_level("INFO", logger=service.__name__)
+    feed = [{"insCode_C": "1", "insCode_P": "2", "uaInsCode": "2001", "lval30_UA": "خودرو",
+             "endDate": 20261209, "strikePrice": 1000, "oP_C": 50, "oP_P": 20}]
+    monkeypatch.setattr(service, "fetch_market_date", lambda: DAY)
+    monkeypatch.setattr(service, "fetch_public_option_market_watch", lambda: feed)
+    metadata = MagicMock(side_effect=RuntimeError("metadata unavailable")) if metadata_outage else MagicMock(return_value={})
+    monkeypatch.setattr(service, "fetch_public_instrument_info_many", metadata)
+
+    result = service.fetch_current_snapshot()
+
+    assert result["warning"] is None
+    assert result["market_complete"] is True
+    assert len(result["contracts"]) == 2
+    assert result["contracts"][0]["buy_open_positions"] == 50
+    assert "metadata unavailable for 2 option sentiment contracts" in caplog.text
+
+
+def test_invalid_contract_warning_survives_metadata_fallback(monkeypatch, caplog):
+    monkeypatch.setattr(service, "fetch_public_live_quotes", lambda codes, day: {
+        code: {"trade_value": 0, "trade_volume": 0} for code in codes})
+    caplog.set_level("INFO", logger=service.__name__)
+    feed = [{"insCode_C": str(code), "uaInsCode": "2001", "endDate": expiry, "strikePrice": 1000}
+            for code, expiry in [(1, 20261209), (2, 20260229)]]
+    monkeypatch.setattr(service, "fetch_market_date", lambda: DAY)
+    monkeypatch.setattr(service, "fetch_public_option_market_watch", lambda: feed)
+    monkeypatch.setattr(service, "fetch_public_instrument_info_many", lambda codes: {})
+
+    result = service.fetch_current_snapshot()
+
+    assert "نامعتبر" in result["warning"]
+    assert "مشخصات تکمیلی" not in result["warning"]
+    assert result["market_complete"] is False
+    assert len(result["contracts"]) == 1
+    assert "metadata unavailable for 2 option sentiment contracts" in caplog.text
+
+
+@pytest.mark.parametrize("notice", [
+    "مشخصات تکمیلی 23 قرارداد دریافت نشد؛ اطلاعات معتبر خوراک بازار استفاده شد.",
+    "مشخصات تکمیلی 8 قرارداد دریافت نشد؛ از اطلاعات معتبر خوراک بازار استفاده شد.",
+    "مشخصات تکمیلی ۲۳ قرارداد دریافت نشد؛ اطلاعات معتبر خوراک بازار استفاده شد.",
+])
+@pytest.mark.parametrize("data_warning", [None, "پوشش بازار ناقص است."])
+def test_saved_metadata_diagnostic_is_hidden_without_losing_data_quality_warnings(api_client, storage, notice, data_warning):
+    saved_warning = " ".join(filter(None, [notice, data_warning]))
+    storage.replace_option_sentiment_snapshot(DAY, sample(), STAMP, "public_cdn", saved_warning,
+                                              market_complete=data_warning is None)
+
+    response = api_client.get("/api/option-sentiment?underlying_key=2001").json()
+
+    assert response["warning"] == data_warning
+    assert response["quality"]["selected_contract_count"] > 0
+    if data_warning:
+        assert response["summaries"]["market"]["total"]["complete"] is False
+    assert storage.get_option_sentiment_snapshot()["warning"] == saved_warning
 
 
 def test_date_change_or_empty_feed_never_publishes(storage, monkeypatch):
@@ -355,7 +417,7 @@ def test_api_rejects_invalid_filters(api_client, query):
 
 
 def test_refresh_api_background_and_history_cache(api_client, storage, monkeypatch):
-    monkeypatch.setattr(service, "fetch_current_snapshot", lambda: {"data_date": DAY, "received_at": STAMP, "source": "public_cdn", "warning": None, "contracts": sample()})
+    monkeypatch.setattr(service, "fetch_current_snapshot", lambda: {"data_date": DAY, "received_at": STAMP, "source": "public_cdn", "warning": None, "contracts": [{**row, "trade_date": DAY} for row in sample()]})
     assert api_client.post("/api/option-sentiment/refresh", json={}).status_code == 202
     assert api_client.get("/api/option-sentiment").json()["cached"]
     assert api_client.post("/api/option-sentiment/refresh", json={}).json()["status"] == "cooldown"
@@ -389,8 +451,12 @@ def test_slow_analysis_does_not_block_health(api_client, monkeypatch):
         assert pending.result(timeout=2).status_code == 200
 
 
-def test_fixed_official_market_response_matches_all_expiries_and_each_strike():
-    fixture = json.loads((Path(__file__).parent / "fixtures/option_sentiment_real_market.json").read_text())
+@pytest.mark.parametrize("fixture_name", [
+    "option_sentiment_real_market.json",
+    "option_sentiment_real_market_20261025.json",
+])
+def test_fixed_official_market_response_matches_all_expiries_and_each_strike(fixture_name):
+    fixture = json.loads((Path(__file__).parent / "fixtures" / fixture_name).read_text())
     contracts = normalize_public_option_pairs(fixture["rows"])
     key = str(fixture["rows"][0]["uaInsCode"])
     for expiry, expected in fixture["expected"].items():
@@ -399,3 +465,358 @@ def test_fixed_official_market_response_matches_all_expiries_and_each_strike():
         summary = result["summaries"]["selection"]
         assert summary["call"]["value"] == expected["call_value"]
         assert summary["put"]["value"] == expected["put_value"]
+
+
+def test_activity_matrix_preserves_expiries_types_and_selection_without_double_counting():
+    rows = sample()
+    result = analyze_strikes(rows + [rows[0]], '2001')
+    matrix = result['activity']
+    assert matrix['strikes'] == [1000, 1200]
+    assert matrix['expiries'] == ['20261209', '20270113']
+    assert len(matrix['cells']) == 3  # an absent strike/expiry is not a zero-valued contract
+    cells = {(r['strike_price'], r['expiry']): r for r in matrix['cells']}
+    first = cells[1000, '20261209']
+    assert first['call']['value'] == 100_000_000
+    assert first['put']['value'] == 50_000_000
+    assert first['total']['value'] == 150_000_000
+    assert sum(r['total']['value'] for r in matrix['cells']) == result['summaries']['underlying']['total']['value']
+    selected = analyze_strikes(rows, '2001', '20261209')['activity']
+    assert selected['expiries'] == ['20261209']
+    assert len(selected['cells']) == 2
+    assert analyze_strikes(rows, 'missing')['activity']['cells'] == []
+
+
+def test_activity_matrix_distinguishes_missing_zero_partial_and_unknown_type():
+    rows = [contract(trade_value=None), contract('2', trade_value=0),
+            contract('3', option_type='unknown', symbol='?', trade_value=10),
+            contract('4', strike_price=None), contract('5', end_date=0)]
+    cell = analyze_strikes(rows, '2001')['activity']['cells'][0]
+    assert cell['call']['value'] == 0 and not cell['call']['complete']
+    assert cell['total']['value'] == 10 and not cell['total']['complete']
+    assert cell['put']['value'] is None and not cell['put']['complete']
+    matrix = analyze_strikes([contract(trade_value=0)], '2001')['activity']
+    assert matrix['cells'][0]['total']['complete']
+    assert matrix['cells'][0]['total']['value'] == 0
+
+
+def test_flow_is_signed_buy_minus_sell_per_group_and_contract_type_not_oi():
+    rows = contract_scope(sample(), '2001', '20261209')['selection']
+    participants = [
+        {'ins_code': rows[0]['ins_code'], 'natural_buy_value': 90, 'natural_sell_value': 40,
+         'legal_buy_value': 30, 'legal_sell_value': 80},
+        {'ins_code': rows[1]['ins_code'], 'natural_buy_value': 10, 'natural_sell_value': 70,
+         'legal_buy_value': 70, 'legal_sell_value': 10},
+        {'ins_code': rows[2]['ins_code'], 'natural_buy_value': 0, 'natural_sell_value': 0,
+         'legal_buy_value': 0, 'legal_sell_value': 0},
+    ]
+    result = analyze_participant_flow(rows + [contract('99', option_type='unknown', symbol='?')], participants)
+    natural = result['audiences']['natural']['value']
+    legal = result['audiences']['legal']['value']
+    assert [(r['call_flow'], r['put_flow']) for r in natural['strikes']] == [(50, -60), (0, 0)]
+    assert [(r['call_flow'], r['put_flow']) for r in legal['strikes']] == [(-50, 60), (0, 0)]
+    assert natural['coverage']['complete']
+    assert natural['coverage']['value'] == -10
+
+
+def test_flow_missing_sides_partial_groups_and_overflow_cannot_become_zero_or_signal():
+    rows = [contract(), contract('2'), contract('3', option_type='put')]
+    participants = [
+        {'ins_code': rows[0]['ins_code'], 'natural_buy_value': 50, 'natural_sell_value': 10},
+        {'ins_code': '2', 'natural_buy_value': 20},
+        {'ins_code': '3', 'natural_buy_value': 10, 'natural_sell_value': 70},
+    ]
+    result = analyze_participant_flow(rows, participants)['audiences']
+    strike = result['natural']['value']['strikes'][0]
+    assert strike['call_flow'] is None
+    assert strike['coverage']['call_flow']['known'] == 1
+    assert strike['coverage']['call_flow']['total'] == 2
+    assert strike['put_flow'] == -60
+    assert result['natural']['value']['coverage']['value'] is None
+    assert result['legal']['value']['strikes'][0]['put_flow'] is None
+    overflow = analyze_participant_flow(rows[:2], [
+        {'ins_code': r['ins_code'], 'natural_buy_value': 1e308, 'natural_sell_value': 0} for r in rows[:2]
+    ])
+    assert overflow['audiences']['natural']['value']['strikes'][0]['call_flow'] is None
+    json.dumps(overflow, allow_nan=False)
+
+
+@pytest.mark.parametrize('volume,value,expected', [(0, 0, 0), (None, 0, None), (0, None, None), (1, 0, None)])
+def test_only_confirmed_non_trading_contracts_infer_zero_flow(volume, value, expected):
+    result = analyze_participant_flow([contract(trade_volume=volume, trade_value=value)], [])
+    assert result['audiences']['natural']['value']['strikes'][0]['call_flow'] == expected
+
+
+def test_flow_acquisition_is_scoped_date_checked_and_uses_same_day_local_fallback(storage, monkeypatch):
+    storage.replace_option_sentiment_snapshot(DAY, sample(), STAMP, 'public_cdn')
+    storage.insert_client_type_stats([
+        {'ins_code': 12345678901234569, 'rec_date': 20261021, 'natural_buy_value': 10, 'natural_sell_value': 30,
+         'legal_buy_value': 49_999_990, 'legal_sell_value': 49_999_970},
+        {'ins_code': 12345678901234570, 'rec_date': 20261020, 'natural_buy_value': 999, 'natural_sell_value': 0},
+    ])
+    requested = []
+    def remote(codes, day, **kwargs):
+        requested.append((codes, day, kwargs))
+        return [
+            {'ins_code': 12345678901234567, 'rec_date': 20261021, 'natural_buy_value': 80, 'natural_sell_value': 10,
+             'legal_buy_value': 99_999_920, 'legal_sell_value': 99_999_990},
+            {'ins_code': 12345678901234570, 'rec_date': 20261020, 'natural_buy_value': 999, 'natural_sell_value': 0},
+            {'ins_code': 67241904692647336, 'rec_date': 20261021, 'natural_buy_value': 999, 'natural_sell_value': 0},
+        ]
+    monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many', remote)
+    result = service.get_flow_payload(storage, 'خودرو', '20261209', DAY)
+    assert requested == [([12345678901234567, 12345678901234569, 12345678901234570], '20261021', {'timeout': 8})]
+    assert result['data_date'] == DAY and result['underlying_key'] == '2001'
+    assert result['expiry'] == '20261209'
+    strikes = result['audiences']['natural']['value']['strikes']
+    assert strikes[0]['call_flow'] == 70
+    assert strikes[0]['put_flow'] == -20
+    assert strikes[1]['call_flow'] is None
+    assert result['audiences']['natural']['value']['coverage']['known'] == 2
+    assert storage.get_watchlist_codes() == []
+
+
+def test_flow_api_requires_explicit_valid_date_and_retains_activation_gate(api_client, storage, monkeypatch):
+    storage.replace_option_sentiment_snapshot(DAY, sample(), STAMP, 'public_cdn')
+    monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many', lambda *args, **kwargs: [])
+    for query in ('', 'date=bad', f'date={DAY}&expiry=bad'):
+        assert api_client.get('/api/option-sentiment/flow?' + query).status_code == 400
+    response = api_client.get(f'/api/option-sentiment/flow?date={DAY}&underlying_key=2001')
+    assert response.status_code == 200
+    assert response.json()['audiences']['natural']['value']['strikes'][0]['call_flow'] is None
+    storage.set_activated(False)
+    assert api_client.get(f'/api/option-sentiment/flow?date={DAY}').status_code == 423
+
+
+def test_live_flow_accepts_only_volume_matched_current_records_and_does_not_invent_cash(storage, monkeypatch):
+    class Clock:
+        @staticmethod
+        def now(tz):
+            return datetime(2026, 10, 21, 12, tzinfo=tz)
+    monkeypatch.setattr(service, 'datetime', Clock)
+    monkeypatch.setattr(service, 'fetch_market_date', lambda: DAY)
+    rows = [contract(trade_volume=30), contract('2', strike_price=1200, trade_volume=30)]
+    storage.replace_option_sentiment_snapshot(DAY, rows, STAMP, 'public_cdn')
+    def current(codes, **kwargs):
+        assert codes == [2, 12345678901234567]
+        assert kwargs['timeout'] == 8
+        return [
+            {'ins_code': 12345678901234567, 'natural_buy_volume': 20, 'natural_sell_volume': 10,
+             'legal_buy_volume': 10, 'legal_sell_volume': 20},
+            {'ins_code': 2, 'natural_buy_volume': 99, 'natural_sell_volume': 10,
+             'legal_buy_volume': 10, 'legal_sell_volume': 99},
+        ]
+    monkeypatch.setattr(service, 'fetch_public_client_type_current_many', current)
+    forbidden = MagicMock(side_effect=AssertionError('current values must not come from a previous day'))
+    monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many', forbidden)
+    result = service.get_flow_payload(storage, '2001', 'all', DAY)['audiences']
+    assert result['natural']['volume']['strikes'][0]['call_flow'] == 10
+    assert result['legal']['volume']['strikes'][0]['call_flow'] == -10
+    assert result['natural']['volume']['strikes'][1]['call_flow'] is None
+    assert result['natural']['value']['strikes'][0]['call_flow'] is None
+    forbidden.assert_not_called()
+
+
+def test_session_rollover_discards_undated_current_participant_data(storage, monkeypatch):
+    class Clock:
+        @staticmethod
+        def now(tz):
+            return datetime(2026, 10, 21, 12, tzinfo=tz)
+    monkeypatch.setattr(service, 'datetime', Clock)
+    dates = iter([DAY, '2026-10-22'])
+    monkeypatch.setattr(service, 'fetch_market_date', lambda: next(dates))
+    storage.replace_option_sentiment_snapshot(DAY, [contract(trade_volume=30)], STAMP, 'public_cdn')
+    monkeypatch.setattr(service, 'fetch_public_client_type_current_many', lambda *a, **k: [
+        {'ins_code': 12345678901234567, 'natural_buy_volume': 20, 'natural_sell_volume': 10,
+         'legal_buy_volume': 10, 'legal_sell_volume': 20}])
+    result = service.get_flow_payload(storage, '2001', 'all', DAY)
+    assert result['audiences']['natural']['volume']['strikes'][0]['call_flow'] is None
+
+
+def test_flow_fetch_runs_off_event_loop(api_client, monkeypatch):
+    entered, release = Event(), Event()
+    def slow(*args):
+        entered.set()
+        assert release.wait(5)
+        return {'audiences': {}}
+    monkeypatch.setattr(main, 'get_flow_payload', slow)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = pool.submit(api_client.get, f'/api/option-sentiment/flow?date={DAY}')
+        assert entered.wait(2)
+        try:
+            quick = pool.submit(api_client.get, '/api/activation/status')
+            assert quick.result(timeout=2).status_code == 200
+        finally:
+            release.set()
+        assert pending.result(timeout=2).status_code == 200
+
+
+def test_live_quotes_replace_stale_chain_turnover_and_spot_without_copying_zero_placeholders(monkeypatch):
+    feed = [{'insCode_C': '1', 'insCode_P': '2', 'uaInsCode': '2001', 'endDate': 20261209,
+             'strikePrice': 1000, 'oP_C': 50, 'oP_P': 20, 'qTotCap_C': 99999, 'qTotTran5J_C': 999,
+             'qTotCap_P': 8888, 'qTotTran5J_P': 88, 'pDrCotVal_UA': 9000}]
+    monkeypatch.setattr(service, 'fetch_market_date', lambda: DAY)
+    monkeypatch.setattr(service, 'fetch_public_option_market_watch', lambda: feed)
+    monkeypatch.setattr(service, 'fetch_public_instrument_info_many', lambda codes: {})
+    monkeypatch.setattr(service, 'fetch_public_live_quotes', lambda codes, day: {
+        1: {'trade_value': 1234, 'trade_volume': 12},
+        2001: {'last_price': 1100, 'closing_price': 1110},
+    })
+    result = service.fetch_current_snapshot()
+    first, missing = result['contracts']
+    assert first['trade_value'] == 1234 and first['trade_volume'] == 12
+    assert first['underlying_last_price'] == 1100 and first['underlying_closing_price'] == 1110
+    assert first['buy_open_positions'] == 50
+    assert first['trade_date'] == DAY
+    assert missing['trade_value'] is None and missing['trade_volume'] is None
+    assert missing['trade_date'] is None
+
+
+@pytest.mark.parametrize('wrong_day,wrong_volume', [(False, False), (True, False), (False, True)])
+def test_bulk_live_quote_validation_uses_compact_fields_and_rejects_wrong_sessions(monkeypatch, wrong_day, wrong_volume):
+    from options.backend.services import public_options
+    session = MagicMock()
+    session.__enter__.return_value = session
+    def get(url, **kwargs):
+        response = MagicMock()
+        if url == public_options.LIVE_MARKET_WATCH_URL:
+            assert kwargs['params']['paperTypes[8]'] == 9
+            response.json.return_value = {'marketwatch': [
+                {'insCode': '12345678901234567', 'qtj': 12, 'qtc': 1234, 'pdv': 10, 'pcl': 11,
+                 'qTotTran5J': 0, 'qTotCap': 0, 'pDrCotVal': 0, 'pClosing': 0}]}
+        else:
+            assert url.endswith('/12345678901234567')
+            response.json.return_value = {'closingPriceInfo': {
+                'dEven': 20261020 if wrong_day else 20261021, 'qTotTran5J': 13 if wrong_volume else 12, 'qTotCap': 1234}}
+        return response
+    session.get.side_effect = get
+    monkeypatch.setattr(public_options, '_session', lambda: session)
+    if wrong_day or wrong_volume:
+        with pytest.raises(ValueError):
+            public_options.fetch_public_live_quotes([12345678901234567], DAY)
+    else:
+        assert public_options.fetch_public_live_quotes([12345678901234567], DAY) == {
+            12345678901234567: {'trade_value': 1234, 'trade_volume': 12, 'last_price': 10, 'closing_price': 11}}
+
+
+def test_legacy_undated_zero_activity_is_not_assumed_current_and_heatmap_waits_for_verified_data(storage, monkeypatch):
+    storage.replace_option_sentiment_snapshot(DAY, [contract(trade_volume=0, trade_value=0)], STAMP, 'public_cdn')
+    requested = MagicMock(return_value=[])
+    monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many', requested)
+    result = service.get_flow_payload(storage, '2001', 'all', DAY)
+    assert result['audiences']['natural']['volume']['strikes'][0]['call_flow'] is None
+    requested.assert_called_once()
+    assert service.get_payload(storage, '2001', 'all', DAY)['activity']['date_verified'] is False
+    storage.replace_option_sentiment_snapshot(DAY, [contract(trade_volume=0, trade_value=0, trade_date=DAY)], STAMP, 'public_cdn')
+    assert service.get_payload(storage, '2001', 'all', DAY)['activity']['date_verified'] is True
+    result = service.get_flow_payload(storage, '2001', 'all', DAY)
+    assert result['audiences']['natural']['volume']['strikes'][0]['call_flow'] == 0
+
+
+@pytest.mark.parametrize('total,size,scale', [(100, 1000, 1), (100_000, 1000, 1000), (999, 1000, None), (100_000, None, None)])
+def test_participant_cash_is_scaled_only_when_both_sides_match_premium_turnover(total, size, scale):
+    participant = {'natural_buy_value': 80, 'natural_sell_value': 30,
+                   'legal_buy_value': 20, 'legal_sell_value': 70, 'natural_buy_volume': 8}
+    result = service._align_participant_cash(participant, contract(trade_value=total, contract_size=size))
+    assert result['natural_buy_value'] == (80 * scale if scale else None)
+    assert result['natural_sell_value'] == (30 * scale if scale else None)
+    assert result['natural_buy_volume'] == 8
+    if scale:
+        assert result['natural_buy_value'] + result['legal_buy_value'] == total
+        assert result['natural_sell_value'] + result['legal_sell_value'] == total
+
+
+def test_participant_cash_does_not_combine_partial_side_values_or_allow_overflow():
+    result = service._align_participant_cash({'natural_buy_value': 100, 'natural_sell_value': 20}, contract())
+    assert result['natural_buy_value'] is None and result['natural_sell_value'] is None
+    result = service._align_participant_cash({f'{g}_{s}_value': 1e308 for g in ('natural', 'legal') for s in ('buy', 'sell')}, contract(trade_value=1e308))
+    json.dumps(result, allow_nan=False)
+    assert result['natural_buy_value'] is None
+
+
+def test_real_public_option_history_cash_reconciles_size_and_signed_volume():
+    fixture = json.loads((Path(__file__).parent / 'fixtures/option_sentiment_cash_real_20261024.json').read_text())
+    row = contract(fixture['ins_code'], trade_volume=fixture['trade_volume'], trade_value=fixture['trade_value'], contract_size=fixture['contract_size'])
+    participant = service._align_participant_cash({'ins_code': fixture['ins_code'], **fixture['participant']}, row)
+    result = analyze_participant_flow([row], [participant])['audiences']
+    assert result['natural']['value']['strikes'][0]['call_flow'] == fixture['expected_natural_net_rial']
+    assert result['legal']['value']['strikes'][0]['call_flow'] == -fixture['expected_natural_net_rial']
+    assert result['natural']['volume']['strikes'][0]['call_flow'] == fixture['expected_natural_net_contracts']
+    assert result['legal']['volume']['strikes'][0]['call_flow'] == -fixture['expected_natural_net_contracts']
+
+
+@pytest.mark.parametrize('record_source', ['local', 'remote'])
+@pytest.mark.parametrize('market_volume,expected', [(0, 0), (30, 10), (100, None)])
+def test_participant_volume_reconciliation_rejects_stale_same_day_counts(storage, monkeypatch, record_source, market_volume, expected):
+    row = contract(trade_volume=market_volume, trade_value=0, trade_date=DAY)
+    participant = {'ins_code': int(row['ins_code']), 'rec_date': 20261021,
+                   'natural_buy_volume': 20, 'natural_sell_volume': 10,
+                   'legal_buy_volume': 10, 'legal_sell_volume': 20}
+    storage.replace_option_sentiment_snapshot(DAY, [row], STAMP, 'public_cdn')
+    if record_source == 'local':
+        storage.insert_client_type_stats([participant])
+    monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many',
+                        lambda *args, **kwargs: [participant] if record_source == 'remote' else [])
+    result = service.get_flow_payload(storage, '2001', 'all', DAY)['audiences']
+    assert result['natural']['volume']['strikes'][0]['call_flow'] == expected
+    assert result['legal']['volume']['strikes'][0]['call_flow'] == (-expected if expected is not None else None)
+
+
+def test_legacy_history_refresh_repairs_activity_and_preserves_archived_oi(api_client, storage, monkeypatch):
+    storage.replace_option_sentiment_snapshot(DAY, [contract(buy_open_positions=70, trade_value=999)], STAMP, 'public_cdn')
+    monkeypatch.setattr(service, 'fetch_public_option_history_contracts', lambda *args: [
+        contract(buy_open_positions=None, sell_open_positions=None, yesterday_open_positions=None,
+                 trade_value=222, trade_volume=12, underlying_last_price=1200)])
+    assert api_client.get(f'/api/option-sentiment?date={DAY}').json()['activity']['date_verified'] is False
+    response = api_client.post('/api/option-sentiment/refresh', json={'date': DAY})
+    assert response.status_code == 202
+    snapshot = storage.get_option_sentiment_snapshot(DAY)
+    assert snapshot['source'] == 'public_cdn'
+    assert snapshot['contracts'][0]['buy_open_positions'] == 70
+    assert snapshot['contracts'][0]['yesterday_open_positions'] == 40
+    assert snapshot['contracts'][0]['trade_value'] == 222
+    assert snapshot['contracts'][0]['underlying_last_price'] == 1200
+    assert snapshot['contracts'][0]['trade_date'] == DAY
+    assert api_client.get(f'/api/option-sentiment?date={DAY}').json()['activity']['date_verified'] is True
+    assert api_client.post('/api/option-sentiment/refresh', json={'date': DAY}).json()['status'] == 'cached'
+
+
+def test_flow_response_keeps_the_snapshot_version_captured_before_remote_fetch(storage, monkeypatch):
+    row = contract(trade_volume=30, trade_value=0, trade_date=DAY)
+    storage.replace_option_sentiment_snapshot(DAY, [row], STAMP, 'public_cdn')
+    newer_stamp = '2026-10-22T08:05:00+00:00'
+    def remote(*args, **kwargs):
+        storage.replace_option_sentiment_snapshot(DAY, [contract(trade_volume=100)], newer_stamp, 'public_cdn')
+        return [{'ins_code': int(row['ins_code']), 'rec_date': 20261021,
+                 'natural_buy_volume': 20, 'natural_sell_volume': 10,
+                 'legal_buy_volume': 10, 'legal_sell_volume': 20}]
+    monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many', remote)
+    result = service.get_flow_payload(storage, '2001', 'all', DAY)
+    assert result['received_at'] == STAMP
+    assert result['audiences']['natural']['volume']['strikes'][0]['call_flow'] == 10
+    assert storage.get_option_sentiment_snapshot(DAY)['received_at'] == newer_stamp
+
+
+def test_legacy_history_repair_retains_positions_for_contracts_missing_from_history(storage, monkeypatch):
+    storage.replace_option_sentiment_snapshot(DAY, [contract(buy_open_positions=70), contract('2', buy_open_positions=20)],
+                                              STAMP, 'public_cdn', 'پوشش بازار ناقص است.', market_complete=False)
+    monkeypatch.setattr(service, 'fetch_public_option_history_contracts', lambda *args: [
+        contract(buy_open_positions=None, sell_open_positions=None, yesterday_open_positions=None, trade_value=222)])
+    result = service.fetch_historical_snapshot(storage, DAY)
+    rows = {row['ins_code']: row for row in result['contracts']}
+    assert rows['12345678901234567']['buy_open_positions'] == 70
+    assert rows['2']['buy_open_positions'] == 20
+    assert rows['2']['trade_value'] is None and rows['2']['trade_volume'] is None
+    assert rows['2']['underlying_last_price'] is None and rows['2']['trade_date'] is None
+    assert result['market_complete'] is False
+    assert result['warning'] == 'پوشش بازار ناقص است.'
+
+
+def test_failed_legacy_history_repair_preserves_the_previous_snapshot(storage, monkeypatch):
+    storage.replace_option_sentiment_snapshot(DAY, [contract(buy_open_positions=70, trade_value=999)], STAMP, 'public_cdn')
+    original = storage.get_option_sentiment_snapshot(DAY)
+    monkeypatch.setattr(service, 'fetch_public_option_history_contracts', lambda *args: [])
+    job = service.OptionSentimentRefresh()
+    assert job.begin(DAY)['status'] == 'started'
+    job.run(storage, DAY)
+    assert job.status()['last_error']
+    assert storage.get_option_sentiment_snapshot(DAY) == original
