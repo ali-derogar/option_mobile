@@ -269,6 +269,61 @@ test("participant flow failure retries independently and rejects a mismatched re
   await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
 });
 
+test("a failed count retry keeps verified bars and the selected audience until recovery", async (t) => {
+  const {page, state, open} = await fixture(t, 320);
+  let complete = false;
+  state.flowHandler = params => {
+    const result = flowPayload(params);
+    if (!complete) for (const audience of Object.values(result.audiences)) {
+      audience.volume.coverage = metric(null, 3, 4);
+      audience.volume.strikes[1].put_flow = null;
+      audience.volume.strikes[1].coverage.put_flow = metric(null, 0, 1);
+    }
+    return result;
+  };
+  const chartValues = () => page.evaluate(() => Chart.getChart('sentimentFlowChart')?.data.datasets.map(d => d.data.map(p => p.y)));
+  await open();
+  await expect.poll(chartValues).toEqual([[20, -10], [-5, null]]);
+  await page.locator('#sentimentFlowAudience').selectOption('legal');
+  await expect.poll(chartValues).toEqual([[-20, 10], [5, null]]);
+
+  state.failFlow = true;
+  await page.locator('#sentimentFlowRetry').click();
+  await expect(page.locator('#sentimentFlowStatus')).toContainText('ناموفق');
+  await expect.poll(chartValues).toEqual([[-20, 10], [5, null]]);
+  await expect(page.locator('#sentimentFlowAudience')).toHaveValue('legal');
+  await expect(page.locator('#sentimentFlowRetry')).toBeEnabled();
+
+  state.failFlow = false;
+  complete = true;
+  await page.locator('#sentimentFlowRetry').click();
+  await expect.poll(chartValues).toEqual([[-20, 10], [5, 0]]);
+  await expect(page.locator('#sentimentFlowStatus')).toBeEmpty();
+  await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
+  assert.equal(state.flowRequests.length, 3);
+});
+
+test("missing unused cash does not expire complete contract counts or refetch them after returning", async (t) => {
+  const {page, state, open} = await fixture(t);
+  state.flowHandler = params => {
+    const result = flowPayload(params);
+    for (const audience of Object.values(result.audiences)) {
+      audience.value = {coverage: metric(null, 0, 4), strikes: []};
+    }
+    return result;
+  };
+  await open();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  await expect(page.locator('#sentimentFlowStatus')).toBeEmpty();
+  await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
+  await page.getByRole('tab', {name: 'حقیقی', exact: true}).click();
+  await page.clock.fastForward(60001);
+  await open();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  assert.equal(state.flowRequests.length, 1);
+  assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [20, -10]);
+});
+
 test("participant flow missing and partial values stay absent while confirmed zero stays zero", async (t) => {
   const { page, state, open } = await fixture(t);
   state.flowHandler = params => {

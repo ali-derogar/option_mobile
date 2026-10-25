@@ -13,7 +13,7 @@ from starlette.testclient import TestClient
 
 from options import app as app_module
 from options.backend.api import main
-from options.backend.services import expiries, public_options
+from options.backend.services import expiries, expiry_selection, public_options
 from options.backend.services.expiry_selection import (
     ExpiryFilters,
     ExpirySnapshot,
@@ -349,6 +349,40 @@ def test_api_uses_tehran_midnight_and_ignores_historical_filter(api_client, stor
     response = api_client.get("/api/expiries?date=2000-01-01").json()
     assert response["as_of_date"] == expected_date
     assert response["nearest_days"] == days
+
+
+@pytest.mark.parametrize("partial", [False, True], ids=["saved", "in-progress"])
+def test_expiry_status_supports_android_python310_date_parsing(api_client, storage, monkeypatch, partial):
+    class AndroidDate(date):
+        @classmethod
+        def fromisoformat(cls, value):
+            # Python 3.10 accepts YYYY-MM-DD, but not compact market dates.
+            if len(value) != 10 or value[4] != "-" or value[7] != "-":
+                raise ValueError(f"Invalid isoformat string: {value!r}")
+            return super().fromisoformat(value)
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 21, 12, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(expiry_selection, "date", AndroidDate)
+    monkeypatch.setattr(main, "datetime", FrozenDatetime)
+    rows = [contract(1, 20261021), contract(2, 20261022), contract(3, 20261101)]
+    storage.replace_expiry_contracts(rows)
+    if partial:
+        main.expiry_refresh_job.begin()
+        main.expiry_refresh_job._publish(ExpirySnapshot(rows), 1, len(rows))
+
+    response = api_client.get("/api/expiries")
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["partial"] is partial
+    assert result["refresh"]["running"] is partial
+    assert result["as_of_date"] == "2026-10-21"
+    assert result["nearest_days"] == 0
+    assert [(row["ins_code"], row["days_remaining"]) for row in result["items"]] == [("1", 0), ("2", 1), ("3", 11)]
 
 
 def test_no_future_expiry_keeps_successful_update_metadata(storage):

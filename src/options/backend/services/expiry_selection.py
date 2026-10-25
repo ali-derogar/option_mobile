@@ -123,7 +123,8 @@ def select_expiries(
         range_current = str(row.get("price_range_date")) == str(cutoff)
         if not range_current or price_min is None or price_max is None or price_min > price_max:
             price_min = price_max = None
-        days_remaining = (date.fromisoformat(str(row["end_date"])) - today).days
+        # Android uses Python 3.10, whose fromisoformat rejects YYYYMMDD.
+        days_remaining = (datetime.strptime(str(row["end_date"]), "%Y%m%d").date() - today).days
         estimate = estimate_call_cash_arbitrage(
             option_type=row["option_type"], days_remaining=days_remaining,
             pricing_current=pricing_current, strike_price=strike,
