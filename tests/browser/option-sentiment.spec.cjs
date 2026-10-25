@@ -631,6 +631,30 @@ test("call and put turnover preserve missing data, known zero and partial covera
   await expect(card.locator('.sentiment-value-unit')).toHaveText('میلیون تومان');
   await expect(card.locator('.sentiment-value-total small')).toHaveText('داده ناقص: ۲ از ۴ قرارداد');
   await expect(card.locator('.sentiment-value-ratio strong')).toHaveText('—');
+  await expect(card.locator('.sentiment-value-ratio small')).toHaveText('در انتظار تکمیل داده');
+});
+
+test("call to put ratio recovers when missing dated quotes arrive and handles genuine zero turnover", async (t) => {
+  const {page, state, open} = await fixture(t, 320);
+  let stage = 'partial';
+  state.handler = params => {
+    const result = payload(params);
+    if (stage === 'partial') result.summaries.market = {
+      call: metric(1200, 1, 2), put: metric(600), total: metric(1800, 2, 3),
+      call_put_ratio: null, ratio_state: 'unavailable',
+    };
+    else result.summaries.market = stage === 'zero' ? summary(0, 0) : stage === 'no-put' ? summary(1200, 0) : summary(1200, 600);
+    return result;
+  };
+  await open();
+  const card = page.locator('[data-sentiment-summary="market"]');
+  await expect(card.locator('.sentiment-value-ratio small')).toHaveText('در انتظار تکمیل داده');
+  for (const [next, ratio, note] of [['complete', '۲', ''], ['no-put', '∞', ''], ['zero', '—', 'معامله‌ای ثبت نشده']]) {
+    stage = next;
+    await page.locator('#sentimentRefresh').click();
+    await expect(card.locator('.sentiment-value-ratio strong')).toHaveText(ratio);
+    await expect(card.locator('.sentiment-value-ratio small')).toHaveText(note);
+  }
 });
 
 async function selectOiModes(page, selected) {

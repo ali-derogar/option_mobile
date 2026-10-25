@@ -301,14 +301,15 @@ def get_flow_payload(storage: Storage, key: str | None, expiry: str, data_date: 
             merge_remote(remote)
         except Exception:
             logger.info("Participant flow fetch failed; using same-date local records", exc_info=True)
-        if current and include_cash:
-            cash_needed = [code for code in needed if any(participants.get(str(code), {}).get(field) is None
-                                                        for field in PARTICIPANT_FIELDS["value"])]
-            if cash_needed:
+        if current:
+            measures = ("volume", "value") if include_cash else ("volume",)
+            missing_details = [code for code in needed if any(participants.get(str(code), {}).get(field) is None
+                                                            for measure in measures for field in PARTICIPANT_FIELDS[measure])]
+            if missing_details:
                 try:
-                    merge_remote(fetch_public_client_type_for_date_many(cash_needed, api_date, timeout=8))
+                    merge_remote(fetch_public_client_type_for_date_many(missing_details, api_date, timeout=8))
                 except Exception:
-                    logger.info("Same-date participant cash unavailable; keeping verified values", exc_info=True)
+                    logger.info("Same-date participant details unavailable; keeping verified values", exc_info=True)
     result = analyze_participant_flow(rows, list(participants.values()), known_zero_codes=known_zero_codes)
     if snapshot and not snapshot.get("market_complete", True):
         for audience in result["audiences"].values():

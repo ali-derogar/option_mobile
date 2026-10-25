@@ -2801,10 +2801,6 @@ body[data-view="underlying"] #strikeFilter {
   color: var(--red);
 }
 
-.sentiment-coverage:not(:empty) {
-  color: var(--amber);
-}
-
 .sentiment-market-summaries {
   display: grid;
   gap: 12px;

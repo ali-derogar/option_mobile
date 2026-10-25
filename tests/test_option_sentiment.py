@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
+import requests
 from sqlalchemy import event
 from starlette.testclient import TestClient
 
@@ -721,6 +722,136 @@ def test_bulk_live_quote_validation_uses_compact_fields_and_rejects_wrong_sessio
     else:
         assert public_options.fetch_public_live_quotes([12345678901234567], DAY) == {
             12345678901234567: {'trade_value': 1234, 'trade_volume': 12, 'last_price': 10, 'closing_price': 11}}
+
+
+@pytest.mark.parametrize('changes,accepted', [
+    ({}, True), ({'qTotTran5J': 0, 'qTotCap': 0}, True),
+    ({'dEven': 20261020}, False), ({'dEven': None, 'finalLastDate': 20261021}, False),
+    ({'insCode': '99'}, False), ({'qTotTran5J': None}, False), ({'qTotCap': None}, False),
+    ({'qTotTran5J': -1}, False), ({'qTotCap': -1}, False),
+    ({'qTotCap': float('nan')}, False), ({'qTotTran5J': True}, False),
+])
+def test_missing_market_quotes_require_dated_valid_activity(monkeypatch, changes, accepted):
+    from options.backend.services import public_options
+    row = {'insCode': '0', 'dEven': 20261021, 'qTotTran5J': 30, 'qTotCap': 1200,
+           'pDrCotVal': 40, 'pClosing': 39, **changes}
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.get.return_value.json.return_value = {'closingPriceInfo': row}
+    monkeypatch.setattr(public_options, '_session', lambda: session)
+
+    quote = public_options.fetch_public_quote_for_date(2, DAY)
+
+    assert (quote is not None) is accepted
+    if accepted:
+        assert quote['trade_volume'] == row['qTotTran5J']
+        assert quote['trade_value'] == row['qTotCap']
+
+
+@pytest.mark.parametrize('missing_kind', ['absent', 'partial', 'negative'])
+def test_dated_fallback_restores_turnover_ratio_and_confirmed_zero_flow(monkeypatch, missing_kind):
+    from options.backend.services import public_options
+    session = MagicMock()
+    session.__enter__.return_value = session
+    def get(url, **kwargs):
+        response = MagicMock()
+        if url == public_options.LIVE_MARKET_WATCH_URL:
+            response.json.return_value = {'marketwatch': [
+                {'insCode': '1', 'qtj': 30, 'qtc': 1200, 'pdv': 40, 'pcl': 39},
+                {'insCode': '3', 'qtj': 10, 'qtc': 600, 'pdv': 60, 'pcl': 59}]}
+            if missing_kind != 'absent':
+                response.json.return_value['marketwatch'].append({'insCode': '2', 'qtj': 0, 'qtc': None if missing_kind == 'partial' else -1})
+        else:
+            response.json.return_value = {'closingPriceInfo': {'dEven': 20261021, 'qTotTran5J': 10, 'qTotCap': 600}}
+        return response
+    session.get.side_effect = get
+    monkeypatch.setattr(public_options, '_session', lambda: session)
+    fallback = MagicMock(return_value={'trade_volume': 0, 'trade_value': 0, 'last_price': 1, 'closing_price': 1})
+    monkeypatch.setattr(public_options, 'fetch_public_quote_for_date', fallback)
+
+    quotes = public_options.fetch_public_live_quotes([1, 2, 3, 2], DAY)
+
+    fallback.assert_called_once_with(2, DAY)
+    rows = [contract('1', **quotes[1]), contract('2', **quotes[2]), contract('3', option_type='put', **quotes[3])]
+    summary = analyze_strikes(rows, '2001')['summaries']['market']
+    assert summary['call_put_ratio'] == 2
+    assert summary['call']['complete'] and summary['put']['complete']
+    flow = analyze_participant_flow(rows[1:2], [])['audiences']['natural']['volume']
+    assert flow['coverage']['complete'] and flow['strikes'][0]['call_flow'] == 0
+
+
+@pytest.mark.parametrize('failure', [None, requests.Timeout('unavailable')])
+def test_unavailable_dated_fallback_keeps_activity_unknown(monkeypatch, failure):
+    from options.backend.services import public_options
+    session = MagicMock()
+    session.__enter__.return_value = session
+    def get(url, **kwargs):
+        response = MagicMock()
+        response.json.return_value = {'marketwatch': [{'insCode': '1', 'qtj': 30, 'qtc': 1200}],
+                                      'closingPriceInfo': {'dEven': 20261021, 'qTotTran5J': 30, 'qTotCap': 1200}}
+        return response
+    session.get.side_effect = get
+    monkeypatch.setattr(public_options, '_session', lambda: session)
+    monkeypatch.setattr(public_options, 'fetch_public_quote_for_date', MagicMock(return_value=None, side_effect=failure))
+
+    quotes = public_options.fetch_public_live_quotes([1, 2], DAY)
+
+    assert 2 not in quotes
+    summary = analyze_strikes([contract('1', **quotes[1]), contract('2', option_type='put', trade_value=None)], '2001')['summaries']['market']
+    assert summary['ratio_state'] == 'unavailable' and summary['call_put_ratio'] is None
+
+
+def test_empty_market_watch_can_use_individually_verified_zero_quotes(monkeypatch):
+    from options.backend.services import public_options
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.get.return_value.json.return_value = {'marketwatch': []}
+    monkeypatch.setattr(public_options, '_session', lambda: session)
+    monkeypatch.setattr(public_options, 'fetch_public_quote_for_date', lambda code, day: {'trade_volume': 0, 'trade_value': 0})
+    assert public_options.fetch_public_live_quotes([1], DAY) == {1: {'trade_volume': 0, 'trade_value': 0}}
+
+
+def test_missing_quote_retry_is_bounded_and_keeps_successful_responses(monkeypatch):
+    from options.backend.services import public_options
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.get.return_value.json.return_value = {'marketwatch': []}
+    monkeypatch.setattr(public_options, '_session', lambda: session)
+    attempts = []
+    def fallback(code, day):
+        attempts.append(code)
+        if code == 1:
+            return {'trade_volume': 0, 'trade_value': 0}
+        if attempts.count(code) == 1:
+            raise requests.Timeout('temporary outage')
+        return {'trade_volume': 30, 'trade_value': 1200}
+    monkeypatch.setattr(public_options, 'fetch_public_quote_for_date', fallback)
+
+    result = public_options.fetch_public_live_quotes([1, 2], DAY)
+
+    assert result[1]['trade_volume'] == 0 and result[2]['trade_volume'] == 30
+    assert attempts.count(1) == 1 and attempts.count(2) == 2
+
+
+@pytest.mark.parametrize('rec_date,volume,expected', [(20261021, 30, 10), (20261020, 30, None), (20261021, 31, None)])
+def test_missing_current_counts_only_use_reconciled_same_day_history(storage, monkeypatch, rec_date, volume, expected):
+    class Clock:
+        @staticmethod
+        def now(tz):
+            return datetime(2026, 10, 21, 12, tzinfo=tz)
+    monkeypatch.setattr(service, 'datetime', Clock)
+    monkeypatch.setattr(service, 'fetch_market_date', lambda: DAY)
+    storage.replace_option_sentiment_snapshot(DAY, [contract(trade_volume=volume, trade_date=DAY)], STAMP, 'public_cdn')
+    monkeypatch.setattr(service, 'fetch_public_client_type_current_many', lambda *a, **k: [])
+    history = MagicMock(return_value=[{'ins_code': 12345678901234567, 'rec_date': rec_date,
+                                    'natural_buy_volume': 20, 'natural_sell_volume': 10,
+                                    'legal_buy_volume': 10, 'legal_sell_volume': 20}])
+    monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many', history)
+
+    flow = service.get_flow_payload(storage, '2001', 'all', DAY, include_cash=False)
+
+    history.assert_called_once_with([12345678901234567], '20261021', timeout=8)
+    assert flow['audiences']['natural']['volume']['strikes'][0]['call_flow'] == expected
 
 
 def test_legacy_undated_zero_activity_is_not_assumed_current_and_heatmap_waits_for_verified_data(storage, monkeypatch):

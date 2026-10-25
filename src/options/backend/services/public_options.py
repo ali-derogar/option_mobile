@@ -75,21 +75,66 @@ def fetch_public_live_quotes(ins_codes: list[int], data_date: str) -> dict[int, 
                 "last_price": _to_float(r.get("pdv")), "closing_price": _to_float(r.get("pcl")),
             } for r in raw if isinstance(r, dict) and _to_int(r.get("insCode"))
         }
-        candidates = [code for code in ins_codes if code in quotes and quotes[code]["trade_volume"] is not None]
-        if not candidates:
-            raise ValueError("empty live option quotes")
-        active = [code for code in candidates if quotes[code]["trade_volume"] > 0]
-        probe = min(active or candidates, key=lambda code: quotes[code]["trade_volume"])
-        response = session.get(CLOSING_PRICE_INFO_URL.format(ins_code=probe), timeout=min(TSETMC_REQUEST_TIMEOUT, 10))
-        response.raise_for_status()
-        dated = response.json().get("closingPriceInfo", {})
-        day = _to_int(dated.get("dEven")) or _to_int(dated.get("finalLastDate"))
-        if day != int(data_date.replace("-", "")):
-            raise ValueError("live quote date mismatch")
-        if any(quotes[probe][field] != _to_float(dated.get(source))
-               for field, source in (("trade_volume", "qTotTran5J"), ("trade_value", "qTotCap"))):
-            raise ValueError("live market and dated quote disagree")
+        candidates = [code for code in ins_codes if code in quotes and all(
+            quotes[code][field] is not None and quotes[code][field] >= 0 for field in ("trade_volume", "trade_value"))]
+        if candidates:
+            active = [code for code in candidates if quotes[code]["trade_volume"] > 0]
+            probe = min(active or candidates, key=lambda code: quotes[code]["trade_volume"])
+            response = session.get(CLOSING_PRICE_INFO_URL.format(ins_code=probe), timeout=min(TSETMC_REQUEST_TIMEOUT, 10))
+            response.raise_for_status()
+            dated = response.json().get("closingPriceInfo", {})
+            day = _to_int(dated.get("dEven")) or _to_int(dated.get("finalLastDate"))
+            if day != int(data_date.replace("-", "")):
+                raise ValueError("live quote date mismatch")
+            if _to_int(dated.get("insCode")) not in (None, 0, probe):
+                raise ValueError("live quote instrument mismatch")
+            if any(quotes[probe][field] != _to_float(dated.get(source))
+                   for field, source in (("trade_volume", "qTotTran5J"), ("trade_value", "qTotCap"))):
+                raise ValueError("live market and dated quote disagree")
+        else:
+            # Without a dated probe, only individually dated responses are safe.
+            quotes = {}
+    # MarketWatch omits many non-trading contracts. Confirm their actual daily
+    # activity rather than treating an absent quote as either zero or unknown.
+    missing = sorted({code for code in ins_codes if code not in quotes or any(
+        quotes[code][field] is None or quotes[code][field] < 0 for field in ("trade_volume", "trade_value"))})
+    for code in missing:
+        quotes.pop(code, None)
+    if missing:
+        with ThreadPoolExecutor(max_workers=max(1, min(TSETMC_PUBLIC_CLIENT_TYPE_WORKERS, len(missing)))) as executor:
+            for _ in range(2):
+                futures = {executor.submit(fetch_public_quote_for_date, code, data_date): code for code in missing}
+                for future in as_completed(futures):
+                    try:
+                        quote = future.result()
+                        if quote is not None:
+                            quotes[futures[future]] = quote
+                    except (requests.RequestException, ValueError):
+                        continue
+                missing = [code for code in missing if code not in quotes]
+                if not missing:
+                    break
+    if not any(code in quotes for code in ins_codes):
+        raise ValueError("empty live option quotes")
     return quotes
+
+
+def fetch_public_quote_for_date(ins_code: int, data_date: str) -> dict | None:
+    """Read a missing quote only when its instrument, date and activity agree."""
+    with _session() as session:
+        response = session.get(CLOSING_PRICE_INFO_URL.format(ins_code=ins_code), timeout=min(TSETMC_REQUEST_TIMEOUT, 10))
+        response.raise_for_status()
+        payload = response.json()
+    row = payload.get("closingPriceInfo") if isinstance(payload, dict) else None
+    if not isinstance(row, dict) or _to_int(row.get("dEven")) != int(data_date.replace("-", "")):
+        return None
+    if _to_int(row.get("insCode")) not in (None, 0, ins_code):
+        return None
+    volume, value = _to_float(row.get("qTotTran5J")), _to_float(row.get("qTotCap"))
+    if volume is None or value is None or volume < 0 or value < 0:
+        return None
+    return {"trade_volume": volume, "trade_value": value,
+            "last_price": _to_float(row.get("pDrCotVal")), "closing_price": _to_float(row.get("pClosing"))}
 
 
 def fetch_public_instrument_info(ins_code: int) -> Optional[Dict[str, Any]]:

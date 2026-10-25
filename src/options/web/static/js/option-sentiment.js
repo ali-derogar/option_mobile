@@ -219,10 +219,13 @@ window.OptionSentiment = (() => {
 
   function coverage(info) {
     if (!info || info.complete) return "";
-    if (info.overflow) return "مقدار از محدوده محاسبه خارج است.";
-    if (!info.total) return "داده موجود نیست.";
-    if (info.known === info.total) return "پوشش بازار ناقص است.";
-    return `داده ناقص: ${fmtNum(info.known)} از ${fmtNum(info.total)} قرارداد`;
+    if (info.overflow) return "قابل محاسبه نیست.";
+    const known = Number(info.known), total = Number(info.total);
+    if (!Number.isFinite(known) || !Number.isFinite(total) || total <= 0 || known < 0 || known >= total) return "پوشش داده: —";
+    // Truncate so a partially observed selection cannot round up to 100%.
+    const percent = Math.floor(known / total * 1000) / 10;
+    const label = known > 0 && percent === 0 ? "کمتر از ۰٫۱" : percent.toLocaleString("fa-IR", { maximumFractionDigits: 1 });
+    return `پوشش داده: ${label}٪`;
   }
 
   function money(value, divisor) {
@@ -243,13 +246,17 @@ window.OptionSentiment = (() => {
         <small>${escapeHtml(coverage(metric))}</small></div>`;
     };
     const ratio = summary.ratio_state === "infinite" ? "∞" : fmtRatio(summary.call_put_ratio);
+    const ratioCoverage = { known: summary.call.known + summary.put.known, total: summary.call.total + summary.put.total,
+      complete: summary.call.complete && summary.put.complete, overflow: summary.call.overflow || summary.put.overflow };
+    const ratioNote = ratio !== "—" ? "" : coverage(ratioCoverage)
+      || (summary.call.value === 0 && summary.put.value === 0 ? "معامله‌ای ثبت نشده" : "قابل محاسبه نیست.");
     return `<section class="sentiment-value-block" data-sentiment-summary="${key}">
       <div class="sentiment-value-heading"><h3>${escapeHtml(title)}</h3><span class="sentiment-value-unit" aria-label="واحد ارزش معاملات">${unit} تومان</span></div>
       <p class="sentiment-value-scope">${escapeHtml(subtitle)}</p>
       <div class="sentiment-value-grid">${sides.map(({ key, label }) => metricHtml(key, `ارزش معاملات ${label}`, summary[key])).join("")}</div>
       <div class="sentiment-value-totals">
         ${metricHtml("total", "مجموع", summary.total)}
-        <div class="sentiment-value sentiment-value-ratio"><span>نسبت کال به پوت</span><strong dir="ltr">${ratio}</strong></div>
+        <div class="sentiment-value sentiment-value-ratio"><span>نسبت کال به پوت</span><strong dir="ltr">${ratio}</strong><small>${ratioNote}</small></div>
       </div>
     </section>`;
   }
@@ -265,12 +272,13 @@ window.OptionSentiment = (() => {
     const dateLabel = data.data_date ? fmtDate(data.data_date) : "—";
     const receivedTime = data.received_at ? new Date(data.received_at).toLocaleTimeString("fa-IR", { timeZone: "Asia/Tehran", hour: "2-digit", minute: "2-digit" }) : "—";
     text("sentimentMeta", `${dateLabel} · به‌روزرسانی ${receivedTime}`);
-    const messages = [data.warning];
-    if (data.quality.unknown_type_count) messages.push(`${fmtNum(data.quality.unknown_type_count)} قرارداد با نوع اختیار نامشخص در تفکیک Call/Put لحاظ نشده است؛ ارزش معاملات موجود آن‌ها فقط در مجموع لحاظ می‌شود.`);
-    if (data.quality.invalid_strike_count) messages.push(`${fmtNum(data.quality.invalid_strike_count)} قرارداد قیمت اعمال معتبر ندارد.`);
-    if (data.quality.spot_price_conflict) messages.push("قیمت‌های گزارش‌شده دارایی پایه ناسازگارند؛ نشانگر قیمت فقط در صورت وجود مقدار سازگار نمایش داده می‌شود.");
+    if (data.warning || data.quality.unknown_type_count || data.quality.invalid_strike_count || data.quality.spot_price_conflict) {
+      console.info("[OptionSentiment] Data quality", { date: data.data_date, underlying: data.underlying_key,
+        warning: data.warning, unknownTypes: data.quality.unknown_type_count, invalidStrikes: data.quality.invalid_strike_count,
+        spotPriceConflict: Boolean(data.quality.spot_price_conflict) });
+    }
     const warning = element("sentimentWarning");
-    warning.textContent = messages.filter(Boolean).join(" ");
+    warning.textContent = data.quality.spot_price_conflict ? "قیمت پایه برای این دریافت قابل نمایش نیست." : "";
     warning.classList.toggle("hidden", !warning.textContent);
     element("sentimentSummaries").innerHTML = summaryHtml("market", "کل بازار", data.summaries.market, "همه نمادها · همه سررسیدها")
       + summaryHtml("underlying", "دارایی پایه", data.summaries.underlying, `${assetName} · همه سررسیدها`)
@@ -334,6 +342,7 @@ window.OptionSentiment = (() => {
     const info = flowVolumeData()?.coverage;
     text("sentimentFlowUnit", "حجم خرید منهای فروش (قرارداد)");
     text("sentimentFlowStatus", model.flowLoading ? "در حال دریافت خرید و فروش..." : model.flowError ? "دریافت خرید و فروش ناموفق بود." : coverage(info));
+    element("sentimentFlowStatus")?.classList.toggle("sentiment-error", model.flowError);
     const retry = !model.flowLoading && (model.flowError || info?.complete === false);
     element("sentimentFlowRetry")?.classList.toggle("hidden", !retry);
     text("sentimentFlowRetry", model.flowError ? "تلاش دوباره" : "دریافت دوباره");
@@ -366,7 +375,7 @@ window.OptionSentiment = (() => {
         const known = info?.complete && finite(info.value);
         const value = known ? Number(info.value) : null;
         const level = known && value > 0 ? Math.max(1, Math.ceil(Math.sqrt(value / maximum) * 4)) : 0;
-        const detail = `اعمال ${fmtNum(strike)} ریال · ${fmtDate(expiry)} · ${known ? `${(value / 10).toLocaleString("fa-IR", { maximumFractionDigits: 1 })} تومان` : info ? "داده ناقص" : "قراردادی موجود نیست"}`;
+        const detail = `اعمال ${fmtNum(strike)} ریال · ${fmtDate(expiry)} · ${known ? `${(value / 10).toLocaleString("fa-IR", { maximumFractionDigits: 1 })} تومان` : info ? coverage(info) : "قراردادی موجود نیست"}`;
         return `<td><button type="button" data-heat-cell data-heat-level="${level}" aria-pressed="false" aria-label="${escapeHtml(detail)}" ${!info ? "disabled" : ""}>${known ? compactCount(value / 10) : "—"}</button></td>`;
       }).join("")}</tr>`).join("")}</tbody></table>`;
   }
@@ -392,7 +401,7 @@ window.OptionSentiment = (() => {
     element("sentimentPeaks").innerHTML = selectedModes.map((mode) => {
       const peak = data.peaks[mode.side];
       return `<div><span class="sentiment-position-${mode.color}">${mode.label}</span><strong>${peak ? `${fmtNum(peak.value)} قرارداد` : "—"}</strong>
-        <span>${peak ? `اعمال ${fmtNum(peak.strike_price)} ریال${peak.complete && peak.scope_complete !== false ? "" : " (داده ناقص؛ بیشینه در داده‌های موجود)"}` : "داده موجود نیست"}</span></div>`;
+        <span>${peak ? `اعمال ${fmtNum(peak.strike_price)} ریال${peak.complete && peak.scope_complete !== false ? "" : " (بیشینه داده‌های موجود)"}` : "داده موجود نیست"}</span></div>`;
     }).join("");
   }
 
@@ -465,9 +474,9 @@ window.OptionSentiment = (() => {
       wrap.parentElement.parentElement.classList.toggle("hidden", !available || allZero);
       element(`sentiment${suffix}Footer`).classList.toggle("hidden", !available || allZero);
       text(`sentiment${suffix}Empty`, field === "flow" && (model.flowLoading || model.flowError) ? ""
-        : field === "flow" && allZero && flow?.coverage?.complete === false ? "داده خالص خرید این انتخاب کامل نیست؛ برای نمایش نمودار، دریافت داده را دوباره امتحان کنید."
+        : field === "flow" && allZero && flow?.coverage?.complete === false ? "برای نمایش نمودار، دریافت دوباره را امتحان کنید."
         : available ? (allZero ? `${field === "flow" ? "خالص خرید" : field === "oi" ? "موقعیت باز" : "تغییر موقعیت باز"} قراردادهای دارای داده صفر است.` : "")
-        : field === "flow" ? "داده کامل خرید و فروش برای قیمت‌های اعمال این انتخاب موجود نیست." : field === "oi" ? (!selectedModes.length ? "برای نمایش نمودار، حداقل یک حالت را انتخاب کنید." : "داده قابل نمایش موقعیت باز برای قیمت‌های اعمال این انتخاب موجود نیست.") : "داده قابل نمایش برای مقایسه با روز معاملاتی قبل موجود نیست.");
+        : field === "flow" ? "نموداری برای خرید و فروش این انتخاب در دسترس نیست." : field === "oi" ? (!selectedModes.length ? "برای نمایش نمودار، حداقل یک حالت را انتخاب کنید." : "داده قابل نمایش موقعیت باز برای قیمت‌های اعمال این انتخاب موجود نیست.") : "داده قابل نمایش برای مقایسه با روز معاملاتی قبل موجود نیست.");
       if (!available || allZero || typeof Chart === "undefined") continue;
       wrap.style.width = `max(100%, ${rows.length * Math.max(36, series.length * 8 + 12)}px)`;
       const palette = chartPalette();
