@@ -337,9 +337,9 @@ test("participant flow missing and partial values stay absent while confirmed ze
   await open();
   await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
   assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [null, -10]);
-  await expect(page.locator('#sentimentFlowStatus')).toContainText('داده ناقص: ۴ از ۵');
+  await expect(page.locator('#sentimentFlowStatus')).toContainText('پوشش داده: ۸۰٪');
   await page.locator('#sentimentFlowAudience').selectOption('legal');
-  await expect(page.locator('#sentimentFlowEmpty')).toContainText('داده کامل خرید و فروش');
+  await expect(page.locator('#sentimentFlowEmpty')).toContainText('نموداری برای خرید و فروش');
   assert.equal(await page.evaluate(() => Chart.getChart('sentimentFlowChart') == null), true);
 });
 
@@ -367,7 +367,7 @@ test("contract counts distinguish a fully observed zero from partial zero data",
   await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
   partial = true;
   await page.locator('#sentimentRefresh').click();
-  await expect(page.locator('#sentimentFlowEmpty')).toContainText('کامل نیست');
+  await expect(page.locator('#sentimentFlowEmpty')).toContainText('دریافت دوباره');
   await expect(page.locator('#sentimentFlowEmpty')).not.toContainText('صفر است');
   await expect(page.locator('#sentimentFlowRetry')).toBeVisible();
 });
@@ -385,7 +385,7 @@ test("incomplete contract counts expire from cache so published counts can load 
     return result;
   };
   await open();
-  await expect(page.locator('#sentimentFlowEmpty')).toContainText('داده کامل خرید و فروش');
+  await expect(page.locator('#sentimentFlowEmpty')).toContainText('نموداری برای خرید و فروش');
   const reads = state.flowRequests.length;
   await page.getByRole('tab', {name: 'حقیقی', exact: true}).click();
   await open();
@@ -424,7 +424,7 @@ test("activity heatmap filters types and expiries, exposes exact values and pres
   await page.locator('#sentimentHeatmapType').selectOption('put');
   await expect(cells.nth(0)).toHaveText('—');
   await cells.nth(0).click();
-  await expect(page.locator('#sentimentHeatmapDetail')).toContainText('داده ناقص');
+  await expect(page.locator('#sentimentHeatmapDetail')).toContainText('پوشش داده: ۰٪');
   await page.locator('#sentimentExpiry').selectOption('20261209');
   await expect(page.locator('.sentiment-heatmap-table thead th')).toHaveCount(2);
   await expect(cells).toHaveCount(2);
@@ -626,12 +626,39 @@ test("call and put turnover preserve missing data, known zero and partial covera
   await open();
   const card = page.locator('[data-sentiment-summary="market"]');
   await expect(card.locator('.sentiment-value-call strong')).toHaveText('—');
-  await expect(card.locator('.sentiment-value-call small')).toHaveText('داده ناقص: ۰ از ۲ قرارداد');
+  await expect(card.locator('.sentiment-value-call small')).toHaveText('پوشش داده: ۰٪');
   await expect(card.locator('.sentiment-value-put strong')).toHaveText('۰');
   await expect(card.locator('.sentiment-value-unit')).toHaveText('میلیون تومان');
-  await expect(card.locator('.sentiment-value-total small')).toHaveText('داده ناقص: ۲ از ۴ قرارداد');
+  await expect(card.locator('.sentiment-value-total small')).toHaveText('پوشش داده: ۵۰٪');
   await expect(card.locator('.sentiment-value-ratio strong')).toHaveText('—');
-  await expect(card.locator('.sentiment-value-ratio small')).toHaveText('در انتظار تکمیل داده');
+  await expect(card.locator('.sentiment-value-ratio small')).toHaveText('پوشش داده: ۵۰٪');
+});
+
+test("sentiment uses measured coverage percentages and keeps diagnostics in the log", async (t) => {
+  const {page, state, open} = await fixture(t, 320);
+  const diagnostics = [];
+  page.on('console', msg => { if (msg.type() === 'info') diagnostics.push(msg.text()); });
+  let counts = [29, 72];
+  state.handler = params => {
+    const result = payload(params);
+    result.quality.oi = metric(null, ...counts);
+    result.quality.oi.complete = false;
+    result.warning = 'پوشش بازار ناقص است.';
+    result.quality.invalid_strike_count = 1;
+    return result;
+  };
+  await open();
+  await expect(page.locator('#sentimentOiCoverage')).toHaveText('پوشش داده: ۴۰٫۲٪');
+  await expect(page.locator('#sentimentWarning')).toBeHidden();
+  await expect(page.locator('#optionSentimentRoot')).not.toContainText(/ناقص|درصد اطمینان/);
+  assert.ok(diagnostics.some(line => line.includes('[OptionSentiment] Data quality')));
+  for (const [known, total, label] of [
+    [999, 1000, '۹۹٫۹٪'], [10, 10, '—'], [0, 0, '—'], [0, 10, '۰٪'], [1, 10000, 'کمتر از ۰٫۱٪'],
+  ]) {
+    counts = [known, total];
+    await page.locator('#sentimentRefresh').click();
+    await expect(page.locator('#sentimentOiCoverage')).toHaveText(`پوشش داده: ${label}`);
+  }
 });
 
 test("call to put ratio recovers when missing dated quotes arrive and handles genuine zero turnover", async (t) => {
@@ -648,7 +675,7 @@ test("call to put ratio recovers when missing dated quotes arrive and handles ge
   };
   await open();
   const card = page.locator('[data-sentiment-summary="market"]');
-  await expect(card.locator('.sentiment-value-ratio small')).toHaveText('در انتظار تکمیل داده');
+  await expect(card.locator('.sentiment-value-ratio small')).toHaveText('پوشش داده: ۶۶٫۶٪');
   for (const [next, ratio, note] of [['complete', '۲', ''], ['no-put', '∞', ''], ['zero', '—', 'معامله‌ای ثبت نشده']]) {
     stage = next;
     await page.locator('#sentimentRefresh').click();
@@ -799,15 +826,15 @@ test("missing call OI stays missing instead of turning into zero when only the p
   };
   await open();
   await selectOiModes(page, ["پوت"]);
-  await expect(page.locator("#sentimentOiCoverage")).toHaveText("داده ناقص: ۲ از ۴ قرارداد");
+  await expect(page.locator("#sentimentOiCoverage")).toHaveText("پوشش داده: ۵۰٪");
   assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.data.map((point) => point.y))), [[40, 10]]);
   const tooltip = await page.evaluate(() => {
     const chart = Chart.getChart("sentimentOiChart");
     return chart.options.plugins.tooltip.callbacks.label({ datasetIndex: 0, dataIndex: 0, dataset: chart.data.datasets[0], parsed: { x: 1000, y: 40 } });
   });
-  assert.match(tooltip, /پوت: ۴۰ قرارداد · داده ناقص: ۱ از ۲ قرارداد/);
+  assert.match(tooltip, /پوت: ۴۰ قرارداد · پوشش داده: ۵۰٪/);
   await selectOiModes(page, ["کال"]);
-  await expect(page.locator("#sentimentOiCoverage")).toHaveText("داده ناقص: ۰ از ۲ قرارداد");
+  await expect(page.locator("#sentimentOiCoverage")).toHaveText("پوشش داده: ۰٪");
   await expect(page.locator("#sentimentOiEmpty")).toContainText("موجود نیست");
   assert.equal(await page.evaluate(() => Chart.getChart("sentimentOiChart") == null), true);
 });
@@ -1186,7 +1213,7 @@ test("a peak is marked partial when another strike has missing OI", async (t) =>
     return result;
   };
   await open();
-  await expect(page.locator("#sentimentPeaks")).toContainText("داده ناقص؛ بیشینه در داده‌های موجود");
+  await expect(page.locator("#sentimentPeaks")).toContainText("بیشینه داده‌های موجود");
 });
 
 test("OI known only for an invalid strike cannot make an unknown chart look like zero", async (t) => {
@@ -1204,7 +1231,7 @@ test("OI known only for an invalid strike cannot make an unknown chart look like
   assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 0);
   await expect(page.locator("#sentimentOiEmpty")).toContainText("موجود نیست");
   await expect(page.locator("#sentimentChangeEmpty")).toContainText("موجود نیست");
-  await expect(page.locator("#sentimentWarning")).toContainText("قیمت اعمال معتبر ندارد");
+  await expect(page.locator("#sentimentWarning")).toBeHidden();
 });
 
 test("charts becoming available within the same date center the spot price on mobile", async (t) => {
