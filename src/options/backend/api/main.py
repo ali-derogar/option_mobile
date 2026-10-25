@@ -660,7 +660,8 @@ async def option_sentiment_flow(request: Request) -> JSONResponse:
     data_date, expiry = _option_sentiment_selection(request)
     if not data_date:
         raise HTTPException(400, "date is required")
-    payload = await run_in_threadpool(get_flow_payload, storage, _query_value(request, "underlying_key"), expiry, data_date)
+    payload = await run_in_threadpool(get_flow_payload, storage, _query_value(request, "underlying_key"), expiry, data_date,
+                                    include_cash=False)
     return _json(payload)
 
 

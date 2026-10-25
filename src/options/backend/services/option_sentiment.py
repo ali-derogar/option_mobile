@@ -248,7 +248,7 @@ def _merge_participant_data(previous: dict, incoming: dict, contract: dict) -> d
     return result
 
 
-def get_flow_payload(storage: Storage, key: str | None, expiry: str, data_date: str) -> dict:
+def get_flow_payload(storage: Storage, key: str | None, expiry: str, data_date: str, *, include_cash: bool = True) -> dict:
     snapshot = storage.get_option_sentiment_snapshot(data_date)
     contracts = snapshot["contracts"] if snapshot else storage.get_contract_snapshot_df(data_date).to_dict(orient="records")
     scope = contract_scope(contracts, key, expiry)
@@ -301,7 +301,7 @@ def get_flow_payload(storage: Storage, key: str | None, expiry: str, data_date: 
             merge_remote(remote)
         except Exception:
             logger.info("Participant flow fetch failed; using same-date local records", exc_info=True)
-        if current:
+        if current and include_cash:
             cash_needed = [code for code in needed if any(participants.get(str(code), {}).get(field) is None
                                                         for field in PARTICIPANT_FIELDS["value"])]
             if cash_needed:

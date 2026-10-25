@@ -688,8 +688,7 @@ input::placeholder {
 .filters select,
 .filters input,
 .sentiment-filters select,
-.sentiment-panel-heading select,
-.sentiment-flow-controls select {
+.sentiment-panel-heading select {
   min-width: 0;
   width: 100%;
   min-height: 48px;
@@ -703,8 +702,7 @@ input::placeholder {
 
 .filters select,
 .sentiment-filters select,
-.sentiment-panel-heading select,
-.sentiment-flow-controls select {
+.sentiment-panel-heading select {
   appearance: none;
   direction: rtl;
   padding-left: 32px;
@@ -717,8 +715,7 @@ input::placeholder {
 
 .filters select option,
 .sentiment-filters select option,
-.sentiment-panel-heading select option,
-.sentiment-flow-controls select option {
+.sentiment-panel-heading select option {
   color: var(--text);
   background: var(--surface);
 }
@@ -2854,18 +2851,6 @@ body[data-view="underlying"] #strikeFilter {
   max-width: 48%;
   min-height: 48px;
   padding-inline: 12px 32px;
-}
-
-.sentiment-flow-controls {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.sentiment-flow-controls select {
-  min-width: 0;
-  min-height: 48px;
 }
 
 .sentiment-flow-actions {

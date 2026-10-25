@@ -632,9 +632,34 @@ def test_session_rollover_discards_undated_current_participant_data(storage, mon
     assert result['audiences']['natural']['volume']['strikes'][0]['call_flow'] is None
 
 
+def test_flow_api_uses_current_contract_counts_without_fetching_unused_cash(api_client, storage, monkeypatch):
+    class Clock:
+        @staticmethod
+        def now(tz):
+            return datetime(2026, 10, 21, 12, tzinfo=tz)
+
+    monkeypatch.setattr(service, 'datetime', Clock)
+    monkeypatch.setattr(service, 'fetch_market_date', lambda: DAY)
+    storage.replace_option_sentiment_snapshot(DAY, [contract(trade_volume=30, trade_date=DAY)], STAMP, 'public_cdn')
+    current = MagicMock(return_value=[
+        {'ins_code': 12345678901234567, 'natural_buy_volume': 20, 'natural_sell_volume': 10,
+         'legal_buy_volume': 10, 'legal_sell_volume': 20}])
+    monkeypatch.setattr(service, 'fetch_public_client_type_current_many', current)
+    unused_cash = MagicMock(side_effect=AssertionError('Cash is not used by the contract-count chart'))
+    monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many', unused_cash)
+
+    response = api_client.get(f'/api/option-sentiment/flow?date={DAY}&underlying_key=2001')
+
+    assert response.status_code == 200
+    assert response.json()['audiences']['natural']['volume']['strikes'][0]['call_flow'] == 10
+    assert response.json()['audiences']['legal']['volume']['strikes'][0]['call_flow'] == -10
+    current.assert_called_once_with([12345678901234567], timeout=8)
+    unused_cash.assert_not_called()
+
+
 def test_flow_fetch_runs_off_event_loop(api_client, monkeypatch):
     entered, release = Event(), Event()
-    def slow(*args):
+    def slow(*args, **kwargs):
         entered.set()
         assert release.wait(5)
         return {'audiences': {}}

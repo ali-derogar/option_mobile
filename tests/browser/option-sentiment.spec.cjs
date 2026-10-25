@@ -189,7 +189,7 @@ test("participant flow from another snapshot of the same trading day is rejected
   await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
 });
 
-test("participant flow uses signed Toman values, switches groups without refetching and preserves other charts", async (t) => {
+test("participant flow shows only signed contract counts, switches groups without refetching and preserves other charts", async (t) => {
   const { page, state, open } = await fixture(t, 360);
   state.flowHandler = flowPayload;
   await open();
@@ -203,18 +203,21 @@ test("participant flow uses signed Toman values, switches groups without refetch
   });
   await page.locator('#sentimentFlowChart').tap({position: bar});
   await expect.poll(() => page.evaluate(() => Chart.getChart('sentimentFlowChart').tooltip.dataPoints?.length > 0)).toBeTruthy();
-  await page.locator('#sentimentFlowMeasure').selectOption('value');
+  const flowPanel = page.locator('section[aria-labelledby="sentimentFlowTitle"]');
+  await expect(page.locator('#sentimentFlowMeasure')).toHaveCount(0);
+  await expect(flowPanel.getByRole('combobox')).toHaveCount(1);
+  await expect(flowPanel).not.toContainText('تومان');
   assert.deepEqual([...state.flowRequests[0]], [['underlying_key', '2001'], ['expiry', 'all'], ['date', '2026-10-21']]);
   const chartData = () => page.evaluate(() => {
     const chart = Chart.getChart('sentimentFlowChart');
     return { values: chart.data.datasets.map(d => d.data.map(p => p.y)),
       labels: chart.data.datasets.map(d => d.label), stacked: chart.options.scales.y.stacked,
-      tooltip: chart.options.plugins.tooltip.callbacks.label({ dataset: chart.data.datasets[1], parsed: { y: -500000 } }) };
+      tooltip: chart.options.plugins.tooltip.callbacks.label({ dataset: chart.data.datasets[1], parsed: { y: -5 } }) };
   });
-  assert.deepEqual(await chartData(), {values: [[2000000, -1000000], [-500000, 0]], labels: ['کال', 'پوت'], stacked: false, tooltip: 'پوت: ‎−۵۰۰٬۰۰۰ تومان'});
+  assert.deepEqual(await chartData(), {values: [[20, -10], [-5, 0]], labels: ['کال', 'پوت'], stacked: false, tooltip: 'پوت: ‎−۵ قرارداد'});
   const originalCharts = await page.evaluate(() => ['sentimentOiChart', 'sentimentChangeChart'].map(id => Chart.getChart(id).id));
   await page.locator('#sentimentFlowAudience').selectOption('legal');
-  assert.deepEqual((await chartData()).values, [[-2000000, 1000000], [500000, 0]]);
+  assert.deepEqual((await chartData()).values, [[-20, 10], [5, 0]]);
   assert.equal(state.flowRequests.length, 1);
   assert.deepEqual(await page.evaluate(() => ['sentimentOiChart', 'sentimentChangeChart'].map(id => Chart.getChart(id).id)), originalCharts);
   await page.evaluate(() => applyTheme('dark'));
@@ -269,66 +272,23 @@ test("participant flow failure retries independently and rejects a mismatched re
 test("participant flow missing and partial values stay absent while confirmed zero stays zero", async (t) => {
   const { page, state, open } = await fixture(t);
   state.flowHandler = params => {
-    const result = flowPayload(params), natural = result.audiences.natural.value;
+    const result = flowPayload(params), natural = result.audiences.natural.volume;
     natural.strikes[0].call_flow = null;
     natural.strikes[0].coverage.call_flow = metric(null, 1, 2);
     natural.coverage = metric(null, 4, 5);
-    result.audiences.legal.value.strikes = [];
+    result.audiences.legal.volume.strikes = [];
     return result;
   };
   await open();
   await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
-  await page.locator('#sentimentFlowMeasure').selectOption('value');
-  assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [null, -1000000]);
+  assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [null, -10]);
   await expect(page.locator('#sentimentFlowStatus')).toContainText('داده ناقص: ۴ از ۵');
   await page.locator('#sentimentFlowAudience').selectOption('legal');
   await expect(page.locator('#sentimentFlowEmpty')).toContainText('داده کامل خرید و فروش');
   assert.equal(await page.evaluate(() => Chart.getChart('sentimentFlowChart') == null), true);
 });
 
-test("Toman mode reports unavailable cash instead of treating 29 inactive contracts as a zero flow", async (t) => {
-  const {page, state, open} = await fixture(t, 320);
-  let published = false;
-  state.flowHandler = params => {
-    const result = flowPayload(params);
-    if (!published) {
-      for (const audience of Object.values(result.audiences)) {
-        audience.value.coverage = metric(null, 29, 72);
-        audience.value.traded_coverage = metric(null, 0, 43);
-        audience.value.strikes = [
-          {strike_price: 1000, call_flow: 0, put_flow: 0, coverage: {call_flow: metric(0, 29, 29), put_flow: metric(0, 0, 0)}},
-          {strike_price: 1200, call_flow: null, put_flow: null, coverage: {call_flow: metric(null, 0, 22), put_flow: metric(null, 0, 21)}},
-        ];
-      }
-    }
-    return result;
-  };
-  await open();
-  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
-  await page.locator('#sentimentFlowMeasure').selectOption('value');
-  await expect(page.locator('#sentimentFlowEmpty')).toContainText('ارزش خرید و فروش');
-  await expect(page.locator('#sentimentFlowEmpty')).not.toContainText('صفر است');
-  await expect(page.locator('#sentimentFlowStatus')).toBeEmpty();
-  await expect(page.locator('#sentimentFlowRetry')).toBeVisible();
-  await page.locator('#sentimentFlowShowVolume').click();
-  await expect(page.locator('#sentimentFlowMeasure')).toHaveValue('volume');
-  assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [20, -10]);
-  await page.locator('#sentimentFlowMeasure').selectOption('value');
-  state.failFlow = true;
-  await page.locator('#sentimentFlowRetry').click();
-  await expect(page.locator('#sentimentFlowStatus')).toContainText('ناموفق');
-  await page.locator('#sentimentFlowShowVolume').click();
-  assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [20, -10]);
-  state.failFlow = false;
-  await page.locator('#sentimentFlowMeasure').selectOption('value');
-  published = true;
-  await page.locator('#sentimentFlowRetry').click();
-  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
-  assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [2000000, -1000000]);
-  await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
-});
-
-test("Toman mode distinguishes a fully observed zero from partial zero data", async (t) => {
+test("contract counts distinguish a fully observed zero from partial zero data", async (t) => {
   const {page, state, open} = await fixture(t);
   let partial = false;
   const stamp = () => partial ? '2026-10-22T08:05:00+00:00' : '2026-10-22T08:00:00+00:00';
@@ -336,9 +296,9 @@ test("Toman mode distinguishes a fully observed zero from partial zero data", as
   state.flowHandler = params => {
     const result = {...flowPayload(params), received_at: stamp()};
     for (const audience of Object.values(result.audiences)) {
-      audience.value.coverage = metric(partial ? null : 0, partial ? 2 : 4, 4);
-      audience.value.traded_coverage = audience.value.coverage;
-      audience.value.strikes.forEach((row, i) => {
+      audience.volume.coverage = metric(partial ? null : 0, partial ? 2 : 4, 4);
+      audience.volume.traded_coverage = audience.volume.coverage;
+      audience.volume.strikes.forEach((row, i) => {
         for (const kind of ['call', 'put']) {
           row[`${kind}_flow`] = partial && i === 1 ? null : 0;
           row.coverage[`${kind}_flow`] = metric(row[`${kind}_flow`], partial && i === 1 ? 0 : 1, 1);
@@ -348,8 +308,6 @@ test("Toman mode distinguishes a fully observed zero from partial zero data", as
     return result;
   };
   await open();
-  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
-  await page.locator('#sentimentFlowMeasure').selectOption('value');
   await expect(page.locator('#sentimentFlowEmpty')).toContainText('صفر است');
   await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
   partial = true;
@@ -359,22 +317,20 @@ test("Toman mode distinguishes a fully observed zero from partial zero data", as
   await expect(page.locator('#sentimentFlowRetry')).toBeVisible();
 });
 
-test("unavailable Toman data expires from cache so published values can load on a later visit", async (t) => {
+test("incomplete contract counts expire from cache so published counts can load on a later visit", async (t) => {
   const {page, state, open} = await fixture(t);
   let published = false;
   state.flowHandler = params => {
     const result = flowPayload(params);
     if (!published) for (const audience of Object.values(result.audiences)) {
-      audience.value.coverage = metric(null, 0, 4);
-      audience.value.traded_coverage = audience.value.coverage;
-      audience.value.strikes = [];
+      audience.volume.coverage = metric(null, 0, 4);
+      audience.volume.traded_coverage = audience.volume.coverage;
+      audience.volume.strikes = [];
     }
     return result;
   };
   await open();
-  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
-  await page.locator('#sentimentFlowMeasure').selectOption('value');
-  await expect(page.locator('#sentimentFlowEmpty')).toContainText('در دسترس نیست');
+  await expect(page.locator('#sentimentFlowEmpty')).toContainText('داده کامل خرید و فروش');
   const reads = state.flowRequests.length;
   await page.getByRole('tab', {name: 'حقیقی', exact: true}).click();
   await open();
@@ -384,9 +340,8 @@ test("unavailable Toman data expires from cache so published values can load on 
   published = true;
   await open();
   await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
-  await expect(page.locator('#sentimentFlowMeasure')).toHaveValue('value');
   assert.equal(state.flowRequests.length, reads + 1);
-  assert.equal(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data[0].y), 2000000);
+  assert.equal(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data[0].y), 20);
 });
 
 test("activity heatmap filters types and expiries, exposes exact values and preserves missing cells", async (t) => {
@@ -430,7 +385,7 @@ test("new sentiment charts fit mobile and desktop in both themes with internal h
     for (const theme of ['light', 'dark']) {
       await page.evaluate(value => applyTheme(value), theme);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${width}/${theme}`);
-      const sizes = await page.locator('#sentimentFlowAudience, #sentimentFlowMeasure, #sentimentHeatmapType, [data-heat-cell]').evaluateAll(els => els.map(el => el.getBoundingClientRect().height));
+      const sizes = await page.locator('#sentimentFlowAudience, #sentimentHeatmapType, [data-heat-cell]').evaluateAll(els => els.map(el => el.getBoundingClientRect().height));
       assert.ok(sizes.every(height => height >= 48));
       assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 3);
     }

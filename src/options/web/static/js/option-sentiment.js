@@ -10,7 +10,7 @@ window.OptionSentiment = (() => {
     accepted: null, request: 0, timer: null, charts: [], chartScope: null, attempted: new Set(), busy: null,
     controllers: new Set(), readFailures: 0, startFailure: null, pendingRefresh: null,
     oiModes: oiModes.map((mode) => mode.key),
-    flowAudience: "natural", flowMeasure: "volume", flowData: null, flowScope: null, flowRequest: 0,
+    flowAudience: "natural", flowData: null, flowScope: null, flowRequest: 0,
     flowController: null, flowLoading: false, flowError: false, flowOutdated: false, flowCache: new Map(), heatmapType: "total",
   };
   const sides = [{ key: "call", label: "کال" }, { key: "put", label: "پوت" }];
@@ -146,10 +146,9 @@ window.OptionSentiment = (() => {
         ${chartExplanation("Change", "تغییر موقعیت باز", "کمک می‌کند تغییر تمرکز موقعیت‌ها را نسبت به روز معاملاتی قبل دنبال کنید. ستون مثبت یعنی تعداد قراردادهای باز بیشتر شده و ستون منفی یعنی کمتر شده است.")}
       </section>
       <section class="sentiment-chart-panel" aria-labelledby="sentimentFlowTitle">
-        <h3 id="sentimentFlowTitle">خالص خرید</h3>
-        <div class="sentiment-flow-controls">
+        <div class="sentiment-panel-heading">
+          <h3 id="sentimentFlowTitle">خالص خرید</h3>
           <select id="sentimentFlowAudience" aria-label="گروه خالص خرید"><option value="natural">حقیقی‌ها</option><option value="legal">حقوقی‌ها</option></select>
-          <select id="sentimentFlowMeasure" aria-label="واحد خالص خرید"><option value="volume">قرارداد</option><option value="value">تومان</option></select>
         </div>
         <p class="sentiment-coverage" id="sentimentFlowStatus" role="status" aria-live="polite"></p>
         <div class="sentiment-legend"><span class="sentiment-call">کال</span><span class="sentiment-put">پوت</span></div>
@@ -157,13 +156,12 @@ window.OptionSentiment = (() => {
         <p class="sentiment-chart-empty" id="sentimentFlowEmpty"></p>
         <div class="sentiment-flow-actions hidden" id="sentimentFlowActions">
           <button type="button" class="btn hidden" id="sentimentFlowRetry">تلاش دوباره</button>
-          <button type="button" class="btn btn-primary hidden" id="sentimentFlowShowVolume">نمایش تعداد قرارداد</button>
         </div>
         <div class="sentiment-chart-stage"><div class="sentiment-chart-scroll" tabindex="0" aria-label="نمودار خالص خرید؛ پیمایش افقی برای همه قیمت‌های اعمال">
           <div class="sentiment-chart-wrap"><canvas id="sentimentFlowChart" role="img" aria-label="خالص خرید کال و پوت بر اساس قیمت اعمال"></canvas></div>
         </div><div class="sentiment-y-axis" id="sentimentFlowAxis" aria-hidden="true"></div></div>
         ${chartFooter("Flow")}
-        ${chartExplanation("Flow", "خالص خرید", "نشان می‌دهد حقیقی‌ها یا حقوقی‌ها در کدام قیمت‌های اعمال خریدار یا فروشنده خالص بوده‌اند. مثبت یعنی خرید بیشتر و منفی یعنی فروش بیشتر؛ مقیاس را از «قرارداد» یا «تومان» انتخاب کنید.")}
+        ${chartExplanation("Flow", "خالص خرید", "نشان می‌دهد حقیقی‌ها یا حقوقی‌ها در کدام قیمت‌های اعمال خریدار یا فروشنده خالص بوده‌اند. مثبت یعنی خرید بیشتر و منفی یعنی فروش بیشتر؛ مقدارها بر حسب تعداد قرارداد هستند.")}
       </section>
       <section class="sentiment-chart-panel" aria-labelledby="sentimentHeatmapTitle">
         <div class="sentiment-panel-heading">
@@ -192,17 +190,7 @@ window.OptionSentiment = (() => {
       model.flowAudience = event.target.value;
       drawCharts("Flow");
     });
-    element("sentimentFlowMeasure").value = model.flowMeasure;
-    element("sentimentFlowMeasure").addEventListener("change", (event) => {
-      model.flowMeasure = event.target.value;
-      drawCharts("Flow");
-    });
     element("sentimentFlowRetry").addEventListener("click", () => model.flowOutdated ? load() : loadFlow(model.data, true));
-    element("sentimentFlowShowVolume").addEventListener("click", () => {
-      model.flowMeasure = "volume";
-      element("sentimentFlowMeasure").value = "volume";
-      drawCharts("Flow");
-    });
     element("sentimentHeatmapType").value = model.heatmapType;
     element("sentimentHeatmapType").addEventListener("change", (event) => {
       model.heatmapType = event.target.value;
@@ -324,7 +312,7 @@ window.OptionSentiment = (() => {
         throw new Error("snapshot mismatch");
       }
       model.flowData = result;
-      const partial = Object.values(result.audiences || {}).some(audience => Object.values(audience).some(measure => measure.coverage?.complete === false));
+      const partial = Object.values(result.audiences || {}).some(audience => audience.volume?.coverage?.complete === false);
       model.flowCache.set(scope, {data: result, expires: partial ? Date.now() + 60000 : Infinity});
       if (model.flowCache.size > 8) model.flowCache.delete(model.flowCache.keys().next().value);
     } catch (error) {
@@ -338,29 +326,18 @@ window.OptionSentiment = (() => {
     }
   }
 
-  function flowMeasureData() {
-    return model.flowData?.audiences?.[model.flowAudience]?.[model.flowMeasure];
-  }
-
-  function cashFlowUnavailable() {
-    const traded = flowMeasureData()?.traded_coverage;
-    return model.flowMeasure === "value" && traded?.total > 0 && traded.known === 0;
+  function flowVolumeData() {
+    return model.flowData?.audiences?.[model.flowAudience]?.volume;
   }
 
   function updateFlowStatus() {
-    const measure = flowMeasureData();
-    const info = measure?.coverage;
-    const unavailable = cashFlowUnavailable();
-    const displayInfo = model.flowMeasure === "value" && measure?.traded_coverage?.total > 0 && !measure.traded_coverage.complete
-      ? measure.traded_coverage : info;
-    text("sentimentFlowUnit", model.flowMeasure === "value" ? "ارزش خرید منهای فروش (تومان)" : "حجم خرید منهای فروش (قرارداد)");
-    text("sentimentFlowStatus", model.flowLoading ? "در حال دریافت خرید و فروش..." : model.flowError ? "دریافت خرید و فروش ناموفق بود." : unavailable ? "" : coverage(displayInfo));
-    const retry = !model.flowLoading && (model.flowError || (model.flowMeasure === "value" && info?.complete === false));
-    const showVolume = !model.flowLoading && unavailable;
+    const info = flowVolumeData()?.coverage;
+    text("sentimentFlowUnit", "حجم خرید منهای فروش (قرارداد)");
+    text("sentimentFlowStatus", model.flowLoading ? "در حال دریافت خرید و فروش..." : model.flowError ? "دریافت خرید و فروش ناموفق بود." : coverage(info));
+    const retry = !model.flowLoading && (model.flowError || info?.complete === false);
     element("sentimentFlowRetry")?.classList.toggle("hidden", !retry);
     text("sentimentFlowRetry", model.flowError ? "تلاش دوباره" : "دریافت دوباره");
-    element("sentimentFlowShowVolume")?.classList.toggle("hidden", !showVolume);
-    element("sentimentFlowActions")?.classList.toggle("hidden", !retry && !showVolume);
+    element("sentimentFlowActions")?.classList.toggle("hidden", !retry);
   }
 
   function selectHeatCell(cell) {
@@ -475,11 +452,10 @@ window.OptionSentiment = (() => {
     model.chartScope ||= {};
     for (const [chartIndex, [suffix, field]] of [["Oi", "oi"], ["Change", "change"], ["Flow", "flow"]].entries()) {
       if (only && suffix !== only) continue;
-      const flow = flowMeasureData();
+      const flow = flowVolumeData();
       const rows = field === "flow" ? flow?.strikes || [] : data.strikes;
-      const cashFlow = field === "flow" && model.flowMeasure === "value";
       const series = field === "oi" ? selectedModes : sides.map((side) => ({ ...side, side: side.key, color: side.key === "put" ? "purple" : "accent" }));
-      const scope = `${data.underlying_key}|${data.expiry}|${data.data_date}|${field === "oi" ? model.oiModes.join(",") : field === "flow" ? `${model.flowAudience}|${model.flowMeasure}` : ""}`;
+      const scope = `${data.underlying_key}|${data.expiry}|${data.data_date}|${field === "oi" ? model.oiModes.join(",") : field === "flow" ? model.flowAudience : ""}`;
       const sameScope = scope === model.chartScope[suffix];
       model.chartScope[suffix] = scope;
       const canvas = element(`sentiment${suffix}Chart`);
@@ -489,7 +465,6 @@ window.OptionSentiment = (() => {
       wrap.parentElement.parentElement.classList.toggle("hidden", !available || allZero);
       element(`sentiment${suffix}Footer`).classList.toggle("hidden", !available || allZero);
       text(`sentiment${suffix}Empty`, field === "flow" && (model.flowLoading || model.flowError) ? ""
-        : field === "flow" && cashFlowUnavailable() ? "ارزش خرید و فروش این انتخاب برای این تاریخ در دسترس نیست."
         : field === "flow" && allZero && flow?.coverage?.complete === false ? "داده خالص خرید این انتخاب کامل نیست؛ برای نمایش نمودار، دریافت داده را دوباره امتحان کنید."
         : available ? (allZero ? `${field === "flow" ? "خالص خرید" : field === "oi" ? "موقعیت باز" : "تغییر موقعیت باز"} قراردادهای دارای داده صفر است.` : "")
         : field === "flow" ? "داده کامل خرید و فروش برای قیمت‌های اعمال این انتخاب موجود نیست." : field === "oi" ? (!selectedModes.length ? "برای نمایش نمودار، حداقل یک حالت را انتخاب کنید." : "داده قابل نمایش موقعیت باز برای قیمت‌های اعمال این انتخاب موجود نیست.") : "داده قابل نمایش برای مقایسه با روز معاملاتی قبل موجود نیست.");
@@ -506,7 +481,7 @@ window.OptionSentiment = (() => {
           label: mode.label, backgroundColor: palette[mode.color],
           borderColor: palette[mode.color], borderWidth: 0, maxBarThickness: 18, borderRadius: 3,
           categoryPercentage: 0.85, barPercentage: 0.9,
-          data: rows.map((row) => ({ x: row.strike_price, y: cashFlow && finite(row[`${mode.side}_${field}`]) ? row[`${mode.side}_${field}`] / 10 : row[`${mode.side}_${field}`] })),
+          data: rows.map((row) => ({ x: row.strike_price, y: row[`${mode.side}_${field}`] })),
         })) },
         options: {
           responsive: true, maintainAspectRatio: false, animation: false, parsing: false,
@@ -518,7 +493,7 @@ window.OptionSentiment = (() => {
               titleFont: { family: "Vazirmatn", size: 12 }, bodyFont: { family: "Vazirmatn", size: 12 }, callbacks: {
               title: (items) => `قیمت اعمال: ${fmtNum(items[0]?.parsed.x)} ریال`,
               label: (item) => {
-                if (field === "flow") return `${item.dataset.label}: ${item.parsed.y > 0 ? "+" : ""}${Number(item.parsed.y).toLocaleString("fa-IR", { maximumFractionDigits: cashFlow ? 1 : 0 })} ${cashFlow ? "تومان" : "قرارداد"}`;
+                if (field === "flow") return `${item.dataset.label}: ${item.parsed.y > 0 ? "+" : ""}${Number(item.parsed.y).toLocaleString("fa-IR", { maximumFractionDigits: 0 })} قرارداد`;
                 const side = series[item.datasetIndex].side;
                 const info = rows[item.dataIndex].coverage[`${side}_${field}`];
                 return `${item.dataset.label}: ${field === "change" ? signed(item.parsed.y) : fmtNum(item.parsed.y)} قرارداد${info.complete ? "" : ` · ${coverage(info)}`}`;
@@ -531,7 +506,7 @@ window.OptionSentiment = (() => {
               ticks: { color: palette.muted, callback: (v) => fmtNum(v), maxRotation: 0, minRotation: 0, padding: 8, autoSkip: true, autoSkipPadding: 10, font: { family: "Vazirmatn", size: 12 } },
               border: { display: false }, grid: { display: false } },
             y: { beginAtZero: true, stacked: false, afterFit: (axis) => { axis.width = 0; },
-              ticks: { display: false, maxTicksLimit: 6, precision: cashFlow ? 1 : 0 }, border: { display: false },
+              ticks: { display: false, maxTicksLimit: 6, precision: 0 }, border: { display: false },
               grid: { drawTicks: false, color: (context) => context.tick?.value === 0 ? palette.muted : palette.grid, lineWidth: (context) => context.tick?.value === 0 ? 1.5 : 1 } },
           },
         },
