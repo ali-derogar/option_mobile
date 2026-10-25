@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+from options.backend.config import _initialize_database_from_seed
 
 
 def test_config_loads_dotenv_before_reading_values(tmp_path: Path) -> None:
@@ -127,3 +130,53 @@ print(json.dumps({
         "login_timeout": 10,
         "request_timeout": 60,
     }
+
+
+def _seed_database(path: Path) -> None:
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+            CREATE TABLE contracts (id INTEGER PRIMARY KEY);
+            INSERT INTO contracts VALUES (1);
+            CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
+            INSERT INTO app_state VALUES ('activated', '1', '2026-10-24');
+            INSERT INTO app_state VALUES ('preferences', 'preserved', '2026-10-24');
+        """)
+
+
+def test_bundled_database_cannot_activate_a_new_install(tmp_path: Path) -> None:
+    seed = tmp_path / "seed.db"
+    current = tmp_path / "runtime" / "options.db"
+    _seed_database(seed)
+
+    _initialize_database_from_seed(current, seed)
+
+    with sqlite3.connect(current) as db:
+        assert db.execute("SELECT id FROM contracts").fetchall() == [(1,)]
+        assert db.execute("SELECT value FROM app_state WHERE key='activated'").fetchone() is None
+        assert db.execute("SELECT value FROM app_state WHERE key='preferences'").fetchone() == ("preserved",)
+    with sqlite3.connect(seed) as db:
+        assert db.execute("SELECT value FROM app_state WHERE key='activated'").fetchone() == ("1",)
+
+
+def test_seed_never_overwrites_existing_installation_activation(tmp_path: Path) -> None:
+    seed = tmp_path / "seed.db"
+    current = tmp_path / "options.db"
+    _seed_database(seed)
+    _seed_database(current)
+
+    _initialize_database_from_seed(current, seed)
+
+    with sqlite3.connect(current) as db:
+        assert db.execute("SELECT value FROM app_state WHERE key='activated'").fetchone() == ("1",)
+
+
+def test_seed_without_activation_table_is_supported(tmp_path: Path) -> None:
+    seed = tmp_path / "seed.db"
+    current = tmp_path / "options.db"
+    with sqlite3.connect(seed) as db:
+        db.executescript("CREATE TABLE contracts (id INTEGER PRIMARY KEY); INSERT INTO contracts VALUES (1);")
+
+    _initialize_database_from_seed(current, seed)
+
+    with sqlite3.connect(current) as db:
+        assert db.execute("SELECT id FROM contracts").fetchall() == [(1,)]

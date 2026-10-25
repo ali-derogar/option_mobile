@@ -1,10 +1,12 @@
 /** Whole-market option sentiment. Its filters never read the contract table's filters. */
 window.OptionSentiment = (() => {
-  // A position always has one buyer and one seller, so buy/sell volumes per
-  // side are identical by construction; one toggle per side is all the data supports.
+  // The feed provides one OI count per contract type. Long/short totals match;
+  // the four presentation modes share that count and must never be summed.
   const oiModes = [
-    { key: "call", side: "call", label: "اختیار خرید", color: "accent" },
-    { key: "put", side: "put", label: "اختیار فروش", color: "purple" },
+    { key: "call_buy", side: "call", label: "خرید کال", shortLabel: "Long Call", color: "accent" },
+    { key: "call_sell", side: "call", label: "فروش کال", shortLabel: "Short Call", color: "amber" },
+    { key: "put_buy", side: "put", label: "خرید پوت", shortLabel: "Long Put", color: "purple" },
+    { key: "put_sell", side: "put", label: "فروش پوت", shortLabel: "Short Put", color: "red" },
   ];
   const model = {
     root: null, key: null, expiry: "all", date: "", contextDate: "", data: null,
@@ -95,29 +97,30 @@ window.OptionSentiment = (() => {
       <div class="sentiment-market-summaries" id="sentimentSummaries"></div>
       <section class="sentiment-chart-panel" aria-labelledby="sentimentOiTitle">
         <h3 id="sentimentOiTitle">موقعیت باز بر اساس قیمت اعمال</h3>
-        <div class="sentiment-price-label"></div>
         <fieldset class="sentiment-oi-modes" aria-describedby="sentimentOiModeHint">
-          <legend>حالت بررسی</legend>
+          <legend>نوع قرارداد و سمت موقعیت</legend>
           <div class="sentiment-oi-mode-grid">${oiModes.map((mode) => `
             <label class="sentiment-oi-mode sentiment-position-${mode.color}">
-              <input type="checkbox" value="${mode.key}" data-oi-mode aria-label="${mode.label}" ${model.oiModes.includes(mode.key) ? "checked" : ""}>
-              <span>${mode.label}</span>
+              <input type="checkbox" value="${mode.key}" data-oi-mode aria-label="${mode.label}" aria-controls="sentimentOiChart" ${model.oiModes.includes(mode.key) ? "checked" : ""}>
+              <span class="sentiment-oi-mode-copy"><strong>${mode.label}</strong><small lang="en" dir="ltr">${mode.shortLabel}</small></span>
             </label>`).join("")}
           </div>
-          <p class="sentiment-oi-mode-hint" id="sentimentOiModeHint">یک یا چند حالت را انتخاب کنید.</p>
+          <p class="sentiment-oi-mode-hint" id="sentimentOiModeHint">هرکدام از چهار حالت را به‌تنهایی یا همراه حالت‌های دیگر انتخاب کنید.</p>
           <p class="sentiment-oi-mode-selection" id="sentimentOiModeSelection" role="status" aria-live="polite"></p>
+          <p class="sentiment-oi-mode-note">خوراک بازار برای هر نوع قرارداد یک مقدار موقعیت باز دارد؛ مقدار خرید و فروش همان نوع برابر نمایش داده می‌شود و این دو با هم جمع نمی‌شوند.</p>
         </fieldset>
+        <div class="sentiment-price-label"></div>
         <p class="sentiment-coverage" id="sentimentOiCoverage"></p>
         <div class="sentiment-legend" id="sentimentOiLegend"></div>
         <p class="sentiment-chart-unit">تعداد قرارداد</p>
         <p class="sentiment-chart-empty" id="sentimentOiEmpty"></p>
         <div class="sentiment-chart-stage"><div class="sentiment-chart-scroll" tabindex="0" aria-label="نمودار موقعیت باز؛ پیمایش افقی برای همه قیمت‌های اعمال">
-          <div class="sentiment-chart-wrap"><canvas id="sentimentOiChart" role="img" aria-label="موقعیت باز اختیار خرید و فروش بر اساس قیمت اعمال"></canvas></div>
+          <div class="sentiment-chart-wrap"><canvas id="sentimentOiChart" role="img" aria-label="موقعیت باز خرید و فروش کال و پوت بر اساس قیمت اعمال"></canvas></div>
         </div><div class="sentiment-y-axis" id="sentimentOiAxis" aria-hidden="true"></div></div>
         ${chartFooter("Oi")}
         <details class="sentiment-chart-details"><summary>بیشترین موقعیت‌ها و راهنمای نمودار</summary>
           <div class="sentiment-peaks" id="sentimentPeaks"></div>
-          <p class="sentiment-oi-mode-hint">هر موقعیت باز یک سمت خرید و یک سمت فروش دارد؛ مقادیر دو سمت برابرند و در نمایش ترکیبی با هم جمع نمی‌شوند.</p>
+          <p class="sentiment-oi-mode-hint">هر قرارداد باز یک موقعیت خرید و یک موقعیت فروش متناظر دارد. انتخاب هم‌زمان دو سمت، تعداد قراردادهای باز را دو برابر نمی‌کند.</p>
         </details>
       </section>
       <section class="sentiment-chart-panel" aria-labelledby="sentimentChangeTitle">
@@ -302,7 +305,7 @@ window.OptionSentiment = (() => {
       wrap.parentElement.parentElement.classList.toggle("hidden", !available || allZero);
       element(`sentiment${suffix}Footer`).classList.toggle("hidden", !available || allZero);
       text(`sentiment${suffix}Empty`, available ? (allZero ? `${field === "oi" ? "موقعیت باز" : "تغییر موقعیت باز"} قراردادهای دارای داده صفر است.` : "")
-        : field === "oi" ? (!selectedModes.length ? "برای نمایش نمودار، حداقل یکی از دو حالت را انتخاب کنید." : "داده قابل نمایش موقعیت باز برای قیمت‌های اعمال این انتخاب موجود نیست.") : "داده قابل نمایش برای مقایسه با روز معاملاتی قبل موجود نیست.");
+        : field === "oi" ? (!selectedModes.length ? "برای نمایش نمودار، حداقل یک حالت را انتخاب کنید." : "داده قابل نمایش موقعیت باز برای قیمت‌های اعمال این انتخاب موجود نیست.") : "داده قابل نمایش برای مقایسه با روز معاملاتی قبل موجود نیست.");
       if (!available || allZero || typeof Chart === "undefined") continue;
       wrap.style.width = `max(100%, ${rows.length * Math.max(36, series.length * 8 + 12)}px)`;
       const palette = chartPalette();
@@ -335,11 +338,11 @@ window.OptionSentiment = (() => {
             } },
           },
           scales: {
-            x: { type: "linear", min: Math.min(...bounds) - padding, max: Math.max(...bounds) + padding,
+            x: { type: "linear", stacked: false, min: Math.min(...bounds) - padding, max: Math.max(...bounds) + padding,
               afterBuildTicks: (axis) => { axis.ticks = strikes.map((value) => ({ value })); },
               ticks: { color: palette.muted, callback: (v) => fmtNum(v), maxRotation: 0, minRotation: 0, padding: 8, autoSkip: true, autoSkipPadding: 10, font: { family: "Vazirmatn", size: 12 } },
               border: { display: false }, grid: { display: false } },
-            y: { beginAtZero: true, afterFit: (axis) => { axis.width = 0; },
+            y: { beginAtZero: true, stacked: false, afterFit: (axis) => { axis.width = 0; },
               ticks: { display: false, maxTicksLimit: 6, precision: 0 }, border: { display: false },
               grid: { drawTicks: false, color: (context) => context.tick?.value === 0 ? palette.muted : palette.grid, lineWidth: (context) => context.tick?.value === 0 ? 1.5 : 1 } },
           },

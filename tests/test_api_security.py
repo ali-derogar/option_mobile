@@ -222,6 +222,44 @@ def test_activation_endpoint_rejects_invalid_code(monkeypatch) -> None:
     assert response.json()["detail"] == "activation code was not accepted"
 
 
+def test_update_restoration_requires_activation_and_valid_activation_survives_restart(tmp_path, monkeypatch) -> None:
+    from options import app as app_module
+    from options.backend.storage import Storage
+
+    current_path = tmp_path / "current.db"
+    legacy_path = tmp_path / "legacy.db"
+    current = Storage(current_path)
+    current.engine.dispose()
+    legacy = Storage(legacy_path)
+    legacy.set_activated(True)
+    legacy.engine.dispose()
+
+    app_module._restore_legacy_database_if_needed(current_path, [legacy_path])
+    restored = Storage(current_path)
+    monkeypatch.setattr(main, "storage", restored)
+    headers = {main.LOCAL_API_HEADER: main.LOCAL_API_TOKEN}
+    try:
+        with TestClient(main.app) as client:
+            assert client.get("/api/activation/status", headers=headers).json() == {"activated": False}
+            assert client.get("/api/watchlist", headers=headers).status_code == 423
+            assert client.post("/api/activation", json={"code": "invalid"}, headers=headers).status_code == 400
+            assert not restored.is_activated()
+            response = client.post("/api/activation", json={"code": encode(int(time.time()))}, headers=headers)
+            assert response.status_code == 200
+            assert client.get("/api/watchlist", headers=headers).status_code == 200
+    finally:
+        restored.engine.dispose()
+
+    restarted = Storage(current_path)
+    monkeypatch.setattr(main, "storage", restarted)
+    try:
+        with TestClient(main.app) as client:
+            assert client.get("/api/activation/status", headers=headers).json() == {"activated": True}
+            assert client.get("/api/watchlist", headers=headers).status_code == 200
+    finally:
+        restarted.engine.dispose()
+
+
 def test_underlying_trend_validates_date_before_unknown_underlying(monkeypatch) -> None:
     monkeypatch.setattr(main.storage, "is_activated", lambda: True)
 

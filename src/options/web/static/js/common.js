@@ -7,6 +7,7 @@ async function api(path, options = {}) {
   });
   const text = await res.text();
   if (!res.ok) {
+    if (res.status === 423) setActivationGate(true);
     let message = res.statusText || "خطا در ارتباط با سرور";
     try {
       const parsed = text ? JSON.parse(text) : null;
@@ -37,9 +38,15 @@ function setActivationGate(locked, message = "") {
 }
 
 async function ensureActivation() {
-  const status = await api("/api/activation/status");
-  setActivationGate(!status.activated);
-  return Boolean(status.activated);
+  try {
+    const status = await api("/api/activation/status");
+    const activated = status.activated === true;
+    setActivationGate(!activated);
+    return activated;
+  } catch (error) {
+    setActivationGate(true, "بررسی وضعیت فعال‌سازی انجام نشد؛ دوباره تلاش کنید.");
+    throw error;
+  }
 }
 
 function bindActivation(onActivated) {

@@ -17,6 +17,8 @@ import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN
 
+from options.backend.database import copy_database
+
 
 USER_DATA_TABLES = (
     "contracts",
@@ -86,6 +88,9 @@ def _restore_legacy_database_if_needed(database_path: Path, candidates: list[Pat
     legacy = max(candidates, key=_database_score, default=None)
     if legacy is None or _database_score(legacy) <= 0:
         return
+    # An existing database, even without market rows, owns this installation's
+    # activation state. Restoring older market data must not unlock it.
+    moving_user_database = not database_path.exists()
     database_path.parent.mkdir(parents=True, exist_ok=True)
     if database_path.exists() and database_path.stat().st_size > 0:
         backup = database_path.with_name(
@@ -97,9 +102,7 @@ def _restore_legacy_database_if_needed(database_path: Path, candidates: list[Pat
     descriptor, temporary = tempfile.mkstemp(prefix=".options-migration-", suffix=".db", dir=database_path.parent)
     os.close(descriptor)
     try:
-        with closing(sqlite3.connect(f"{legacy.resolve().as_uri()}?mode=ro", uri=True)) as source:
-            with closing(sqlite3.connect(temporary)) as destination:
-                source.backup(destination)
+        copy_database(legacy, Path(temporary), include_activation=moving_user_database)
         os.replace(temporary, database_path)
     finally:
         Path(temporary).unlink(missing_ok=True)

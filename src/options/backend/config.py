@@ -1,11 +1,13 @@
 """Application configuration from environment variables."""
 
 import os
-import shutil
+import tempfile
 from math import isfinite
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from options.backend.database import copy_database
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = PACKAGE_ROOT
@@ -54,10 +56,23 @@ TSETMC_TRUST_ENV_PROXY = os.getenv("TSETMC_TRUST_ENV_PROXY", "0").strip().lower(
 )
 TSETMC_PUBLIC_CLIENT_TYPE_WORKERS = _env_int("TSETMC_PUBLIC_CLIENT_TYPE_WORKERS", 16, 1, 16)
 
-DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-if not DATABASE_PATH.exists() and SEED_DATABASE_PATH.exists():
-    shutil.copy2(SEED_DATABASE_PATH, DATABASE_PATH)
+def _initialize_database_from_seed(database_path: Path, seed_path: Path) -> None:
+    """Bundled market data never grants activation or replaces existing user data."""
+    if database_path.exists() or not seed_path.exists():
+        return
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".options-seed-", suffix=".db", dir=database_path.parent)
+    os.close(descriptor)
+    try:
+        copy_database(seed_path, Path(temporary))
+        os.replace(temporary, database_path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+_initialize_database_from_seed(DATABASE_PATH, SEED_DATABASE_PATH)
 
 
 def validate_credentials() -> None:

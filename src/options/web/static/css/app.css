@@ -3047,16 +3047,18 @@ body[data-view="underlying"] #strikeFilter {
 
 .sentiment-oi-modes {
   min-width: 0;
-  margin: 14px 0 8px;
-  padding: 0;
-  border: 0;
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
 }
 
 .sentiment-oi-modes legend {
-  margin-bottom: 8px;
-  padding: 0;
-  color: var(--text-muted);
-  font-size: 12px;
+  padding: 0 8px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .sentiment-oi-mode-grid {
@@ -3071,8 +3073,8 @@ body[data-view="underlying"] #strikeFilter {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 48px;
-  padding: 8px;
+  min-height: 64px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
@@ -3082,7 +3084,36 @@ body[data-view="underlying"] #strikeFilter {
 
 .sentiment-oi-mode:has(input:checked) {
   border-color: currentColor;
-  background: color-mix(in srgb, currentColor 9%, var(--surface));
+  background: var(--accent-soft);
+}
+
+.sentiment-oi-mode.sentiment-position-purple:has(input:checked) {
+  background: var(--purple-bg);
+}
+
+.sentiment-oi-mode.sentiment-position-amber:has(input:checked) {
+  background: var(--amber-bg);
+}
+
+.sentiment-oi-mode.sentiment-position-red:has(input:checked) {
+  background: var(--red-bg);
+}
+
+.sentiment-oi-mode-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  text-align: start;
+}
+
+.sentiment-oi-mode-copy strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.sentiment-oi-mode-copy small {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .sentiment-oi-mode:has(input:focus-visible) {
@@ -3092,9 +3123,10 @@ body[data-view="underlying"] #strikeFilter {
 
 .sentiment-oi-mode input {
   flex-shrink: 0;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   margin: 0;
+  color: inherit;
   accent-color: currentColor;
   cursor: pointer;
 }
@@ -3134,18 +3166,21 @@ body[data-view="underlying"] #strikeFilter {
 }
 
 .sentiment-oi-mode-selection {
-  margin: -1px;
+  margin: 8px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
+
+.sentiment-oi-mode-note {
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.9;
   overflow-wrap: anywhere;
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }
 
 .sentiment-price-label > div {

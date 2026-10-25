@@ -117,19 +117,29 @@ test("isolated filters, distinct summary scopes, numeric price positions and sig
   await expect(page.locator("#typeFilter")).toBeHidden();
 });
 
-test("both position modes support every individual selection and combination", async (t) => {
+async function selectOiModes(page, selected) {
+  for (const label of ["خرید کال", "فروش کال", "خرید پوت", "فروش پوت"]) {
+    await page.getByRole("checkbox", { name: label, exact: true }).setChecked(selected.includes(label));
+  }
+}
+
+test("four position modes support every individual selection and all 16 combinations", async (t) => {
   const { page, state, open } = await fixture(t, 360);
   await open();
   const modes = [
-    { key: "call", label: "اختیار خرید", values: [100, 20], color: "accent" },
-    { key: "put", label: "اختیار فروش", values: [40, 10], color: "purple" },
+    { label: "خرید کال", values: [100, 20], color: "accent" },
+    { label: "فروش کال", values: [100, 20], color: "amber" },
+    { label: "خرید پوت", values: [40, 10], color: "purple" },
+    { label: "فروش پوت", values: [40, 10], color: "red" },
   ];
-  await expect(page.locator("[data-oi-mode]")).toHaveCount(2);
+  await expect(page.locator("[data-oi-mode]")).toHaveCount(4);
+  await expect(page.locator(".sentiment-oi-mode-note")).toBeVisible();
+  await expect(page.locator(".sentiment-oi-mode-note")).toContainText("با هم جمع نمی‌شوند");
   await expect(page.locator("[data-oi-filter], #sentimentOiClear")).toHaveCount(0);
   const changeId = await page.evaluate(() => Chart.getChart("sentimentChangeChart").id);
   const summaries = await page.locator("#sentimentSummaries").textContent();
   const requestCount = state.requests.length;
-  for (let mask = 0; mask < 4; mask += 1) {
+  for (let mask = 0; mask < 16; mask += 1) {
     for (const [index, mode] of modes.entries()) {
       await page.getByRole("checkbox", { name: mode.label, exact: true }).setChecked(Boolean(mask & (1 << index)));
     }
@@ -140,6 +150,7 @@ test("both position modes support every individual selection and combination", a
         series: oi?.data.datasets.map((dataset) => ({ label: dataset.label, values: dataset.data.map((point) => point.y), color: dataset.backgroundColor })) || [],
         palette: chartPalette(), changeId: Chart.getChart("sentimentChangeChart").id,
         charts: Object.keys(Chart.instances).length,
+        stacked: oi ? [oi.options.scales.x.stacked, oi.options.scales.y.stacked] : [],
       };
     });
     assert.deepEqual(chart.series, selected.map((mode) => ({ label: mode.label, values: mode.values, color: chart.palette[mode.color] })));
@@ -147,7 +158,8 @@ test("both position modes support every individual selection and combination", a
     assert.equal(chart.charts, selected.length ? 2 : 1);
     assert.equal(await page.locator("#sentimentSummaries").textContent(), summaries);
     await expect(page.locator("#sentimentOiLegend .sentiment-position-legend")).toHaveCount(selected.length);
-    if (!selected.length) await expect(page.locator("#sentimentOiEmpty")).toContainText("حداقل یکی از دو حالت");
+    if (selected.length) assert.deepEqual(chart.stacked, [false, false]);
+    if (!selected.length) await expect(page.locator("#sentimentOiEmpty")).toContainText("حداقل یک حالت");
   }
   assert.equal(state.requests.length, requestCount);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
@@ -156,9 +168,9 @@ test("both position modes support every individual selection and combination", a
 test("position combinations survive refresh, theme and tab changes", async (t) => {
   const { page, open } = await fixture(t);
   await open();
-  await page.getByRole("checkbox", { name: "اختیار فروش", exact: true }).uncheck();
+  await selectOiModes(page, ["خرید کال"]);
   const selection = async () => page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label));
-  assert.deepEqual(await selection(), ["اختیار خرید"]);
+  assert.deepEqual(await selection(), ["خرید کال"]);
   await page.evaluate(() => applyTheme("dark"));
   await page.locator("#sentimentRefresh").click();
   await expect(page.locator("#sentimentStatus")).toHaveText("تحلیل آماده است.");
@@ -166,15 +178,17 @@ test("position combinations survive refresh, theme and tab changes", async (t) =
   await expect(page.locator('[data-sentiment-summary="selection"] strong').first()).toContainText("۴ میلیون");
   await page.getByRole("tab", { name: "حقیقی", exact: true }).click();
   await open();
-  assert.deepEqual(await selection(), ["اختیار خرید"]);
-  await expect(page.getByRole("checkbox", { name: "اختیار خرید", exact: true })).toBeChecked();
-  await expect(page.getByRole("checkbox", { name: "اختیار فروش", exact: true })).not.toBeChecked();
+  assert.deepEqual(await selection(), ["خرید کال"]);
+  await expect(page.getByRole("checkbox", { name: "خرید کال", exact: true })).toBeChecked();
+  for (const label of ["فروش کال", "خرید پوت", "فروش پوت"]) {
+    await expect(page.getByRole("checkbox", { name: label, exact: true })).not.toBeChecked();
+  }
 });
 
 test("restoring the page keeps cached charts and position controls usable when dashboard reads fail", async (t) => {
   const { page, state, open } = await fixture(t);
   await open();
-  await page.getByRole("checkbox", { name: "اختیار فروش", exact: true }).uncheck();
+  await selectOiModes(page, ["خرید کال"]);
   const figures = await page.locator("#sentimentSummaries").textContent();
   state.failDashboardRead = true;
   state.failRead = true;
@@ -186,17 +200,17 @@ test("restoring the page keeps cached charts and position controls usable when d
   await expect.poll(() => page.evaluate(() => Object.keys(Chart.instances).length)).toBe(2);
   await expect(page.locator("#sentimentStatus")).toContainText("خطا");
   assert.equal(await page.locator("#sentimentSummaries").textContent(), figures);
-  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["اختیار خرید"]);
-  await page.getByRole("checkbox", { name: "اختیار خرید", exact: true }).uncheck();
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["خرید کال"]);
+  await page.getByRole("checkbox", { name: "خرید کال", exact: true }).uncheck();
   assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart")?.data.datasets.map((dataset) => dataset.label) ?? []), []);
-  await expect(page.locator("#sentimentOiEmpty")).toContainText("حداقل یکی از دو حالت");
+  await expect(page.locator("#sentimentOiEmpty")).toContainText("حداقل یک حالت");
   await expect(page.locator("#sentimentRefresh")).toBeEnabled();
 });
 
 test("restoring the page ignores a pending response from the previous visit and preserves selected modes", async (t) => {
   const { page, state, open } = await fixture(t);
   await open();
-  await page.getByRole("checkbox", { name: "اختیار فروش", exact: true }).uncheck();
+  await selectOiModes(page, ["خرید کال"]);
   let release;
   const pending = new Promise((resolve) => { release = resolve; });
   state.handler = (params) => params.get("expiry") === "20261209" ? pending : payload(params);
@@ -213,7 +227,7 @@ test("restoring the page ignores a pending response from the previous visit and 
   await expect(page.locator("#sentimentExpiry")).toHaveValue("all");
   await expect(page.locator('[data-sentiment-summary="underlying"] strong').first()).toContainText("۱۰ میلیون");
   await expect(page.locator('[data-sentiment-summary="selection"]')).toHaveCount(0);
-  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["اختیار خرید"]);
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.label)), ["خرید کال"]);
   assert.equal(await page.evaluate(() => Object.keys(Chart.instances).length), 2);
   assert.equal(state.posts.length, 2);
 });
@@ -248,16 +262,18 @@ test("missing call OI stays missing instead of turning into zero when only the p
     return result;
   };
   await open();
-  await page.getByRole("checkbox", { name: "اختیار خرید", exact: true }).uncheck();
+  await selectOiModes(page, ["خرید پوت"]);
   await expect(page.locator("#sentimentOiCoverage")).toHaveText("داده ناقص: ۲ از ۴ قرارداد");
   assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.data.map((point) => point.y))), [[40, 10]]);
   const tooltip = await page.evaluate(() => {
     const chart = Chart.getChart("sentimentOiChart");
     return chart.options.plugins.tooltip.callbacks.label({ datasetIndex: 0, dataIndex: 0, dataset: chart.data.datasets[0], parsed: { x: 1000, y: 40 } });
   });
-  assert.match(tooltip, /اختیار فروش: ۴۰ قرارداد · داده ناقص: ۱ از ۲ قرارداد/);
-  await page.getByRole("checkbox", { name: "اختیار فروش", exact: true }).uncheck();
-  await page.getByRole("checkbox", { name: "اختیار خرید", exact: true }).check();
+  assert.match(tooltip, /خرید پوت: ۴۰ قرارداد · داده ناقص: ۱ از ۲ قرارداد/);
+  await page.getByRole("checkbox", { name: "فروش پوت", exact: true }).check();
+  await expect(page.locator("#sentimentOiCoverage")).toHaveText("داده ناقص: ۲ از ۴ قرارداد");
+  assert.deepEqual(await page.evaluate(() => Chart.getChart("sentimentOiChart").data.datasets.map((dataset) => dataset.data.map((point) => point.y))), [[40, 10], [40, 10]]);
+  await selectOiModes(page, ["خرید کال"]);
   await expect(page.locator("#sentimentOiCoverage")).toHaveText("داده ناقص: ۰ از ۲ قرارداد");
   await expect(page.locator("#sentimentOiEmpty")).toContainText("موجود نیست");
   assert.equal(await page.evaluate(() => Chart.getChart("sentimentOiChart") == null), true);
