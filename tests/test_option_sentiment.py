@@ -606,14 +606,14 @@ def test_live_flow_accepts_only_volume_matched_current_records_and_does_not_inve
              'legal_buy_volume': 10, 'legal_sell_volume': 99},
         ]
     monkeypatch.setattr(service, 'fetch_public_client_type_current_many', current)
-    forbidden = MagicMock(side_effect=AssertionError('current values must not come from a previous day'))
-    monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many', forbidden)
+    dated_cash = MagicMock(return_value=[])
+    monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many', dated_cash)
     result = service.get_flow_payload(storage, '2001', 'all', DAY)['audiences']
     assert result['natural']['volume']['strikes'][0]['call_flow'] == 10
     assert result['legal']['volume']['strikes'][0]['call_flow'] == -10
     assert result['natural']['volume']['strikes'][1]['call_flow'] is None
     assert result['natural']['value']['strikes'][0]['call_flow'] is None
-    forbidden.assert_not_called()
+    dated_cash.assert_called_once_with([2, 12345678901234567], '20261021', timeout=8)
 
 
 def test_session_rollover_discards_undated_current_participant_data(storage, monkeypatch):
@@ -834,7 +834,7 @@ def test_inferred_non_trading_zeros_do_not_count_as_observed_cash_for_active_con
     assert not value['traded_coverage']['complete']
 
 
-@pytest.mark.parametrize('cash_source', ['local', 'same_day_history'])
+@pytest.mark.parametrize('cash_source', ['local', 'same_day_history', 'previous_day_history'])
 def test_volume_only_live_data_does_not_hide_valid_same_day_cash(storage, monkeypatch, cash_source):
     class Clock:
         @staticmethod
@@ -851,13 +851,39 @@ def test_volume_only_live_data_does_not_hide_valid_same_day_cash(storage, monkey
             'legal_buy_value': 20_000_000, 'legal_sell_value': 70_000_000}
     if cash_source == 'local':
         storage.insert_client_type_stats([cash])
-    history = MagicMock(return_value=[cash] if cash_source == 'same_day_history' else [])
+    history = MagicMock(return_value=[cash] if cash_source == 'same_day_history' else
+                        [{**cash, 'rec_date': 20261020}] if cash_source == 'previous_day_history' else [])
     monkeypatch.setattr(service, 'fetch_public_client_type_current_many', lambda *a, **k: [live])
     monkeypatch.setattr(service, 'fetch_public_client_type_for_date_many', history)
     result = service.get_flow_payload(storage, '2001', 'all', DAY)['audiences']['natural']
-    assert result['value']['strikes'][0]['call_flow'] == 50_000_000
+    assert result['value']['strikes'][0]['call_flow'] == (None if cash_source == 'previous_day_history' else 50_000_000)
     assert result['volume']['strikes'][0]['call_flow'] == 10
     if cash_source == 'local':
         history.assert_not_called()
     else:
         history.assert_called_once_with([code], '20261021', timeout=8)
+
+
+def test_participant_merge_keeps_each_measure_together_and_retains_valid_cash():
+    row = contract(trade_volume=30)
+    previous = {'natural_buy_value': 80_000_000, 'natural_sell_value': 30_000_000,
+                'legal_buy_value': 20_000_000, 'legal_sell_value': 70_000_000}
+    incoming = {'natural_buy_volume': 20, 'natural_sell_volume': 10, 'legal_buy_volume': 10, 'legal_sell_volume': 20,
+                'natural_buy_value': 90_000_000, 'legal_buy_value': 10_000_000}
+    result = service._merge_participant_data(previous, incoming, row)
+    assert result['natural_buy_value'] == 80_000_000
+    assert result['natural_sell_value'] == 30_000_000
+    assert result['legal_buy_value'] == 20_000_000
+    assert result['legal_sell_value'] == 70_000_000
+    assert result['natural_buy_volume'] == 20
+    assert result['natural_sell_volume'] == 10
+
+
+def test_zero_net_cash_on_traded_contracts_is_observed_data_not_unavailable():
+    row = contract(trade_volume=30)
+    participant = {'ins_code': row['ins_code'], 'natural_buy_value': 80_000_000, 'natural_sell_value': 80_000_000,
+                   'legal_buy_value': 20_000_000, 'legal_sell_value': 20_000_000}
+    value = analyze_participant_flow([row], [participant])['audiences']['natural']['value']
+    assert value['traded_coverage']['known'] == value['traded_coverage']['total'] == 1
+    assert value['traded_coverage']['complete']
+    assert value['strikes'][0]['call_flow'] == 0

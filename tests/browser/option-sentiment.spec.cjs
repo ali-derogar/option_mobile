@@ -314,11 +314,79 @@ test("Toman mode reports unavailable cash instead of treating 29 inactive contra
   await expect(page.locator('#sentimentFlowMeasure')).toHaveValue('volume');
   assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [20, -10]);
   await page.locator('#sentimentFlowMeasure').selectOption('value');
+  state.failFlow = true;
+  await page.locator('#sentimentFlowRetry').click();
+  await expect(page.locator('#sentimentFlowStatus')).toContainText('ناموفق');
+  await page.locator('#sentimentFlowShowVolume').click();
+  assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [20, -10]);
+  state.failFlow = false;
+  await page.locator('#sentimentFlowMeasure').selectOption('value');
   published = true;
   await page.locator('#sentimentFlowRetry').click();
   await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
   assert.deepEqual(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data.map(p => p.y)), [2000000, -1000000]);
   await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
+});
+
+test("Toman mode distinguishes a fully observed zero from partial zero data", async (t) => {
+  const {page, state, open} = await fixture(t);
+  let partial = false;
+  const stamp = () => partial ? '2026-10-22T08:05:00+00:00' : '2026-10-22T08:00:00+00:00';
+  state.handler = params => payload(params, {received_at: stamp()});
+  state.flowHandler = params => {
+    const result = {...flowPayload(params), received_at: stamp()};
+    for (const audience of Object.values(result.audiences)) {
+      audience.value.coverage = metric(partial ? null : 0, partial ? 2 : 4, 4);
+      audience.value.traded_coverage = audience.value.coverage;
+      audience.value.strikes.forEach((row, i) => {
+        for (const kind of ['call', 'put']) {
+          row[`${kind}_flow`] = partial && i === 1 ? null : 0;
+          row.coverage[`${kind}_flow`] = metric(row[`${kind}_flow`], partial && i === 1 ? 0 : 1, 1);
+        }
+      });
+    }
+    return result;
+  };
+  await open();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  await page.locator('#sentimentFlowMeasure').selectOption('value');
+  await expect(page.locator('#sentimentFlowEmpty')).toContainText('صفر است');
+  await expect(page.locator('#sentimentFlowRetry')).toBeHidden();
+  partial = true;
+  await page.locator('#sentimentRefresh').click();
+  await expect(page.locator('#sentimentFlowEmpty')).toContainText('کامل نیست');
+  await expect(page.locator('#sentimentFlowEmpty')).not.toContainText('صفر است');
+  await expect(page.locator('#sentimentFlowRetry')).toBeVisible();
+});
+
+test("unavailable Toman data expires from cache so published values can load on a later visit", async (t) => {
+  const {page, state, open} = await fixture(t);
+  let published = false;
+  state.flowHandler = params => {
+    const result = flowPayload(params);
+    if (!published) for (const audience of Object.values(result.audiences)) {
+      audience.value.coverage = metric(null, 0, 4);
+      audience.value.traded_coverage = audience.value.coverage;
+      audience.value.strikes = [];
+    }
+    return result;
+  };
+  await open();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  await page.locator('#sentimentFlowMeasure').selectOption('value');
+  await expect(page.locator('#sentimentFlowEmpty')).toContainText('در دسترس نیست');
+  const reads = state.flowRequests.length;
+  await page.getByRole('tab', {name: 'حقیقی', exact: true}).click();
+  await open();
+  assert.equal(state.flowRequests.length, reads);
+  await page.getByRole('tab', {name: 'حقیقی', exact: true}).click();
+  await page.clock.fastForward(60001);
+  published = true;
+  await open();
+  await expect.poll(() => page.evaluate(() => Boolean(Chart.getChart('sentimentFlowChart')))).toBeTruthy();
+  await expect(page.locator('#sentimentFlowMeasure')).toHaveValue('value');
+  assert.equal(state.flowRequests.length, reads + 1);
+  assert.equal(await page.evaluate(() => Chart.getChart('sentimentFlowChart').data.datasets[0].data[0].y), 2000000);
 });
 
 test("activity heatmap filters types and expiries, exposes exact values and preserves missing cells", async (t) => {

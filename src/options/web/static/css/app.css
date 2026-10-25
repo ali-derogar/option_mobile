@@ -2868,6 +2868,17 @@ body[data-view="underlying"] #strikeFilter {
   min-height: 48px;
 }
 
+.sentiment-flow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sentiment-flow-actions .btn {
+  flex: 1 1 100px;
+}
+
 .sentiment-heatmap-scroll {
   max-height: 380px;
   overflow: auto;

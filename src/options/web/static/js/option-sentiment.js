@@ -152,10 +152,13 @@ window.OptionSentiment = (() => {
           <select id="sentimentFlowMeasure" aria-label="واحد خالص خرید"><option value="volume">قرارداد</option><option value="value">تومان</option></select>
         </div>
         <p class="sentiment-coverage" id="sentimentFlowStatus" role="status" aria-live="polite"></p>
-        <button type="button" class="btn hidden" id="sentimentFlowRetry">تلاش دوباره</button>
         <div class="sentiment-legend"><span class="sentiment-call">کال</span><span class="sentiment-put">پوت</span></div>
         <p class="sentiment-chart-unit" id="sentimentFlowUnit"></p>
         <p class="sentiment-chart-empty" id="sentimentFlowEmpty"></p>
+        <div class="sentiment-flow-actions hidden" id="sentimentFlowActions">
+          <button type="button" class="btn hidden" id="sentimentFlowRetry">تلاش دوباره</button>
+          <button type="button" class="btn btn-primary hidden" id="sentimentFlowShowVolume">نمایش تعداد قرارداد</button>
+        </div>
         <div class="sentiment-chart-stage"><div class="sentiment-chart-scroll" tabindex="0" aria-label="نمودار خالص خرید؛ پیمایش افقی برای همه قیمت‌های اعمال">
           <div class="sentiment-chart-wrap"><canvas id="sentimentFlowChart" role="img" aria-label="خالص خرید کال و پوت بر اساس قیمت اعمال"></canvas></div>
         </div><div class="sentiment-y-axis" id="sentimentFlowAxis" aria-hidden="true"></div></div>
@@ -195,6 +198,11 @@ window.OptionSentiment = (() => {
       drawCharts("Flow");
     });
     element("sentimentFlowRetry").addEventListener("click", () => model.flowOutdated ? load() : loadFlow(model.data, true));
+    element("sentimentFlowShowVolume").addEventListener("click", () => {
+      model.flowMeasure = "volume";
+      element("sentimentFlowMeasure").value = "volume";
+      drawCharts("Flow");
+    });
     element("sentimentHeatmapType").value = model.heatmapType;
     element("sentimentHeatmapType").addEventListener("change", (event) => {
       model.heatmapType = event.target.value;
@@ -291,14 +299,17 @@ window.OptionSentiment = (() => {
   async function loadFlow(data, retry = false) {
     if (!model.root || !data) return;
     const scope = `${data.underlying_key}|${data.expiry}|${data.data_date}|${data.received_at}`;
-    if (!retry && model.flowScope === scope) return;
+    const cached = model.flowCache.get(scope);
+    const fresh = cached && cached.expires > Date.now();
+    if (!retry && model.flowScope === scope && (fresh || model.flowLoading || model.flowError || !model.flowData)) return;
+    const previous = model.flowScope === scope ? model.flowData : null;
     const request = ++model.flowRequest;
     model.flowController?.abort();
     model.flowScope = scope;
-    model.flowData = retry ? null : model.flowCache.get(scope) || null;
+    model.flowData = retry ? previous : fresh ? cached.data : null;
     model.flowError = false;
     model.flowOutdated = false;
-    model.flowLoading = Boolean(data.data_date && data.underlying_key && !model.flowData);
+    model.flowLoading = Boolean(data.data_date && data.underlying_key && (retry || !model.flowData));
     if (!model.flowLoading) return;
     updateFlowStatus();
     if (retry) drawCharts("Flow");
@@ -313,7 +324,8 @@ window.OptionSentiment = (() => {
         throw new Error("snapshot mismatch");
       }
       model.flowData = result;
-      model.flowCache.set(scope, result);
+      const partial = Object.values(result.audiences || {}).some(audience => Object.values(audience).some(measure => measure.coverage?.complete === false));
+      model.flowCache.set(scope, {data: result, expires: partial ? Date.now() + 60000 : Infinity});
       if (model.flowCache.size > 8) model.flowCache.delete(model.flowCache.keys().next().value);
     } catch (error) {
       if (!model.root || request !== model.flowRequest) return;
@@ -326,11 +338,29 @@ window.OptionSentiment = (() => {
     }
   }
 
+  function flowMeasureData() {
+    return model.flowData?.audiences?.[model.flowAudience]?.[model.flowMeasure];
+  }
+
+  function cashFlowUnavailable() {
+    const traded = flowMeasureData()?.traded_coverage;
+    return model.flowMeasure === "value" && traded?.total > 0 && traded.known === 0;
+  }
+
   function updateFlowStatus() {
-    const info = model.flowData?.audiences?.[model.flowAudience]?.[model.flowMeasure]?.coverage;
+    const measure = flowMeasureData();
+    const info = measure?.coverage;
+    const unavailable = cashFlowUnavailable();
+    const displayInfo = model.flowMeasure === "value" && measure?.traded_coverage?.total > 0 && !measure.traded_coverage.complete
+      ? measure.traded_coverage : info;
     text("sentimentFlowUnit", model.flowMeasure === "value" ? "ارزش خرید منهای فروش (تومان)" : "حجم خرید منهای فروش (قرارداد)");
-    text("sentimentFlowStatus", model.flowLoading ? "در حال دریافت خرید و فروش..." : model.flowError ? "دریافت خرید و فروش ناموفق بود." : coverage(info));
-    element("sentimentFlowRetry")?.classList.toggle("hidden", !model.flowError);
+    text("sentimentFlowStatus", model.flowLoading ? "در حال دریافت خرید و فروش..." : model.flowError ? "دریافت خرید و فروش ناموفق بود." : unavailable ? "" : coverage(displayInfo));
+    const retry = !model.flowLoading && (model.flowError || (model.flowMeasure === "value" && info?.complete === false));
+    const showVolume = !model.flowLoading && unavailable;
+    element("sentimentFlowRetry")?.classList.toggle("hidden", !retry);
+    text("sentimentFlowRetry", model.flowError ? "تلاش دوباره" : "دریافت دوباره");
+    element("sentimentFlowShowVolume")?.classList.toggle("hidden", !showVolume);
+    element("sentimentFlowActions")?.classList.toggle("hidden", !retry && !showVolume);
   }
 
   function selectHeatCell(cell) {
@@ -445,7 +475,8 @@ window.OptionSentiment = (() => {
     model.chartScope ||= {};
     for (const [chartIndex, [suffix, field]] of [["Oi", "oi"], ["Change", "change"], ["Flow", "flow"]].entries()) {
       if (only && suffix !== only) continue;
-      const rows = field === "flow" ? model.flowData?.audiences?.[model.flowAudience]?.[model.flowMeasure]?.strikes || [] : data.strikes;
+      const flow = flowMeasureData();
+      const rows = field === "flow" ? flow?.strikes || [] : data.strikes;
       const cashFlow = field === "flow" && model.flowMeasure === "value";
       const series = field === "oi" ? selectedModes : sides.map((side) => ({ ...side, side: side.key, color: side.key === "put" ? "purple" : "accent" }));
       const scope = `${data.underlying_key}|${data.expiry}|${data.data_date}|${field === "oi" ? model.oiModes.join(",") : field === "flow" ? `${model.flowAudience}|${model.flowMeasure}` : ""}`;
@@ -457,7 +488,10 @@ window.OptionSentiment = (() => {
       const allZero = available && rows.every((row) => series.every((mode) => row[`${mode.side}_${field}`] == null || row[`${mode.side}_${field}`] === 0));
       wrap.parentElement.parentElement.classList.toggle("hidden", !available || allZero);
       element(`sentiment${suffix}Footer`).classList.toggle("hidden", !available || allZero);
-      text(`sentiment${suffix}Empty`, field === "flow" && (model.flowLoading || model.flowError) ? "" : available ? (allZero ? `${field === "flow" ? "خالص خرید" : field === "oi" ? "موقعیت باز" : "تغییر موقعیت باز"} قراردادهای دارای داده صفر است.` : "")
+      text(`sentiment${suffix}Empty`, field === "flow" && (model.flowLoading || model.flowError) ? ""
+        : field === "flow" && cashFlowUnavailable() ? "ارزش خرید و فروش این انتخاب برای این تاریخ در دسترس نیست."
+        : field === "flow" && allZero && flow?.coverage?.complete === false ? "داده خالص خرید این انتخاب کامل نیست؛ برای نمایش نمودار، دریافت داده را دوباره امتحان کنید."
+        : available ? (allZero ? `${field === "flow" ? "خالص خرید" : field === "oi" ? "موقعیت باز" : "تغییر موقعیت باز"} قراردادهای دارای داده صفر است.` : "")
         : field === "flow" ? "داده کامل خرید و فروش برای قیمت‌های اعمال این انتخاب موجود نیست." : field === "oi" ? (!selectedModes.length ? "برای نمایش نمودار، حداقل یک حالت را انتخاب کنید." : "داده قابل نمایش موقعیت باز برای قیمت‌های اعمال این انتخاب موجود نیست.") : "داده قابل نمایش برای مقایسه با روز معاملاتی قبل موجود نیست.");
       if (!available || allZero || typeof Chart === "undefined") continue;
       wrap.style.width = `max(100%, ${rows.length * Math.max(36, series.length * 8 + 12)}px)`;
